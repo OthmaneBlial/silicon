@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 — 2026-09-30
+
+Recorded SIR fragment shaders now execute in masked groups of four with NEON
+on ARM64 and baseline SSE/SSE2 on x86-64. Coverage, early depth/stencil rejection,
+per-pixel attachment operations and rejected pixel traces retain their behavior.
+Vertex shaders and native Rust closures remain scalar. SIMD remains opt-in.
+
+The VM retains resource/mask validation and finite-result checks. Tests compare
+every lane mask, output/intermediate value bits, samples, errors and exact
+color/depth/stencil replay with one/four workers. Profiling exposes actual packet
+count/occupancy; `benchmark --report` preserves chronological frame times and
+configuration. A sequential alternating benchmark script compares an existing
+release with the current scalar/SIMD executable, recording binary hashes.
+
 ## 0.3.0 — 2026-09-30
 
 The full lit OBJ showcase now executes ordinary GLSL through SPIR-V and SIR:

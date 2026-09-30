@@ -34,7 +34,7 @@ impl VertexOutput {
         self.position.is_finite() && self.varyings.iter().all(|v| v.is_finite())
     }
 }
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
 pub struct Fragment {
     pub x: u32,
     pub y: u32,

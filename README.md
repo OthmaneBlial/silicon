@@ -18,7 +18,7 @@ stencil and blending generate scene pixels entirely on the CPU.
 
 [Watch the CPU-rendered animation](assets/demos/spirv_showcase.mp4) ·
 [Architecture](docs/architecture.md) · [Pipeline](docs/graphics-pipeline.md) ·
-[Shader VM](docs/sir.md) · [SPIR-V subset](docs/spirv.md) · [Roadmap](docs/roadmap.md)
+[Shader VM](docs/sir.md) · [SIMD](docs/simd.md) · [SPIR-V subset](docs/spirv.md) · [Roadmap](docs/roadmap.md)
 
 ## Run it
 
@@ -106,25 +106,28 @@ flowchart LR
 | Texturing | RGBA8/RGB8/R8, nearest/bilinear/trilinear, clamp/repeat/mirror, mip generation/LOD |
 | Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 → SIR graphics subset |
 | Output merger | Replace, source alpha, additive and multiplicative blending; color/depth write enables |
-| Execution | Scalar reference, optional NEON/AVX2 coverage4, scoped threads owning disjoint bands |
+| Execution | Scalar reference, optional SIMD coverage4 and NEON/SSE four-fragment SIR, disjoint worker bands |
 | Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling |
 
-The SIMD path vectorizes **coverage**, not shader invocations. Tiled coverage is
-implemented; full primitive binning and persistent worker pools are future work.
-Parallel bands repeat geometry setup. Scalar/NEON/parallel render tests compare
-exact framebuffer bytes.
+The opt-in SIMD path processes four coverage lanes and runs recorded SIR fragment
+shaders in masked groups of four. Arithmetic spans fragments; vertex shaders,
+native Rust closures, power and texture callbacks remain scalar. Tiled coverage
+is implemented; full primitive binning and persistent worker pools are future work.
+Parallel bands repeat geometry setup. Tests compare exact scalar/SIMD framebuffer
+bytes and bitwise VM outputs/traces for all sixteen lane masks. See [SIMD details](docs/simd.md).
 
 ## Measure it
 
 ```sh
 cargo run --release -p silicon-cli -- benchmark showcase --frames 30 --backend scalar --threads 1
-cargo run --release -p silicon-cli -- benchmark showcase --frames 30 --backend simd --threads 4
+cargo run --release -p silicon-cli -- benchmark spirv_showcase --frames 30 --backend simd --threads 4 --report output/frames.json
 cargo run --release -p silicon-cli -- profile showcase
 python3 benchmarks/run.py --frames 30
 ```
 
 Benchmarks include frame rendering, exclude image encoding/window presentation,
-and report measured median/p95 and throughput. Profile additionally instruments
+and report measured median/p95 and throughput. `--report` retains chronological
+frame times, backend/worker configuration and actual shader packet occupancy. Profile additionally instruments
 fragment shader time; per-worker accumulated stage times can exceed wall time.
 See [performance notes](docs/performance.md) for actual host measurements and
 limits. The animation uses offline frames encoded at 24 fps; it is not an FPS

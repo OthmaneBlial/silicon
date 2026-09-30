@@ -162,7 +162,9 @@ impl Device {
                     let previous = r.stats.shaded;
                     let debug = r.debug_pixel;
                     let shader_traces = std::cell::RefCell::new(Vec::new());
-                    r.try_draw(
+                    let simd = r.backend == Backend::Simd;
+                    let packets = std::cell::Cell::new(0u64);
+                    r.try_draw_packets(
                         v,
                         ind,
                         p.state,
@@ -186,32 +188,85 @@ impl Device {
                                 varyings: std::array::from_fn(|i| e.outputs[i + 1]),
                             })
                         },
-                        |f| {
-                            let mut input = f.varyings;
-                            let lods =
-                                textures.map(|t| t.map_or(0., |(t, _)| t.lod(f.uv_dx, f.uv_dy)));
-                            input[1].z = lods[0];
-                            let e = p
-                                .fragment
-                                .execute_with_lod(
-                                    &input,
-                                    u,
-                                    &lods,
-                                    sample,
-                                    debug == Some((f.x, f.y)),
-                                )
-                                .map_err(|e| {
-                                    format!(
-                                        "command {number}, pixel {},{}, fragment shader: {e}",
-                                        f.x, f.y
-                                    )
-                                })?;
-                            if !e.trace.is_empty() {
-                                shader_traces.borrow_mut().push((f.primitive, e.trace));
+                        |fragments, mask| {
+                            let mut inputs = [[Vec4::ZERO; 4]; 4];
+                            let mut lods = [[0.; 16]; 4];
+                            let tracing = std::array::from_fn(|i| {
+                                debug == Some((fragments[i].x, fragments[i].y))
+                            });
+                            for i in 0..4 {
+                                if mask & (1 << i) == 0 {
+                                    continue;
+                                }
+                                inputs[i] = fragments[i].varyings;
+                                lods[i] = textures.map(|t| {
+                                    t.map_or(0., |(t, _)| {
+                                        t.lod(fragments[i].uv_dx, fragments[i].uv_dy)
+                                    })
+                                });
+                                inputs[i][1].z = lods[i][0];
                             }
-                            Ok(Some(Color(e.outputs[0])))
+                            let mut colors = [None; 4];
+                            if simd {
+                                let executed = p
+                                    .fragment
+                                    .execute4(
+                                        std::array::from_fn(|i| inputs[i].as_slice()),
+                                        u,
+                                        std::array::from_fn(|i| lods[i].as_slice()),
+                                        mask,
+                                        |_, slot, uv| sample(slot, uv),
+                                        tracing,
+                                    )
+                                    .map_err(|e| {
+                                        let pixels = fragments.map(|f| (f.x, f.y));
+                                        format!(
+                                            "command {number}, fragment packet mask {mask:04b}, pixels {pixels:?}: {e}"
+                                        )
+                                    })?;
+                                packets.set(packets.get() + 1);
+                                for (i, e) in executed.into_iter().enumerate() {
+                                    if mask & (1 << i) == 0 {
+                                        continue;
+                                    }
+                                    if !e.trace.is_empty() {
+                                        shader_traces
+                                            .borrow_mut()
+                                            .push((fragments[i].primitive, e.trace));
+                                    }
+                                    colors[i] = Some(Color(e.outputs[0]));
+                                }
+                            } else {
+                                for i in 0..4 {
+                                    if mask & (1 << i) == 0 {
+                                        continue;
+                                    }
+                                    let e = p
+                                        .fragment
+                                        .execute_with_lod(
+                                            &inputs[i], u, &lods[i], sample, tracing[i],
+                                        )
+                                        .map_err(|e| {
+                                            format!(
+                                                "command {number}, pixel {},{}, fragment shader: {e}",
+                                                fragments[i].x, fragments[i].y
+                                            )
+                                        })?;
+                                    if !e.trace.is_empty() {
+                                        shader_traces
+                                            .borrow_mut()
+                                            .push((fragments[i].primitive, e.trace));
+                                    }
+                                    colors[i] = Some(Color(e.outputs[0]));
+                                }
+                            }
+                            Ok(colors)
                         },
                     )?;
+                    r.stats.shader_packets += packets.get();
+                    if simd {
+                        r.stats.shader_packet_lanes += r.stats.shaded - previous;
+                    }
                     stats.shader_traces.extend(shader_traces.into_inner());
                     let shaded = r.stats.shaded - previous;
                     let count_samples = |p: &Program| {

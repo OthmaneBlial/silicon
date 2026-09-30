@@ -5,6 +5,8 @@ const TILE: u32 = 16;
 #[derive(Clone, Debug, Default)]
 pub struct Statistics {
     pub shader_time: Duration,
+    pub shader_packets: u64,
+    pub shader_packet_lanes: u64,
     pub vertices: u64,
     pub triangles: u64,
     pub clipped: u64,
@@ -43,6 +45,15 @@ struct ScreenVertex {
     z: f32,
     inv_w: f32,
     varyings: [Vec4; 4],
+}
+#[derive(Clone, Copy)]
+struct PreparedFragment {
+    input: Fragment,
+    index: usize,
+    previous_depth: f32,
+    stencil_pass: bool,
+    depth_pass: bool,
+    debug: bool,
 }
 fn edge(a: ScreenVertex, b: ScreenVertex, x: i64, y: i64) -> i64 {
     (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x)
@@ -102,6 +113,30 @@ impl Renderer {
         V: Fn(&Vertex) -> Result<VertexOutput>,
         F: Fn(&Fragment) -> Result<Option<Color>>,
     {
+        self.try_draw_packets(vertices, indices, pipeline, vertex, |inputs, mask| {
+            let mut colors = [None; 4];
+            for i in 0..4 {
+                if mask & (1 << i) != 0 {
+                    colors[i] = fragment(&inputs[i])?;
+                }
+            }
+            Ok(colors)
+        })
+    }
+    /// Four adjacent fragments, masked after coverage/stencil/depth testing.
+    /// Each active lane owns a distinct pixel; the shader must respect `mask`.
+    pub fn try_draw_packets<V, F>(
+        &mut self,
+        vertices: &[Vertex],
+        indices: Option<&[u32]>,
+        pipeline: Pipeline,
+        vertex: V,
+        fragment: F,
+    ) -> Result<()>
+    where
+        V: Fn(&Vertex) -> Result<VertexOutput>,
+        F: Fn(&[Fragment; 4], u8) -> Result<[Option<Color>; 4]>,
+    {
         let count = indices.map_or(vertices.len(), |i| i.len());
         if !count.is_multiple_of(3) {
             return Err("triangle list draw requires a multiple of 3 vertices/indices".into());
@@ -142,7 +177,7 @@ impl Renderer {
         self.stats.raster_time += start.elapsed();
         Ok(())
     }
-    fn triangle<F: Fn(&Fragment) -> Result<Option<Color>>>(
+    fn triangle<F: Fn(&[Fragment; 4], u8) -> Result<[Option<Color>; 4]>>(
         &mut self,
         v: [VertexOutput; 3],
         primitive: u32,
@@ -219,12 +254,15 @@ impl Renderer {
                     let step = edges.map(|(a, b)| -(b.y - a.y) * SUBPIXEL);
                     for x in (tx..end_x).step_by(4) {
                         let mask = simd::coverage4(e, step, inclusive, self.backend);
+                        let mut prepared = [None; 4];
+                        let mut inputs = [Fragment::default(); 4];
+                        let mut active = 0u8;
                         for lane in 0..(end_x - x).min(4) {
                             if mask & (1 << lane) != 0 {
                                 let bary = std::array::from_fn(|i| {
                                     (e[i] + step[i] * lane as i64) as f32 * inv_area
                                 });
-                                self.fragment(
+                                let p = self.prepare_fragment(
                                     x + lane,
                                     y,
                                     primitive,
@@ -233,8 +271,34 @@ impl Renderer {
                                     dy,
                                     s,
                                     state,
-                                    shader,
                                 )?;
+                                if let Some(p) = p {
+                                    inputs[lane as usize] = p.input;
+                                    if p.depth_pass && p.stencil_pass {
+                                        active |= 1 << lane;
+                                    }
+                                    prepared[lane as usize] = Some(p);
+                                }
+                            }
+                        }
+                        self.stats.shaded += active.count_ones() as u64;
+                        let start = (self.profile_shaders && active != 0).then(Instant::now);
+                        let outputs = if active == 0 {
+                            [None; 4]
+                        } else {
+                            shader(&inputs, active)?
+                        };
+                        if let Some(start) = start {
+                            self.stats.shader_time += start.elapsed();
+                        }
+                        for lane in 0..4 {
+                            if let Some(p) = prepared[lane] {
+                                let output = if active & (1 << lane) != 0 {
+                                    outputs[lane]
+                                } else {
+                                    None
+                                };
+                                self.finish_fragment(p, output, state)?;
                             }
                         }
                         for i in 0..3 {
@@ -247,7 +311,7 @@ impl Renderer {
         Ok(())
     }
     #[allow(clippy::too_many_arguments)]
-    fn fragment<F: Fn(&Fragment) -> Result<Option<Color>>>(
+    fn prepare_fragment(
         &mut self,
         x: u32,
         y: u32,
@@ -257,8 +321,7 @@ impl Renderer {
         dy: [f32; 3],
         s: [ScreenVertex; 3],
         state: Pipeline,
-        shader: &F,
-    ) -> Result<()> {
+    ) -> Result<Option<PreparedFragment>> {
         self.stats.fragments += 1;
         let index = (y * self.framebuffer.width + x) as usize;
         let z = (0..3).map(|i| bary[i] * s[i].z).sum::<f32>().clamp(0., 1.);
@@ -279,7 +342,7 @@ impl Renderer {
             self.stencil_op(index, state.stencil.map(|s| (s, s.depth_fail)));
         }
         if !debug && (!stencil_pass || !depth_pass) {
-            return Ok(());
+            return Ok(None);
         }
         let interpolate = |b: [f32; 3]| {
             let weights = std::array::from_fn::<_, 3, _>(|i| b[i] * s[i].inv_w);
@@ -313,16 +376,30 @@ impl Renderer {
             uv_dx: Vec2::new(vx[1].x - varyings[1].x, vx[1].y - varyings[1].y),
             uv_dy: Vec2::new(vy[1].x - varyings[1].x, vy[1].y - varyings[1].y),
         };
-        let shader_start = (self.profile_shaders && stencil_pass && depth_pass).then(Instant::now);
-        let output = if stencil_pass && depth_pass {
-            self.stats.shaded += 1;
-            shader(&input)?
-        } else {
-            None
-        };
-        if let Some(start) = shader_start {
-            self.stats.shader_time += start.elapsed();
-        }
+        Ok(Some(PreparedFragment {
+            input,
+            index,
+            previous_depth: old_depth,
+            stencil_pass,
+            depth_pass,
+            debug,
+        }))
+    }
+    fn finish_fragment(
+        &mut self,
+        prepared: PreparedFragment,
+        output: Option<Color>,
+        state: Pipeline,
+    ) -> Result<()> {
+        let PreparedFragment {
+            input,
+            index,
+            previous_depth: old_depth,
+            stencil_pass,
+            depth_pass,
+            debug,
+        } = prepared;
+        let z = input.depth;
         if debug {
             self.traces.push(PixelTrace {
                 fragment: input,
@@ -497,6 +574,8 @@ impl Renderer {
             self.stats.early_z_rejected += band.stats.early_z_rejected;
             self.stats.stencil_rejected += band.stats.stencil_rejected;
             self.stats.shader_time += band.stats.shader_time;
+            self.stats.shader_packets += band.stats.shader_packets;
+            self.stats.shader_packet_lanes += band.stats.shader_packet_lanes;
             self.stats.vertex_time += band.stats.vertex_time;
             self.stats.raster_time += band.stats.raster_time;
             self.traces.extend(band.traces);

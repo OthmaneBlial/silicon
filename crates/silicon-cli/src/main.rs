@@ -28,6 +28,7 @@ struct Options {
     pixel: Option<(u32, u32)>,
     backend: Backend,
     threads: usize,
+    benchmark_report: Option<String>,
 }
 fn options(args: &[String]) -> Result<Options> {
     let name = args
@@ -60,6 +61,7 @@ fn options(args: &[String]) -> Result<Options> {
         pixel: None,
         backend: Backend::Scalar,
         threads: 1,
+        benchmark_report: None,
     };
     let mut i = usize::from(args.first().is_some_and(|s| !s.starts_with('-')));
     while i < args.len() {
@@ -81,6 +83,7 @@ fn options(args: &[String]) -> Result<Options> {
             "--time" => o.scene.time = value.parse()?,
             "--output" => o.output = value.clone(),
             "--frames" => o.frames = value.parse()?,
+            "--report" => o.benchmark_report = Some(value.clone()),
             "--capture" => o.capture = Some(value.clone()),
             "--pixel" => {
                 let (x, y) = value.split_once(',').ok_or("--pixel requires x,y")?;
@@ -147,6 +150,15 @@ fn report(r: &Renderer, elapsed: f64, submission: Option<&Submission>) {
         r.stats.vertex_time.as_secs_f64() * 1000.,
         r.stats.raster_time.as_secs_f64() * 1000.
     );
+    if r.stats.shader_packets > 0 {
+        println!("Shader SIMD: {}", shader::packet_backend_name());
+        println!(
+            "Fragment shader packets: {} | active lanes: {} | occupancy: {:.1}%",
+            r.stats.shader_packets,
+            r.stats.shader_packet_lanes,
+            r.stats.shader_packet_lanes as f64 / (r.stats.shader_packets * 4) as f64 * 100.
+        );
+    }
     if r.profile_shaders {
         println!(
             "Fragment shader accumulated time: {:.3} ms (instrumented)",
@@ -177,7 +189,7 @@ fn run() -> Result<()> {
     let command = args.first().map_or("help", String::as_str);
     if command == "help" || command == "--help" {
         println!(
-            "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n  silicon inspect-shader shader.spv\n  silicon render-shaders vertex.spv fragment.spv [render options]\n\nExecution: --backend scalar|simd --threads 1..64\nScenes: showcase, cube, textured_cube, triangle_3d, shader_cube, spirv_cube, spirv_showcase\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
+            "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N --report timings.json]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n  silicon inspect-shader shader.spv\n  silicon render-shaders vertex.spv fragment.spv [render options]\n\nExecution: --backend scalar|simd --threads 1..64\nScenes: showcase, cube, textured_cube, triangle_3d, shader_cube, spirv_cube, spirv_showcase\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
         );
         return Ok(());
     }
@@ -188,6 +200,10 @@ fn run() -> Result<()> {
             std::env::consts::ARCH,
             std::env::consts::OS,
             std::thread::available_parallelism().map_or(1, usize::from)
+        );
+        println!(
+            "Available SIR packet backend: {}",
+            shader::packet_backend_name()
         );
         return Ok(());
     }
@@ -303,6 +319,9 @@ fn run() -> Result<()> {
     }
     let mut o = options(&args[1..])?;
     let mut r = Renderer::new(o.scene.width, o.scene.height)?;
+    if o.benchmark_report.is_some() && command != "benchmark" {
+        return Err("--report is a benchmark option".into());
+    }
     r.profile_shaders = command == "profile";
     r.debug_pixel = o.pixel;
     r.backend = o.backend;
@@ -317,12 +336,38 @@ fn run() -> Result<()> {
         let mut times = Vec::with_capacity(count);
         let mut total_shaded = 0u64;
         let mut total_triangles = 0u64;
+        let mut total_packets = 0u64;
+        let mut packet_lanes = 0u64;
         for _ in 0..count {
             let start = Instant::now();
             frame(&mut r, &o.scene, o.threads)?;
             times.push(start.elapsed().as_secs_f64());
             total_shaded += r.stats.shaded;
             total_triangles += r.stats.triangles;
+            total_packets += r.stats.shader_packets;
+            packet_lanes += r.stats.shader_packet_lanes;
+        }
+        if let Some(path) = &o.benchmark_report {
+            let path = Path::new(path);
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent)?;
+            }
+            let data = serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "scene": o.scene,
+                "coverage_backend": simd::name(o.backend),
+                "shader_packet_backend": if total_packets > 0 {
+                    Some(shader::packet_backend_name())
+                } else { None },
+                "workers": o.threads,
+                "warmups": 3,
+                "frame_ms": times.iter().map(|t| t * 1000.).collect::<Vec<_>>(),
+                "logical_shaded_fragments": total_shaded,
+                "submitted_triangles": total_triangles,
+                "shader_packets": total_packets,
+                "packet_active_lanes": packet_lanes,
+            });
+            std::fs::write(path, serde_json::to_vec_pretty(&data)?)?;
         }
         times.sort_by(f64::total_cmp);
         let total: f64 = times.iter().sum();

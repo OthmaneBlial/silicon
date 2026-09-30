@@ -1,6 +1,8 @@
 //! SIR: a bounded, validated vec4 register machine shared by both shader stages.
 use serde::{Deserialize, Serialize};
 use silicon_math::Vec4;
+mod lanes;
+mod packet;
 pub mod spirv;
 pub type Result<T> = std::result::Result<T, String>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -536,6 +538,22 @@ impl Program {
         Ok(result)
     }
 }
+/// Float arithmetic across four independent SIR invocations.
+pub fn packet_backend_name() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    {
+        "NEON shader4"
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        "SSE shader4"
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        "portable shader packet4"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
