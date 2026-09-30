@@ -14,6 +14,7 @@ p.add_argument('--baseline', required=True, type=Path)
 p.add_argument('--baseline-report', action='store_true', help='retain per-frame JSON when the baseline CLI supports --report')
 p.add_argument('--binary', default=Path('target/release/silicon'), type=Path)
 p.add_argument('--frames', default=20, type=int)
+p.add_argument('--scene', default='spirv_showcase')
 p.add_argument('--output', default=Path('output/comparison.json'), type=Path)
 a = p.parse_args()
 if a.frames < 1:
@@ -43,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix='silicon-benchmark-') as temporary:
     report = Path(temporary) / 'frames.json'
     for round_number, configurations_in_round in enumerate((configurations, configurations[::-1])):
         for label, path, backend, workers in configurations_in_round:
-            command = [str(path), 'benchmark', 'spirv_showcase', '--frames', str(a.frames),
+            command = [str(path), 'benchmark', a.scene, '--frames', str(a.frames),
                        '--backend', backend, '--threads', str(workers)]
             retain_report = label == 'current' or a.baseline_report
             if retain_report:

@@ -1,5 +1,27 @@
 # Performance measurements
 
+## 0.5 control-flow checkpoint
+
+The [pre-optimization alternating record](../benchmarks/apple-m2-control-before-counters-2026-10-01.json)
+uses the released 0.4 executable and control-flow source commit
+`204361fbf8f53e7a534c3fa8342020f2870abb72`, each with 3 warmups,
+20 timed frames, 960×640, scene time 0, and reversed configuration order.
+It retains per-frame reports from both executables. No other SILICON build,
+test or render ran during this comparison; the Mac remained a shared desktop.
+
+Large drift occurred in both executables: baseline SIMD/one-worker median
+changed from 1390.28 to 795.06 ms; the initial control-flow SIMD median changed
+from 2480.51 to 1038.73 ms. These runs do not establish a regression or speedup,
+and are not the final packaged executable's measurements.
+
+A subsequent three-second native CPU sample of the initial 0.5 executable
+(SHA-256 `764fb7b5f10c214d35252e636cc280c0cd502a50cad0342869c3b83c28775f9d`)
+and ARM64 disassembly located repeated result-counter loads/adds/stores in the
+fragment VM. The counter update now increments one of sixteen execution-mask
+buckets and reconstructs per-fragment totals after the program, while traces
+use a combined mask to bypass the per-lane tracing loop when disabled.
+All-mask scalar/packet tests retain identical instruction totals and traces.
+
 ## 0.4 masked shader packets
 
 The [alternating raw record](../benchmarks/apple-m2-packets-2026-09-30.json)
