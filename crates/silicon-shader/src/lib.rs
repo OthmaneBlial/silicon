@@ -52,6 +52,32 @@ pub enum Instruction {
         a: u8,
         b: u8,
     },
+    Min {
+        dst: u8,
+        a: u8,
+        b: u8,
+    },
+    Max {
+        dst: u8,
+        a: u8,
+        b: u8,
+    },
+    Mix {
+        dst: u8,
+        a: u8,
+        b: u8,
+        t: u8,
+    },
+    Length {
+        dst: u8,
+        src: u8,
+        components: u8,
+    },
+    Normalize {
+        dst: u8,
+        src: u8,
+        components: u8,
+    },
     Normalize3 {
         dst: u8,
         src: u8,
@@ -91,6 +117,59 @@ pub enum Instruction {
         slot: u8,
         src: u8,
     },
+}
+impl Instruction {
+    /// Visit sources before the destination, including repeated source operands.
+    fn map_registers(&mut self, mut f: impl FnMut(u8, bool) -> Result<u8>) -> Result<()> {
+        use Instruction::*;
+        let dst = match self {
+            Input { dst, .. } | Uniform { dst, .. } | Const { dst, .. } => dst,
+            Add { dst, a, b }
+            | Sub { dst, a, b }
+            | Mul { dst, a, b }
+            | Div { dst, a, b }
+            | Dot3 { dst, a, b }
+            | Dot4 { dst, a, b }
+            | Pow { dst, a, b }
+            | Min { dst, a, b }
+            | Max { dst, a, b } => {
+                *a = f(*a, false)?;
+                *b = f(*b, false)?;
+                dst
+            }
+            Mix { dst, a, b, t } => {
+                *a = f(*a, false)?;
+                *b = f(*b, false)?;
+                *t = f(*t, false)?;
+                dst
+            }
+            Normalize3 { dst, src }
+            | Saturate { dst, src }
+            | Normalize { dst, src, .. }
+            | Length { dst, src, .. }
+            | Swizzle { dst, src, .. }
+            | Mat4 { dst, src, .. } => {
+                *src = f(*src, false)?;
+                dst
+            }
+            Compose { dst, sources, .. } => {
+                for src in sources {
+                    *src = f(*src, false)?;
+                }
+                dst
+            }
+            Sample { dst, uv, .. } | SampleImplicit { dst, uv, .. } => {
+                *uv = f(*uv, false)?;
+                dst
+            }
+            Output { src, .. } => {
+                *src = f(*src, false)?;
+                return Ok(());
+            }
+        };
+        *dst = f(*dst, true)?;
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(try_from = "Vec<Instruction>", into = "Vec<Instruction>")]
@@ -161,9 +240,33 @@ impl Program {
                 | Instruction::Div { dst, a, b }
                 | Instruction::Dot3 { dst, a, b }
                 | Instruction::Dot4 { dst, a, b }
+                | Instruction::Min { dst, a, b }
+                | Instruction::Max { dst, a, b }
                 | Instruction::Pow { dst, a, b } => {
                     source(a)?;
                     source(b)?;
+                    Some(dst)
+                }
+                Instruction::Mix { dst, a, b, t } => {
+                    source(a)?;
+                    source(b)?;
+                    source(t)?;
+                    Some(dst)
+                }
+                Instruction::Length {
+                    dst,
+                    src,
+                    components,
+                }
+                | Instruction::Normalize {
+                    dst,
+                    src,
+                    components,
+                } => {
+                    source(src)?;
+                    if !(1..=4).contains(&components) {
+                        return Err("SIR vector component count requires 1..4".into());
+                    }
                     Some(dst)
                 }
                 Instruction::Normalize3 { dst, src } | Instruction::Saturate { dst, src } => {
@@ -298,6 +401,58 @@ impl Program {
                         Some(dst),
                         Vec4::from_array(std::array::from_fn(|i| a[i].powf(b[i]))),
                     )
+                }
+                Instruction::Min { dst, a, b } | Instruction::Max { dst, a, b } => {
+                    let a = regs[a as usize].to_array();
+                    let b = regs[b as usize].to_array();
+                    (
+                        Some(dst),
+                        Vec4::from_array(std::array::from_fn(|i| {
+                            if matches!(op, Instruction::Min { .. }) {
+                                a[i].min(b[i])
+                            } else {
+                                a[i].max(b[i])
+                            }
+                        })),
+                    )
+                }
+                Instruction::Mix { dst, a, b, t } => {
+                    let a = regs[a as usize].to_array();
+                    let b = regs[b as usize].to_array();
+                    let t = regs[t as usize].to_array();
+                    (
+                        Some(dst),
+                        Vec4::from_array(std::array::from_fn(|i| a[i] * (1. - t[i]) + b[i] * t[i])),
+                    )
+                }
+                Instruction::Length {
+                    dst,
+                    src,
+                    components,
+                }
+                | Instruction::Normalize {
+                    dst,
+                    src,
+                    components,
+                } => {
+                    let v = regs[src as usize].to_array();
+                    let length = v[..components as usize]
+                        .iter()
+                        .map(|x| x * x)
+                        .sum::<f32>()
+                        .sqrt();
+                    let value = if matches!(op, Instruction::Length { .. }) {
+                        Vec4::new(length, length, length, length)
+                    } else {
+                        Vec4::from_array(std::array::from_fn(|i| {
+                            if length > 0. && (i < components as usize || components == 1) {
+                                v[if components == 1 { 0 } else { i }] / length
+                            } else {
+                                0.
+                            }
+                        }))
+                    };
+                    (Some(dst), value)
                 }
                 Instruction::Normalize3 { dst, src } => (
                     Some(dst),

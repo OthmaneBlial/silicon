@@ -120,10 +120,13 @@ impl Op {
             0 | 56 | 253 => (0, 0),
             19 | 17 | 248 => (1, 1),
             14 | 16 | 22 => (2, 2),
-            21 | 23 | 24 | 32 | 43 | 59 | 61 | 83 => (3, 3),
+            21 | 23 | 24 | 32 | 43 | 61 | 83 => (3, 3),
+            59 => (3, 4),
+            65 => (4, 5),
+            12 => (5, 7),
             25 => (8, 8),
             27 => (2, 2),
-            54 | 65 | 81 | 87 | 129 | 131 | 133 | 136 | 142 | 145 | 148 => (4, 4),
+            54 | 81 | 87 | 129 | 131 | 133 | 136 | 142 | 145 | 148 => (4, 4),
             62 => (2, 2),
             3 => (2, 2),
             5 | 11 => (2, usize::MAX),
@@ -173,7 +176,20 @@ impl Op {
             25 => (Some(a[0]), vec![a[1]]),
             30 => (Some(a[0]), a[1..].to_vec()),
             32 => (Some(a[0]), vec![a[2]]),
-            43 | 59 => (Some(a[1]), vec![a[0]]),
+            43 => (Some(a[1]), vec![a[0]]),
+            59 => (
+                Some(a[1]),
+                std::iter::once(a[0])
+                    .chain(a[3..].iter().copied())
+                    .collect(),
+            ),
+            12 => (
+                Some(a[1]),
+                [a[0], a[2]]
+                    .into_iter()
+                    .chain(a[4..].iter().copied())
+                    .collect(),
+            ),
             54 => (Some(a[1]), vec![a[0], a[3]]),
             44 | 80 | 65 => {
                 let mut r = vec![a[0]];
@@ -294,7 +310,7 @@ enum Ty {
 enum Value {
     Reg(u8, bool),
     Int(u32),
-    Pointer { root: u32, member: Option<usize> },
+    Pointer { root: u32, path: Vec<usize> },
     Matrix(u8),
     Texture(u8),
 }
@@ -321,9 +337,10 @@ struct Compiler<'a> {
     interfaces: BTreeSet<u32>,
     types: BTreeMap<u32, Ty>,
     values: BTreeMap<u32, Typed>,
+    locals: BTreeMap<u32, Typed>,
     decorations: BTreeMap<(u32, Option<usize>), Decoration>,
     ops: Vec<Sir>,
-    next: u8,
+    next: u16,
     inputs: BTreeMap<u8, u8>,
     outputs: BTreeMap<u8, u8>,
     written: BTreeSet<u8>,
@@ -434,6 +451,7 @@ impl<'a> Compiler<'a> {
             interfaces,
             types: BTreeMap::new(),
             values: BTreeMap::new(),
+            locals: BTreeMap::new(),
             decorations,
             ops: vec![Sir::Const {
                 dst: 0,
@@ -472,10 +490,11 @@ impl<'a> Compiler<'a> {
         }
     }
     fn emit(&mut self, f: impl FnOnce(u8) -> Sir) -> Result<u8> {
-        if self.next >= 64 {
-            return Err("SPIR-V lowering exceeds 64 SIR registers".into());
+        // ponytail: bounded virtual SSA IDs; widen only when a real shader needs more.
+        if self.next >= 256 {
+            return Err("SPIR-V lowering exceeds 256 virtual registers".into());
         }
-        let r = self.next;
+        let r = self.next as u8;
         self.next += 1;
         self.ops.push(f(r));
         Ok(r)
@@ -498,15 +517,15 @@ impl<'a> Compiler<'a> {
             lanes,
         })
     }
-    fn pointer(&self, id: u32) -> Result<(u32, Option<usize>, u32, u32)> {
+    fn pointer(&self, id: u32) -> Result<(u32, Vec<usize>, u32, u32)> {
         let v = self.value(id)?;
         let Ty::Pointer(storage, base) = self.ty(v.ty)? else {
             return Err("expected pointer type".into());
         };
-        let Value::Pointer { root, member } = v.value else {
+        let Value::Pointer { root, path } = v.value else {
             return Err("expected logical variable pointer".into());
         };
-        Ok((root, member, storage, base))
+        Ok((root, path, storage, base))
     }
     fn slot(&self, root: u32, member: Option<usize>) -> Result<u8> {
         let (_, _, _, base) = self.pointer(root)?;
@@ -542,6 +561,9 @@ impl<'a> Compiler<'a> {
             return Err("interface variables cannot carry descriptor decorations".into());
         }
         let t = self.ty(base)?;
+        if a.len() == 4 && storage != 7 {
+            return Err("only local variables may have an initializer".into());
+        }
         match storage {
             0 => {
                 if t != Ty::Sampled || d.set != Some(1) || d.binding.is_none_or(|b| b > 15) {
@@ -565,23 +587,16 @@ impl<'a> Compiler<'a> {
             }
             2 => {
                 let Ty::Struct(m) = t else {
-                    return Err("uniform requires a one-mat4 block".into());
+                    return Err("uniform requires a one-member float/vector/mat4 block".into());
                 };
                 let md = self.decoration(base, Some(0));
                 if m.len() != 1
-                    || self.ty(m[0])? != Ty::Matrix
                     || !self.decoration(base, None).block
                     || d.set != Some(0)
                     || d.binding.is_none_or(|b| b > 15)
-                    || md
-                        != (Decoration {
-                            col_major: true,
-                            stride: Some(16),
-                            offset: Some(0),
-                            ..Default::default()
-                        })
+                    || md != self.uniform_layout(m[0])?
                 {
-                    return Err("uniform requires a col-major mat4 block, stride 16, offset 0, set 0, binding 0..15".into());
+                    return Err("uniform requires offset 0, set 0, binding 0..15; mat4 requires col-major stride 16".into());
                 }
             }
             3 => {
@@ -626,6 +641,19 @@ impl<'a> Compiler<'a> {
                     }
                 }
             }
+            7 => {
+                self.lanes(base)?;
+                if d != Decoration::default() {
+                    return Err("local variables cannot have resource/interface decorations".into());
+                }
+                if a.len() == 4 {
+                    let v = self.value(a[3])?;
+                    if v.ty != base || !matches!(v.value, Value::Reg(..)) {
+                        return Err("local initializer type mismatch".into());
+                    }
+                    self.locals.insert(a[1], v);
+                }
+            }
             _ => return Err(format!("unsupported storage class {storage}")),
         }
         self.values.insert(
@@ -634,11 +662,39 @@ impl<'a> Compiler<'a> {
                 ty: a[0],
                 value: Value::Pointer {
                     root: a[1],
-                    member: None,
+                    path: vec![],
                 },
             },
         );
         Ok(())
+    }
+    fn uniform_layout(&self, ty: u32) -> Result<Decoration> {
+        match self.ty(ty)? {
+            Ty::Matrix => Ok(Decoration {
+                col_major: true,
+                stride: Some(16),
+                offset: Some(0),
+                ..Default::default()
+            }),
+            Ty::Float | Ty::Vector(_) => Ok(Decoration {
+                offset: Some(0),
+                ..Default::default()
+            }),
+            _ => Err("unsupported uniform member type".into()),
+        }
+    }
+    fn canonical(&mut self, r: u8, n: u8) -> Result<u8> {
+        if n == 1 {
+            self.emit(|dst| Sir::Swizzle {
+                dst,
+                src: r,
+                lanes: [0; 4],
+            })
+        } else if n < 4 {
+            self.compose(&(0..n).map(|i| (r, i)).collect::<Vec<_>>(), n)
+        } else {
+            Ok(r)
+        }
     }
     fn instruction(&mut self, op: &Op) -> Result<()> {
         let a = &op.operands;
@@ -688,14 +744,15 @@ impl<'a> Compiler<'a> {
                 self.types.insert(a[0], Ty::Sampled);
             }
             30 => {
-                if a.len() != 2 || !matches!(self.ty(a[1])?, Ty::Vector(4) | Ty::Matrix) {
-                    return Err("struct supports one Position vec4 or uniform mat4 member".into());
+                if a.len() != 2 || !matches!(self.ty(a[1])?, Ty::Float | Ty::Vector(_) | Ty::Matrix)
+                {
+                    return Err("struct supports one float/vector/mat4 member".into());
                 }
                 self.types.insert(a[0], Ty::Struct(a[1..].to_vec()));
             }
             32 => {
                 self.ty(a[2])?;
-                if ![0, 1, 2, 3].contains(&a[1]) {
+                if ![0, 1, 2, 3, 7].contains(&a[1]) {
                     return Err("unsupported pointer storage class".into());
                 }
                 self.types.insert(a[0], Ty::Pointer(a[1], a[2]));
@@ -728,81 +785,157 @@ impl<'a> Compiler<'a> {
             }
             59 => self.variable(a)?,
             65 => {
-                let (root, member, storage, base) = self.pointer(a[2])?;
-                if member.is_some() {
-                    return Err("nested access chains are unsupported".into());
+                let (root, mut path, storage, mut base) = self.pointer(a[2])?;
+                let Ty::Pointer(result_storage, target) = self.ty(a[0])? else {
+                    return Err("access chain result must be a pointer".into());
+                };
+                for &id in &a[3..] {
+                    let Value::Int(index) = self.value(id)?.value else {
+                        return Err("access chain index requires an integer constant".into());
+                    };
+                    base = match self.ty(base)? {
+                        Ty::Struct(m) if [2, 3].contains(&storage) => *m.get(index as usize).ok_or("struct member index out of bounds")?,
+                        Ty::Vector(n) if [2, 7].contains(&storage) && index < u32::from(n) && self.ty(target)? == Ty::Float => target,
+                        _ => return Err("access chain supports uniform members and uniform/local vector components".into()),
+                    };
+                    path.push(index as usize);
                 }
-                let Value::Int(index) = self.value(a[3])?.value else {
-                    return Err("access chain index requires an integer constant".into());
-                };
-                let Ty::Struct(m) = self.ty(base)? else {
-                    return Err("only uniform/output struct member access is supported".into());
-                };
-                let ty = *m
-                    .get(index as usize)
-                    .ok_or("struct member index out of bounds")?;
-                if ![2, 3].contains(&storage) || self.ty(a[0])? != Ty::Pointer(storage, ty) {
+                if path.len() > 2 || storage != result_storage || base != target {
                     return Err("access chain result pointer type/storage mismatch".into());
                 }
                 self.values.insert(
                     a[1],
                     Typed {
                         ty: a[0],
-                        value: Value::Pointer {
-                            root,
-                            member: Some(index as usize),
-                        },
+                        value: Value::Pointer { root, path },
                     },
                 );
             }
             61 => {
-                let (root, member, storage, base) = self.pointer(a[2])?;
+                let (root, path, storage, base) = self.pointer(a[2])?;
                 if a[0] != base {
                     return Err("load result/pointee type mismatch".into());
                 }
                 let d = self.decoration(root, None);
-                let value = match storage {
-                    0 => Value::Texture(d.binding.ok_or("sampler lacks binding")? as u8),
-                    1 => {
-                        if member.is_some() {
-                            return Err("input member loads unsupported".into());
+                let value =
+                    match storage {
+                        0 if path.is_empty() => {
+                            Value::Texture(d.binding.ok_or("sampler lacks binding")? as u8)
                         }
-                        let slot = d.location.ok_or("input lacks location")? as u8;
-                        let n = self.lanes(base)?;
-                        let r = self.emit(|dst| Sir::Input { dst, slot })?;
-                        let r = if n == 1 {
-                            self.emit(|dst| Sir::Swizzle {
-                                dst,
-                                src: r,
-                                lanes: [0; 4],
-                            })?
-                        } else if n < 4 {
-                            self.compose(&(0..n).map(|i| (r, i)).collect::<Vec<_>>(), n)?
-                        } else {
-                            r
-                        };
-                        Value::Reg(r, self.stage == Stage::Fragment && slot == 1 && n == 2)
-                    }
-                    2 if member == Some(0) && self.ty(base)? == Ty::Matrix => {
-                        Value::Matrix(d.binding.ok_or("uniform lacks binding")? as u8 * 4)
-                    }
-                    _ => {
-                        return Err(
-                            "load supports input, sampler and uniform mat4 members only".into()
-                        );
-                    }
-                };
+                        1 if path.is_empty() => {
+                            let slot = d.location.ok_or("input lacks location")? as u8;
+                            let n = self.lanes(base)?;
+                            let r = self.emit(|dst| Sir::Input { dst, slot })?;
+                            let r = self.canonical(r, n)?;
+                            Value::Reg(r, self.stage == Stage::Fragment && slot == 1 && n == 2)
+                        }
+                        2 if path.first() == Some(&0) => {
+                            let uniform = d.binding.ok_or("uniform lacks binding")? as u8 * 4;
+                            if self.ty(base)? == Ty::Matrix && path.len() == 1 {
+                                Value::Matrix(uniform)
+                            } else {
+                                let r = self.emit(|dst| Sir::Uniform { dst, slot: uniform })?;
+                                let r = if path.len() == 2 {
+                                    let lane = path[1] as u8;
+                                    self.emit(|dst| Sir::Swizzle {
+                                        dst,
+                                        src: r,
+                                        lanes: [lane; 4],
+                                    })?
+                                } else {
+                                    self.canonical(r, self.lanes(base)?)?
+                                };
+                                Value::Reg(r, false)
+                            }
+                        }
+                        7 => {
+                            let local = self
+                                .locals
+                                .get(&root)
+                                .cloned()
+                                .ok_or("local variable loaded before initialization")?;
+                            let Value::Reg(r, uv) = local.value else {
+                                unreachable!()
+                            };
+                            if path.is_empty() {
+                                Value::Reg(r, uv)
+                            } else if path.len() == 1 {
+                                let lane = path[0] as u8;
+                                Value::Reg(
+                                    self.emit(|dst| Sir::Swizzle {
+                                        dst,
+                                        src: r,
+                                        lanes: [lane; 4],
+                                    })?,
+                                    false,
+                                )
+                            } else {
+                                return Err("nested local access unsupported".into());
+                            }
+                        }
+                        _ => return Err(
+                            "load supports inputs, sampler/uniform bindings and local variables"
+                                .into(),
+                        ),
+                    };
                 self.values.insert(a[1], Typed { ty: a[0], value });
             }
             62 => {
-                let (root, member, storage, base) = self.pointer(a[0])?;
-                let (r, t, _) = self.reg(a[1])?;
-                if storage != 3 || t != base {
-                    return Err("store supports matching output types only".into());
+                let (root, path, storage, base) = self.pointer(a[0])?;
+                let (r, t, uv) = self.reg(a[1])?;
+                if t != base {
+                    return Err("store value/pointee type mismatch".into());
                 }
-                let slot = self.slot(root, member)?;
-                self.ops.push(Sir::Output { slot, src: r });
-                self.written.insert(slot);
+                match storage {
+                    3 if path.len() <= 1 => {
+                        let slot = self.slot(root, path.first().copied())?;
+                        self.ops.push(Sir::Output { slot, src: r });
+                        self.written.insert(slot);
+                    }
+                    7 if path.is_empty() => {
+                        self.locals.insert(
+                            root,
+                            Typed {
+                                ty: t,
+                                value: Value::Reg(r, uv),
+                            },
+                        );
+                    }
+                    7 if path.len() == 1 => {
+                        let old = self
+                            .locals
+                            .get(&root)
+                            .cloned()
+                            .ok_or("component store requires an initialized local vector")?;
+                        let Value::Reg(previous, _) = old.value else {
+                            unreachable!()
+                        };
+                        let n = self.lanes(old.ty)?;
+                        let components: Vec<_> = (0..n)
+                            .map(|i| {
+                                if i as usize == path[0] {
+                                    (r, 0)
+                                } else {
+                                    (previous, i)
+                                }
+                            })
+                            .collect();
+                        let r = self.compose(&components, n)?;
+                        self.locals.insert(
+                            root,
+                            Typed {
+                                ty: old.ty,
+                                value: Value::Reg(r, false),
+                            },
+                        );
+                    }
+                    _ => {
+                        return Err(
+                            "store supports matching outputs and local float/vector variables"
+                                .into(),
+                        );
+                    }
+                }
             }
             44 | 80 => {
                 let n = self.lanes(a[0])?;
@@ -950,6 +1083,95 @@ impl<'a> Compiler<'a> {
                     },
                 );
             }
+            12 => {
+                if !self
+                    .module
+                    .instructions
+                    .iter()
+                    .any(|op| op.opcode == 11 && op.operands[0] == a[2])
+                {
+                    return Err("extended instruction set must be GLSL.std.450 import".into());
+                }
+                let count = match a[3] {
+                    66 | 69 => 1,
+                    26 | 37 | 40 => 2,
+                    43 | 46 => 3,
+                    _ => return Err(format!("unsupported GLSL.std.450 instruction {}", a[3])),
+                };
+                if a.len() != 4 + count {
+                    return Err("extended instruction operand count mismatch".into());
+                }
+                let mut regs = Vec::new();
+                let mut ty = None;
+                for &id in &a[4..] {
+                    let (r, t, _) = self.reg(id)?;
+                    if ty.is_some_and(|expected| expected != t) {
+                        return Err("extended instruction argument type mismatch".into());
+                    }
+                    ty = Some(t);
+                    regs.push(r);
+                }
+                let ty = ty.unwrap();
+                let n = self.lanes(ty)?;
+                if (a[3] == 66 && self.ty(a[0])? != Ty::Float) || (a[3] != 66 && a[0] != ty) {
+                    return Err("extended instruction result type mismatch".into());
+                }
+                let x = regs[0];
+                let r = match a[3] {
+                    26 => self.emit(|dst| Sir::Pow {
+                        dst,
+                        a: x,
+                        b: regs[1],
+                    })?,
+                    37 => self.emit(|dst| Sir::Min {
+                        dst,
+                        a: x,
+                        b: regs[1],
+                    })?,
+                    40 => self.emit(|dst| Sir::Max {
+                        dst,
+                        a: x,
+                        b: regs[1],
+                    })?,
+                    43 => {
+                        let r = self.emit(|dst| Sir::Max {
+                            dst,
+                            a: x,
+                            b: regs[1],
+                        })?;
+                        self.emit(|dst| Sir::Min {
+                            dst,
+                            a: r,
+                            b: regs[2],
+                        })?
+                    }
+                    46 => self.emit(|dst| Sir::Mix {
+                        dst,
+                        a: x,
+                        b: regs[1],
+                        t: regs[2],
+                    })?,
+                    66 => self.emit(|dst| Sir::Length {
+                        dst,
+                        src: x,
+                        components: n,
+                    })?,
+                    69 => self.emit(|dst| Sir::Normalize {
+                        dst,
+                        src: x,
+                        components: n,
+                    })?,
+                    _ => unreachable!(),
+                };
+                let r = if a[3] == 66 { r } else { self.canonical(r, n)? };
+                self.values.insert(
+                    a[1],
+                    Typed {
+                        ty: a[0],
+                        value: Value::Reg(r, false),
+                    },
+                );
+            }
             87 => {
                 let s = self.value(a[2])?;
                 let Value::Texture(texture) = s.value else {
@@ -979,6 +1201,7 @@ impl<'a> Compiler<'a> {
     fn run(mut self) -> Result<Compiled> {
         let mut phase = 0;
         let mut function = false;
+        let mut executable = false;
         for op in &self.module.instructions {
             match op.opcode {
                 54 => {
@@ -1012,16 +1235,26 @@ impl<'a> Compiler<'a> {
                     }
                     phase = 4;
                 }
+                59 if phase == 2 => {
+                    if executable || op.operands[2] != 7 {
+                        return Err(op.error("Function variables must start the first block"));
+                    }
+                    self.instruction(op).map_err(|e| op.error(e))?;
+                }
                 19..=44 | 59 => {
                     if phase != 0 {
                         return Err(op.error("declaration outside module scope"));
                     }
+                    if op.opcode == 59 && op.operands[2] == 7 {
+                        return Err(op.error("Function variable outside function"));
+                    }
                     self.instruction(op).map_err(|e| op.error(e))?;
                 }
-                61..=65 | 79..=87 | 129..=148 => {
+                12 | 61..=65 | 79..=87 | 129..=148 => {
                     if phase != 2 {
                         return Err(op.error("executable instruction outside main block"));
                     }
+                    executable = true;
                     self.instruction(op).map_err(|e| op.error(e))?;
                 }
                 _ => {
@@ -1049,7 +1282,7 @@ impl<'a> Compiler<'a> {
                     return Err("member decoration index out of bounds".into());
                 }
                 let expected = match self.ty(m[*i])? {
-                    Ty::Vector(4) => Decoration {
+                    Ty::Vector(4) if d.builtin == Some(0) => Decoration {
                         builtin: Some(0),
                         ..Default::default()
                     },
@@ -1059,6 +1292,7 @@ impl<'a> Compiler<'a> {
                         offset: Some(0),
                         ..Default::default()
                     },
+                    Ty::Float | Ty::Vector(_) => self.uniform_layout(m[*i])?,
                     _ => return Err("unsupported decorated struct member type".into()),
                 };
                 if *d != expected {
@@ -1080,7 +1314,7 @@ impl<'a> Compiler<'a> {
         }
         let mut positions = 0;
         for (&id, v) in &self.values {
-            if matches!(v.value, Value::Pointer { root, member: None } if root == id)
+            if matches!(&v.value, Value::Pointer { root, path } if *root == id && path.is_empty())
                 && let Ty::Pointer(3, base) = self.ty(v.ty)?
                 && (self.decoration(id, None).builtin == Some(0)
                     || self.decoration(base, Some(0)).builtin == Some(0))
@@ -1116,11 +1350,58 @@ impl<'a> Compiler<'a> {
         }
         Ok(Compiled {
             stage: self.stage,
-            program: Program::new(self.ops)?,
+            program: Program::new(allocate_registers(self.ops)?)?,
             inputs: self.inputs,
             outputs: self.outputs,
         })
     }
+}
+/// Reuse dead SSA temporaries; the runtime remains a 64-register machine.
+fn allocate_registers(mut ops: Vec<Sir>) -> Result<Vec<Sir>> {
+    let mut last = [None; 256];
+    for (pc, op) in ops.iter().enumerate() {
+        op.clone().map_registers(|r, dst| {
+            if !dst {
+                last[r as usize] = Some(pc);
+            }
+            Ok(r)
+        })?;
+    }
+    let mut assigned = [None; 256];
+    let mut free: Vec<u8> = (0..64).rev().collect();
+    for (pc, op) in ops.iter_mut().enumerate() {
+        let mut expired: BTreeSet<usize> = BTreeSet::new();
+        let mut destination = None;
+        op.map_registers(|r, dst| {
+            if dst {
+                for old in std::mem::take(&mut expired) {
+                    free.push(assigned[old].take().ok_or("invalid SSA lifetime")?);
+                }
+                if assigned[r as usize].is_some() {
+                    return Err("duplicate SSA definition".into());
+                }
+                let physical = free
+                    .pop()
+                    .ok_or("SPIR-V exceeds 64 simultaneously live SIR registers")?;
+                assigned[r as usize] = Some(physical);
+                destination = Some(r as usize);
+                Ok(physical)
+            } else {
+                let physical = assigned[r as usize].ok_or("SSA source used before definition")?;
+                if last[r as usize] == Some(pc) {
+                    expired.insert(r as usize);
+                }
+                Ok(physical)
+            }
+        })?;
+        for old in expired
+            .into_iter()
+            .chain(destination.filter(|&r| last[r].is_none()))
+        {
+            free.push(assigned[old].take().ok_or("invalid SSA lifetime")?);
+        }
+    }
+    Ok(ops)
 }
 /// Check stage order and every consumed varying before constructing a graphics pipeline.
 pub fn link(vertex: &Compiled, fragment: &Compiled) -> Result<()> {
@@ -1135,4 +1416,41 @@ pub fn link(vertex: &Compiled, fragment: &Compiled) -> Result<()> {
         }
     }
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn allocator_reuses_dead_values_and_rejects_excess_live_values() {
+        let mut ops: Vec<_> = (0..65)
+            .map(|dst| Sir::Const {
+                dst,
+                value: Vec4::new(dst as f32, 0., 0., 0.),
+            })
+            .collect();
+        ops.extend((0..65).map(|src| Sir::Output { slot: 0, src }));
+        assert!(
+            allocate_registers(ops)
+                .unwrap_err()
+                .contains("simultaneously live")
+        );
+        let mut ops = vec![Sir::Const {
+            dst: 0,
+            value: Vec4::new(1., 1., 1., 1.),
+        }];
+        for dst in 1..200 {
+            ops.push(Sir::Add {
+                dst,
+                a: dst - 1,
+                b: dst - 1,
+            });
+        }
+        ops.push(Sir::Output { slot: 0, src: 199 });
+        let ops = allocate_registers(ops).unwrap();
+        assert!(
+            ops.iter()
+                .all(|op| !matches!(op, Sir::Add { dst, .. } if *dst > 1))
+        );
+        Program::new(ops).unwrap();
+    }
 }

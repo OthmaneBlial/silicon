@@ -27,12 +27,12 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
     if !time.is_finite() {
         return Err("scene time must be finite".into());
     }
-    if name == "shader_cube" || name == "spirv_cube" {
+    if matches!(name, "shader_cube" | "spirv_cube" | "spirv_showcase") {
         let (width, height) = r.surface_size();
-        let capture = if name == "spirv_cube" {
-            spirv_cube(width, height, time)?
-        } else {
-            shader_cube(width, height, time)?
+        let capture = match name {
+            "spirv_showcase" => spirv_showcase(width, height, time)?,
+            "spirv_cube" => spirv_cube(width, height, time)?,
+            _ => shader_cube(width, height, time)?,
         };
         Device.submit(&capture.commands, r)?;
         return Ok(());
@@ -40,7 +40,6 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
     r.clear(Color::new(0.022, 0.032, 0.05, 1.));
     static TEXTURE: OnceLock<Texture> = OnceLock::new();
     let texture = TEXTURE.get_or_init(|| Texture::checker(128).expect("valid built-in checker"));
-    let cube = Mesh::cube();
     let eye = if name == "showcase" {
         Vec3::new(7.5, 5.8, 10.)
     } else {
@@ -61,7 +60,7 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
         0.1,
         60.,
     );
-    let mut draw = |mesh: &Mesh, model: Mat4, mat: Material, blend: Blend| -> Result<()> {
+    let draw = |mesh: &Mesh, model: Mat4, mat: Material, blend: Blend| -> Result<()> {
         let mvp = proj * view * model;
         let normal = Mat3::normal_matrix(model).ok_or("singular model transform")?;
         let pipeline = Pipeline {
@@ -125,6 +124,15 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
             },
         )
     };
+    visit_scene(name, time, draw)
+}
+/// Both shader backends draw the same geometry, transforms and materials.
+fn visit_scene(
+    name: &str,
+    time: f32,
+    mut draw: impl FnMut(&Mesh, Mat4, Material, Blend) -> Result<()>,
+) -> Result<()> {
+    let cube = Mesh::cube();
     match name {
         "cube" | "textured_cube" | "triangle_3d" => {
             let mesh = if name == "triangle_3d" {
@@ -326,8 +334,17 @@ pub fn shader_cube_with_programs(
     let mvp = crate::Mat4::perspective(0.78, width as f32 / height as f32, 0.1, 60.)
         * crate::Mat4::look_at(Vec3::new(4., 3., 5.), Vec3::ZERO, Vec3::new(0., 1., 0.))
         * model;
-    let mut uniforms: Vec<_> = mvp.0.into_iter().map(Vec4::from_array).collect();
-    uniforms.extend(model.0.into_iter().map(Vec4::from_array));
+    let uniforms = lighting_uniforms(
+        mvp,
+        model,
+        Material {
+            color: Color::WHITE,
+            textured: true,
+            metallic: 0.2,
+            emission: 0.,
+        },
+        Vec3::new(4., 3., 5.),
+    )?;
     let mut commands = device.commands();
     commands.begin_render_pass(Color::new(0.022, 0.032, 0.05, 1.));
     commands.bind_pipeline(Arc::new(ShaderPipeline {
@@ -373,4 +390,87 @@ pub fn spirv_cube(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
         .as_ref()
         .map_err(|e| e.clone())?;
     shader_cube_with_programs(width, height, time, programs.0.clone(), programs.1.clone())
+}
+
+fn lighting_uniforms(mvp: Mat4, model: Mat4, material: Material, eye: Vec3) -> Result<Vec<Vec4>> {
+    let normal = Mat3::normal_matrix(model).ok_or("singular model transform")?;
+    let mut uniforms = vec![Vec4::ZERO; 24];
+    for i in 0..4 {
+        uniforms[i] = Vec4::from_array(mvp.0[i]);
+        uniforms[i + 4] = Vec4::from_array(model.0[i]);
+    }
+    for i in 0..3 {
+        uniforms[i + 8] = Vec3::new(normal.0[i][0], normal.0[i][1], normal.0[i][2]).extend(0.);
+    }
+    uniforms[11] = Vec4::new(0., 0., 0., 1.);
+    uniforms[12] = material.color.0;
+    uniforms[16] = Vec4::new(
+        if material.textured { 1. } else { 0. },
+        material.metallic,
+        material.emission,
+        0.,
+    );
+    uniforms[20] = eye.extend(1.);
+    Ok(uniforms)
+}
+/// The lit OBJ showcase executes ordinary GLSL through SPIR-V, SIR and recorded draws.
+pub fn spirv_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
+    use shader::{
+        Program,
+        spirv::{Module, link},
+    };
+    use std::sync::Arc;
+    if !time.is_finite() {
+        return Err("scene time must be finite".into());
+    }
+    Framebuffer::new(width, height)?;
+    static PROGRAMS: OnceLock<std::result::Result<(Program, Program), String>> = OnceLock::new();
+    let programs = PROGRAMS
+        .get_or_init(|| {
+            let vertex = Module::parse(include_bytes!("../../../assets/shaders/lit.vert.spv"))?
+                .translate()?;
+            let fragment = Module::parse(include_bytes!("../../../assets/shaders/lit.frag.spv"))?
+                .translate()?;
+            link(&vertex, &fragment)?;
+            Ok((vertex.program, fragment.program))
+        })
+        .as_ref()
+        .map_err(|e| e.clone())?;
+    let device = Device;
+    let mut commands = device.commands();
+    commands.begin_render_pass(Color::new(0.022, 0.032, 0.05, 1.));
+    commands.bind_pipeline(Arc::new(ShaderPipeline {
+        state: Pipeline {
+            cull: Cull::Back,
+            ..Default::default()
+        },
+        vertex: programs.0.clone(),
+        fragment: programs.1.clone(),
+    }));
+    commands.bind_texture(0, Arc::new(Texture::checker(128)?), Sampler::default());
+    let eye = Vec3::new(7.5, 5.8, 10.);
+    let vp = Mat4::perspective(0.78, width as f32 / height as f32, 0.1, 60.)
+        * Mat4::look_at(eye, Vec3::new(0., 1.2, 0.), Vec3::new(0., 1., 0.));
+    visit_scene("showcase", time, |mesh, model, material, blend| {
+        if blend != Blend::Replace {
+            return Err("lit showcase requires opaque draws".into());
+        }
+        commands.bind_vertex_buffer(device.create_vertex_buffer(mesh.vertices.clone())?);
+        commands.bind_index_buffer(device.create_index_buffer(mesh.indices.clone())?);
+        commands.bind_uniform_buffer(device.create_uniform_buffer(lighting_uniforms(
+            vp * model,
+            model,
+            material,
+            eye,
+        )?)?);
+        commands.draw_indexed(0, mesh.indices.len() as u32);
+        Ok(())
+    })?;
+    commands.end_render_pass();
+    Ok(FrameCapture {
+        version: 1,
+        width,
+        height,
+        commands,
+    })
 }

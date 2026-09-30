@@ -12,7 +12,7 @@ SILICON is an experimental programmable graphics processor implemented in Rust.
 Vertex processing, clipping, rasterization, shader execution, textures, depth,
 stencil and blending generate scene pixels entirely on the CPU.
 
-![SILICON's CPU-rendered sculpture scene](assets/screenshots/showcase.png)
+![SILICON's CPU-rendered sculpture scene](assets/screenshots/spirv_showcase.png)
 
 *Rendered entirely on the CPU by a GPU I wrote from scratch.*
 
@@ -28,7 +28,7 @@ with checksums, or build from source:
 ```sh
 git clone https://github.com/OthmaneBlial/silicon
 cd silicon
-cargo run --release -p silicon-cli -- run showcase
+cargo run --release -p silicon-cli -- run spirv_showcase --threads 4
 ```
 
 Escape exits, Space pauses, arrows adjust rotation. The window presents an
@@ -50,14 +50,17 @@ headless renderer works without X11 at runtime. Other platforms are unverified.
 
 ## Programmable, observable, reproducible
 
-The showcase uses Rust vertex/fragment closures, a real original OBJ sculpture,
+The `spirv_showcase` executes ordinary GLSL vertex/fragment shaders through
+SPIR-V → SIR → CPU commands: a real original OBJ sculpture,
 filtered textures, smooth normals, a normal matrix, Lambert/Blinn-Phong lighting,
-a directional light and a point light. The `shader_cube` executes **both stages**
+a directional light, a point light and fog. Its 30 draws submit 12,588 triangles.
+The native `showcase` remains an independent Rust shader reference. The `shader_cube` executes **both stages**
 through SILICON's validated SIR bytecode interpreter and owned GPU-like commands.
 The `spirv_cube` loads ordinary externally compiled GLSL vertex/fragment shaders,
 validates a strict SPIR-V 1.0 subset and translates it into the same CPU VM.
 
 ```sh
+cargo run --release -p silicon-cli -- run spirv_showcase --threads 4
 cargo run --release -p silicon-cli -- run spirv_cube
 cargo run --release -p silicon-cli -- inspect-shader assets/shaders/textured.frag.spv
 cargo run --release -p silicon-cli -- render-shaders assets/shaders/textured.vert.spv assets/shaders/textured.frag.spv --output output/glsl.png
@@ -67,10 +70,10 @@ See the [exact SPIR-V subset and binding contract](docs/spirv.md).
 External compiler tools are needed only to regenerate shader fixtures.
 
 ```sh
-cargo run --release -p silicon-cli -- render shader_cube --capture output/frame.silicon
+cargo run --release -p silicon-cli -- render spirv_showcase --capture output/frame.silicon
 cargo run --release -p silicon-cli -- inspect output/frame.silicon
 cargo run --release -p silicon-cli -- replay output/frame.silicon --output output/replay.png
-cargo run --release -p silicon-cli -- debug-pixel shader_cube --pixel 480,320
+cargo run --release -p silicon-cli -- debug-pixel spirv_showcase --pixel 480,320
 ```
 
 Captures embed actual buffers, textures, uniforms, pipeline state, commands and

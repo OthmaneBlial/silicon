@@ -187,9 +187,14 @@ fn malformed_headers_ids_types_blocks_and_decorations_are_rejected() {
 }
 #[test]
 fn deterministic_binary_mutations_cannot_panic_the_parser_or_translator() {
-    let source = words(VERTEX);
+    let sources = [
+        words(VERTEX),
+        words(include_bytes!("../assets/shaders/lit.frag.spv")),
+        words(include_bytes!("../assets/shaders/locals.frag.spv")),
+    ];
     let mut seed = 0x31ab8492u32;
-    for _ in 0..1500 {
+    for i in 0..1500 {
+        let source = &sources[i % sources.len()];
         seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
         let index = seed as usize % source.len();
         let mut w = source.clone();
@@ -201,4 +206,143 @@ fn deterministic_binary_mutations_cannot_panic_the_parser_or_translator() {
             "word {index}"
         );
     }
+}
+
+#[test]
+fn local_snapshots_component_stores_and_vector_uniforms_execute() {
+    let fragment = compiled(include_bytes!("../assets/shaders/locals.frag.spv"));
+    let mut uniforms = vec![Vec4::ZERO; 33];
+    // Padding in host resources must never participate in vec2/vec3 arithmetic.
+    uniforms[24] = Vec4::new(0.2, 0.4, 19., 23.);
+    uniforms[28] = Vec4::new(2., 41., 43., 47.);
+    uniforms[32] = Vec4::new(1., 2., 0.3, 53.);
+    let input = Vec4::new(3., 4., 0., 0.);
+    let e = fragment
+        .program
+        .execute(&[input], &uniforms, |_, _| Err("no textures".into()), true)
+        .unwrap();
+    let length = 13f32.sqrt();
+    let expected = Vec4::new(
+        3. + 0.2 + 3. / length,
+        4. + 0.4 + 2. / length,
+        length + 2.,
+        0.3,
+    );
+    for (a, b) in e.outputs[0].to_array().into_iter().zip(expected.to_array()) {
+        assert!((a - b).abs() < 1e-6, "{a} != {b}");
+    }
+    let source = include_bytes!("../assets/shaders/locals.frag.spv");
+    let module = Module::parse(source).unwrap();
+    let mut w = words(source);
+    let first_store = module
+        .instructions()
+        .iter()
+        .find(|op| op.opcode == 62)
+        .unwrap();
+    w.drain(first_store.word..first_store.word + 3);
+    assert!(
+        Module::parse(&bytes(&w))
+            .unwrap()
+            .translate()
+            .unwrap_err()
+            .contains("before initialization")
+    );
+}
+#[test]
+fn lit_glsl_matches_native_scene_and_replays_exactly() {
+    let capture = demo::spirv_showcase(97, 65, 0.37).unwrap();
+    let actual = capture.replay().unwrap();
+    let reference = demo::render("showcase", 97, 65, 0.37).unwrap();
+    assert_eq!(actual.stats.triangles, 12588);
+    assert_eq!(actual.stats.shaded, reference.stats.shaded);
+    // External constant folding and CPU powf may differ by one quantized color unit.
+    for (a, b) in actual
+        .framebuffer
+        .bytes()
+        .iter()
+        .zip(reference.framebuffer.bytes())
+    {
+        assert!(a.abs_diff(*b) <= 1, "GLSL {a}, native {b}");
+    }
+    let file = std::env::temp_dir().join(format!("silicon-lit-{}.silicon", std::process::id()));
+    capture.save(&file).unwrap();
+    let loaded = FrameCapture::load(&file).unwrap();
+    std::fs::remove_file(file).unwrap();
+    let mut parallel = Renderer::new(97, 65).unwrap();
+    parallel.backend = Backend::Simd;
+    parallel
+        .render_bands(4, |r| Device.submit(&loaded.commands, r).map(|_| ()))
+        .unwrap();
+    assert_eq!(parallel.framebuffer.bytes(), actual.framebuffer.bytes());
+    for y in 0..65 {
+        for x in 0..97 {
+            assert_eq!(
+                actual.framebuffer.depth_at(x, y),
+                reference.framebuffer.depth_at(x, y)
+            );
+            assert_eq!(
+                parallel.framebuffer.depth_at(x, y),
+                actual.framebuffer.depth_at(x, y)
+            );
+        }
+    }
+    let vertex = compiled(include_bytes!("../assets/shaders/lit.vert.spv"));
+    let fragment = compiled(include_bytes!("../assets/shaders/lit.frag.spv"));
+    link(&vertex, &fragment).unwrap();
+    // This actual shader lowers to more than 64 instructions producing temporaries.
+    assert!(fragment.program.instructions().len() > 100);
+    let mut trace = Renderer::new(97, 65).unwrap();
+    trace.debug_pixel = Some((48, 32));
+    let stats = Device.submit(&capture.commands, &mut trace).unwrap();
+    assert!(
+        stats
+            .shader_traces
+            .iter()
+            .any(|(_, trace)| trace.len() > 100)
+    );
+}
+#[test]
+fn extended_math_and_local_pointer_validation_reject_malformed_inputs() {
+    let source = include_bytes!("../assets/shaders/lit.frag.spv");
+    let module = Module::parse(source).unwrap();
+    let original = words(source);
+    let reject = |w: Vec<u32>| {
+        assert!(
+            Module::parse(&bytes(&w))
+                .and_then(|m| m.translate())
+                .is_err()
+        )
+    };
+    let ext = module
+        .instructions()
+        .iter()
+        .find(|op| op.opcode == 12)
+        .unwrap();
+    for (operand, value) in [(2, ext.operands[0]), (3, 999), (0, 2)] {
+        let mut w = original.clone();
+        w[ext.word + 1 + operand] = value;
+        reject(w);
+    }
+    let component = module
+        .instructions()
+        .iter()
+        .find(|op| op.opcode == 65 && op.operands.len() == 5)
+        .unwrap();
+    let out_of_range = module
+        .instructions()
+        .iter()
+        .find(|op| op.opcode == 43 && op.operands[2] == 1115684864)
+        .unwrap()
+        .operands[1];
+    let mut w = original.clone();
+    w[component.word + 5] = out_of_range;
+    reject(w); // float index
+    let local = module
+        .instructions()
+        .iter()
+        .find(|op| op.opcode == 59 && op.operands[2] == 7)
+        .unwrap();
+    let mut w = original.clone();
+    w[local.word + 3] = 2;
+    reject(w);
 }
