@@ -58,6 +58,9 @@ impl Program {
         let mut regs = [[Lanes::splat(0.); 4]; 64];
         let (mut current, mut live, mut choice) = (active, active, 0u8);
         let mut selections = Vec::new();
+        // One counter per execution mask avoids four scattered result writes per instruction.
+        let mut counts = [0usize; 16];
+        let trace_mask = (0..4).fold(0u8, |mask, i| mask | (u8::from(tracing[i]) << i));
         for (pc, op) in self.instructions().iter().enumerate() {
             use Instruction::*;
             let executing = if matches!(op, Else | EndIf) {
@@ -311,16 +314,16 @@ impl Program {
                     invalid.trailing_zeros()
                 ));
             }
-            for i in 0..4 {
-                if enabled(i) {
-                    results[i].instructions += 1;
-                }
-                if enabled(i) && tracing[i] {
-                    results[i].trace.push(Trace {
-                        instruction: pc,
-                        operation: op.clone(),
-                        value: lane(value, i),
-                    });
+            counts[executing as usize] += 1;
+            if executing & trace_mask != 0 {
+                for i in 0..4 {
+                    if enabled(i) && tracing[i] {
+                        results[i].trace.push(Trace {
+                            instruction: pc,
+                            operation: op.clone(),
+                            value: lane(value, i),
+                        });
+                    }
                 }
             }
             if let Some(dst) = dst {
@@ -339,6 +342,14 @@ impl Program {
                     })
                 };
             }
+        }
+        for (i, result) in results.iter_mut().enumerate() {
+            result.instructions = counts
+                .iter()
+                .enumerate()
+                .filter(|(mask, _)| mask & (1 << i) != 0)
+                .map(|(_, count)| count)
+                .sum();
         }
         Ok(results)
     }
