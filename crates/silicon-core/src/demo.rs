@@ -6,6 +6,7 @@ pub struct Material {
     pub color: Color,
     pub textured: bool,
     pub metallic: f32,
+    pub roughness: f32,
     pub emission: f32,
 }
 impl Material {
@@ -14,6 +15,7 @@ impl Material {
             color,
             textured: true,
             metallic: 0.1,
+            roughness: 0.82,
             emission: 0.,
         }
     }
@@ -39,11 +41,12 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
     }
     if matches!(
         name,
-        "shader_cube" | "spirv_cube" | "spirv_showcase" | "spirv_cutout"
+        "shader_cube" | "spirv_cube" | "spirv_showcase" | "spirv_cutout" | "pbr_showcase"
     ) {
         let (width, height) = r.surface_size();
         let capture = match name {
             "spirv_showcase" => spirv_showcase(width, height, time)?,
+            "pbr_showcase" => pbr_showcase(width, height, time)?,
             "spirv_cube" => spirv_cube(width, height, time)?,
             "spirv_cutout" => spirv_cutout(width, height, time)?,
             _ => shader_cube(width, height, time)?,
@@ -276,6 +279,7 @@ fn visit_scene(
                     color: Color::WHITE,
                     textured: name == "textured_cube",
                     metallic: 0.2,
+                    roughness: 0.62,
                     emission: 0.,
                 },
                 Blend::Replace,
@@ -303,6 +307,7 @@ fn visit_scene(
                     color: Color::new(0.95, 0.48, 0.16, 1.),
                     textured: true,
                     metallic: 0.8,
+                    roughness: 0.24,
                     emission: 0.,
                 },
                 Blend::Replace,
@@ -329,6 +334,7 @@ fn visit_scene(
                         color: Color::new(0.1, 0.8, 1., 1.),
                         textured: false,
                         metallic: 0.4,
+                        roughness: 0.32,
                         emission: 1.5,
                     },
                     Blend::Replace,
@@ -344,6 +350,7 @@ fn visit_scene(
                     color: Color::new(0.1, 0.85, 1., 1.),
                     textured: false,
                     metallic: 0.1,
+                    roughness: 0.42,
                     emission: 1.,
                 },
                 Blend::Replace,
@@ -364,6 +371,7 @@ fn visit_scene(
                         color: Color::new(0.75, 0.83, 0.9, 1.),
                         textured: false,
                         metallic: 1.,
+                        roughness: 0.12,
                         emission: 0.,
                     },
                     Blend::Replace,
@@ -372,7 +380,7 @@ fn visit_scene(
         }
         _ => {
             return Err(format!(
-                "unknown scene {name}; choose cube, textured_cube, triangle_3d, showcase"
+                "unknown scene {name}; choose cube, textured_cube, triangle_3d, showcase or pbr_showcase"
             )
             .into());
         }
@@ -463,6 +471,7 @@ pub fn shader_cube_with_programs(
             color: Color::WHITE,
             textured: true,
             metallic: 0.2,
+            roughness: 0.62,
             emission: 0.,
         },
         Vec3::new(4., 3., 5.),
@@ -547,28 +556,22 @@ fn lighting_uniforms(mvp: Mat4, model: Mat4, material: Material, eye: Vec3) -> R
         if material.textured { 1. } else { 0. },
         material.metallic,
         material.emission,
-        0.,
+        material.roughness,
     );
     uniforms[20] = eye.extend(1.);
     Ok(uniforms)
 }
-/// The lit OBJ showcase executes ordinary GLSL through SPIR-V, SIR and recorded draws.
-pub fn spirv_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
+fn material_showcase(
+    width: u32,
+    height: u32,
+    time: f32,
+    programs: &(shader::Program, shader::Program),
+) -> Result<FrameCapture> {
     use std::sync::Arc;
     if !time.is_finite() {
         return Err("scene time must be finite".into());
     }
     Framebuffer::new(width, height)?;
-    static PROGRAMS: OnceLock<shader::Result<(shader::Program, shader::Program)>> = OnceLock::new();
-    let programs = PROGRAMS
-        .get_or_init(|| {
-            compile_graphics(
-                include_bytes!("../../../assets/shaders/lit.vert.spv"),
-                include_bytes!("../../../assets/shaders/lit.frag.spv"),
-            )
-        })
-        .as_ref()
-        .map_err(|e| e.clone())?;
     let device = Device;
     let mut commands = device.commands();
     commands.begin_render_pass(Color::new(0.022, 0.032, 0.05, 1.));
@@ -586,7 +589,7 @@ pub fn spirv_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture
         * Mat4::look_at(eye, Vec3::new(0., 1.2, 0.), Vec3::new(0., 1., 0.));
     visit_scene("showcase", time, |mesh, model, material, blend| {
         if blend != Blend::Replace {
-            return Err("lit showcase requires opaque draws".into());
+            return Err("GLSL showcase requires opaque draws".into());
         }
         commands.bind_vertex_buffer(device.create_vertex_buffer(mesh.vertices.clone())?);
         commands.bind_index_buffer(device.create_index_buffer(mesh.indices.clone())?);
@@ -606,6 +609,34 @@ pub fn spirv_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture
         height,
         commands,
     })
+}
+/// The lit OBJ showcase executes ordinary GLSL through SPIR-V, SIR and recorded draws.
+pub fn spirv_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
+    static PROGRAMS: OnceLock<shader::Result<(shader::Program, shader::Program)>> = OnceLock::new();
+    let programs = PROGRAMS
+        .get_or_init(|| {
+            compile_graphics(
+                include_bytes!("../../../assets/shaders/lit.vert.spv"),
+                include_bytes!("../../../assets/shaders/lit.frag.spv"),
+            )
+        })
+        .as_ref()
+        .map_err(|e| e.clone())?;
+    material_showcase(width, height, time, programs)
+}
+/// A direct-light Cook-Torrance GGX metallic/roughness scene running from GLSL SPIR-V.
+pub fn pbr_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
+    static PROGRAMS: OnceLock<shader::Result<(shader::Program, shader::Program)>> = OnceLock::new();
+    let programs = PROGRAMS
+        .get_or_init(|| {
+            compile_graphics(
+                include_bytes!("../../../assets/shaders/lit.vert.spv"),
+                include_bytes!("../../../assets/shaders/pbr.frag.spv"),
+            )
+        })
+        .as_ref()
+        .map_err(|e| e.clone())?;
+    material_showcase(width, height, time, programs)
 }
 
 /// Render a CPU depth map first, then sample it from ordinary GLSL/SPIR-V fragment shaders.

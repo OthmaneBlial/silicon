@@ -16,6 +16,10 @@ stencil and blending generate scene pixels entirely on the CPU.
 
 *Rendered entirely on the CPU by a GPU I wrote from scratch.*
 
+![Metallic and rough materials rendered by SILICON's GLSL SPIR-V pipeline](assets/screenshots/pbr_showcase.png)
+
+*Cook-Torrance GGX shading. The shader, rasterizer and framebuffer all run on the CPU.*
+
 [Watch the CPU-rendered animation](assets/demos/spirv_showcase.mp4) ·
 [Architecture](docs/architecture.md) · [Pipeline](docs/graphics-pipeline.md) ·
 [Shader VM](docs/sir.md) · [SIMD](docs/simd.md) · [SPIR-V subset](docs/spirv.md) · [Roadmap](docs/roadmap.md)
@@ -38,6 +42,7 @@ Headless rendering requires no graphics device or display.
 
 ```sh
 cargo run --release -p silicon-cli -- render assets/scenes/showcase.json --output output/scene.png
+cargo run --release -p silicon-cli -- render assets/scenes/pbr_showcase.json --backend simd --threads 4 --output output/pbr.png
 cargo run --release -p silicon-cli -- render showcase --width 640 --height 400 --threads 4
 cargo run --release -p silicon-cli -- render stencil --backend simd --threads 4 --output output/stencil.png
 cargo run --release --example triangle
@@ -63,6 +68,9 @@ The `spirv_cutout` executes nested GLSL branches, conditional texture sampling,
 Phi/local reconvergence, early return and fragment discard.
 The `shadow_showcase` renders a CPU depth pass for the same OBJ scene and samples
 its depth texture from an ordinary GLSL fragment shader through explicit-LOD SPIR-V.
+The `pbr_showcase` runs a GLSL metallic/roughness Cook-Torrance GGX shader through
+SPIR-V and the same CPU SIR pipeline. It uses direct lighting; normal maps and
+image-based lighting remain future work.
 The `stencil` scene uses a circular portal mask for both a textured cube and a
 translucent overlay.
 
@@ -111,6 +119,7 @@ flowchart LR
 | Geometry | Indexed/non-indexed triangles, homogeneous six-plane clipping, CW/CCW culling |
 | Raster | Pixel-center top-left coverage, 8-bit subpixel precision, 16×16 tiles |
 | Interpolation | Colors/UV/normals/custom vec4 varyings, perspective reconstruction, affine NDC depth |
+| Shading | Native Lambert/Blinn reference; GLSL Blinn and Cook-Torrance GGX metallic/roughness through SPIR-V |
 | Attachments | RGBA8/BGRA8, depth with 8 compare modes, stencil masks/operations |
 | Texturing | RGBA8/RGB8/R8, nearest/bilinear/trilinear, clamp/repeat/mirror, mip generation/LOD |
 | Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 → SIR; nested selections, Phi, early return/discard |

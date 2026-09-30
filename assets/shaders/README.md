@@ -10,5 +10,6 @@ vec2/shuffle/division/dot/sampling; `negate.frag` checks float sign-bit
 negation, including signed zero. `lit.vert` +
 `lit.frag` power the full `spirv_showcase` lighting pipeline, and `shadow.frag`
 powers the depth-textured `shadow_showcase`. `locals.frag` checks
-local SSA snapshots, vector component stores and float/vector uniform padding. See
-[the subset and reproduction commands](../../docs/spirv.md).
+local SSA snapshots, vector component stores and float/vector uniform padding.
+`pbr.frag` is the direct-light metallic/roughness shader used by `pbr_showcase`.
+See [the subset and reproduction commands](../../docs/spirv.md).
