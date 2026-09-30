@@ -1,0 +1,24 @@
+[package]
+name = "silicon"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "A GPU built entirely in software."
+repository = "https://github.com/OthmaneBlial/silicon"
+
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+silicon-core = { path = "crates/silicon-core" }
+silicon-math = { path = "crates/silicon-math" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,4 @@
+/target/
+/output/
+*.silicon
+.DS_Store
