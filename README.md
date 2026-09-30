@@ -16,7 +16,7 @@ stencil and blending generate scene pixels entirely on the CPU.
 
 *Rendered entirely on the CPU by a GPU I wrote from scratch.*
 
-[Watch the CPU-rendered animation](assets/demos/showcase.mp4) ·
+[Watch the CPU-rendered animation](assets/demos/spirv_showcase.mp4) ·
 [Architecture](docs/architecture.md) · [Pipeline](docs/graphics-pipeline.md) ·
 [Shader VM](docs/sir.md) · [SPIR-V subset](docs/spirv.md) · [Roadmap](docs/roadmap.md)
 
