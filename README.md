@@ -13,7 +13,14 @@ cargo test --workspace
 cargo run --example pixel
 ```
 
-Current milestone: vector/matrix math and a CPU-owned RGBA8/BGRA8 framebuffer
-with PNG export. See subsequent commits for the developing graphics pipeline.
+Current milestone: programmable vertex/fragment stages, six-plane homogeneous
+clipping, fixed-point tiled triangle coverage, perspective-correct varyings,
+depth, stencil, blending, filtered mipmapped textures and a lit OBJ scene.
+
+```sh
+cargo run --release --example showcase
+```
+
+![CPU-rendered sculpture scene](assets/screenshots/showcase.png)
 
 Apache-2.0. Experimental; no Vulkan, OpenGL or SPIR-V compatibility yet.

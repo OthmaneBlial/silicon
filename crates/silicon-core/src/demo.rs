@@ -1,0 +1,231 @@
+//! Reproducible CPU-only scenes. Native Rust closures are the first shader backend.
+use crate::*;
+#[derive(Clone, Copy, Debug)]
+pub struct Material {
+    pub color: Color,
+    pub textured: bool,
+    pub metallic: f32,
+    pub emission: f32,
+}
+impl Material {
+    pub fn matte(color: Color) -> Self {
+        Self {
+            color,
+            textured: true,
+            metallic: 0.1,
+            emission: 0.,
+        }
+    }
+}
+pub fn render(name: &str, width: u32, height: u32, time: f32) -> Result<Renderer> {
+    let mut r = Renderer::new(width, height)?;
+    render_into(&mut r, name, time)?;
+    Ok(r)
+}
+pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
+    if !time.is_finite() {
+        return Err("scene time must be finite".into());
+    }
+    r.clear(Color::new(0.022, 0.032, 0.05, 1.));
+    let texture = Texture::checker(128)?;
+    let cube = Mesh::cube();
+    let eye = if name == "showcase" {
+        Vec3::new(7.5, 5.8, 10.)
+    } else {
+        Vec3::new(4., 3., 5.)
+    };
+    let view = Mat4::look_at(
+        eye,
+        if name == "showcase" {
+            Vec3::new(0., 1.2, 0.)
+        } else {
+            Vec3::ZERO
+        },
+        Vec3::new(0., 1., 0.),
+    );
+    let proj = Mat4::perspective(
+        0.78,
+        r.framebuffer.width as f32 / r.framebuffer.height as f32,
+        0.1,
+        60.,
+    );
+    let mut draw = |mesh: &Mesh, model: Mat4, mat: Material, blend: Blend| -> Result<()> {
+        let mvp = proj * view * model;
+        let normal = Mat3::normal_matrix(model).ok_or("singular model transform")?;
+        let pipeline = Pipeline {
+            cull: Cull::Back,
+            blend,
+            depth_write: blend == Blend::Replace,
+            ..Default::default()
+        };
+        r.draw(
+            &mesh.vertices,
+            Some(&mesh.indices),
+            pipeline,
+            |v| {
+                let world = model.transform(v.position.extend(1.));
+                VertexOutput {
+                    position: mvp.transform(v.position.extend(1.)),
+                    varyings: [
+                        v.color,
+                        Vec4::new(v.uv.x, v.uv.y, 0., 0.),
+                        normal.transform(v.normal).extend(0.),
+                        world,
+                    ],
+                }
+            },
+            |f| {
+                let tex = if mat.textured {
+                    texture
+                        .sample(f.uv(), texture.lod(f.uv_dx, f.uv_dy), Sampler::default())
+                        .expect("finite raster UV")
+                        .0
+                } else {
+                    Color::WHITE.0
+                };
+                let base = mat.color.0.component_mul(tex).component_mul(f.color().0);
+                let n = f.normal();
+                let world = f.world();
+                let light = Vec3::new(-0.4, 0.85, 0.6).normalize();
+                let diffuse = n.dot(light).max(0.);
+                let view = (eye - world).normalize();
+                let spec = n.dot((view + light).normalize()).max(0.).powf(64.)
+                    * (0.35 + mat.metallic * 1.5);
+                let delta = Vec3::new(2., 3., -2.) - world;
+                let point = n.dot(delta.normalize()).max(0.) * 5. / (1. + delta.dot(delta));
+                let ambient = 0.16 + 0.12 * n.y.max(0.);
+                let rgb = base.xyz() * (ambient + diffuse * 0.85 + mat.emission)
+                    + Vec3::new(1., 0.86, 0.68) * spec
+                    + Vec3::new(0.08, 0.65, 0.95) * point;
+                let fog = (world - eye).length() / 45.;
+                let rgb = rgb.lerp(Vec3::new(0.022, 0.032, 0.05), fog.clamp(0., 0.7));
+                // A display transfer is part of this demo shader, not the framebuffer.
+                let display = |v: f32| {
+                    let v = v.max(0.);
+                    (v / (1. + v)).powf(1. / 2.2)
+                };
+                Some(Color::new(
+                    display(rgb.x),
+                    display(rgb.y),
+                    display(rgb.z),
+                    base.w,
+                ))
+            },
+        )
+    };
+    match name {
+        "cube" | "textured_cube" | "triangle_3d" => {
+            let mesh = if name == "triangle_3d" {
+                Mesh {
+                    vertices: vec![
+                        Vertex::new(Vec3::new(-1., -1., 0.), Color::new(1., 0., 0., 1.)),
+                        Vertex::new(Vec3::new(1., -1., 0.), Color::new(0., 1., 0., 1.)),
+                        Vertex::new(Vec3::new(0., 1., 0.), Color::new(0., 0., 1., 1.)),
+                    ],
+                    indices: vec![0, 1, 2],
+                }
+            } else {
+                cube
+            };
+            draw(
+                &mesh,
+                Mat4::rotation_y(time + 0.55) * Mat4::rotation_x(0.2),
+                Material {
+                    color: Color::WHITE,
+                    textured: name == "textured_cube",
+                    metallic: 0.2,
+                    emission: 0.,
+                },
+                Blend::Replace,
+            )?;
+        }
+        "showcase" => {
+            draw(
+                &cube,
+                Mat4::translation(Vec3::new(0., -0.28, 0.)) * Mat4::scale(Vec3::new(7., 0.25, 6.)),
+                Material::matte(Color::new(0.32, 0.38, 0.45, 1.)),
+                Blend::Replace,
+            )?;
+            // A real OBJ file exercises the same asset loader as user models.
+            let sculpture = Mesh::from_obj(include_str!("../../../assets/models/sculpture.obj"))?;
+            draw(
+                &sculpture,
+                Mat4::translation(Vec3::new(0., 2.2, 0.))
+                    * Mat4::rotation_y(time * 0.4)
+                    * Mat4::rotation_x(1.15),
+                Material {
+                    color: Color::new(0.95, 0.48, 0.16, 1.),
+                    textured: true,
+                    metallic: 0.8,
+                    emission: 0.,
+                },
+                Blend::Replace,
+            )?;
+            for i in 0..12 {
+                let a = i as f32 * std::f32::consts::TAU / 12.;
+                let (s, c) = a.sin_cos();
+                let height = 0.45 + (i as f32 * 1.8).sin().abs() * 0.8;
+                let pos = Vec3::new(c * 3.3, height, s * 3.3);
+                draw(
+                    &cube,
+                    Mat4::translation(pos)
+                        * Mat4::rotation_y(a + time * 0.1)
+                        * Mat4::scale(Vec3::new(0.32, height, 0.32)),
+                    Material::matte(Color::new(0.24, 0.5, 0.65, 1.)),
+                    Blend::Replace,
+                )?;
+                draw(
+                    &cube,
+                    Mat4::translation(pos + Vec3::new(0., height + 0.12, 0.))
+                        * Mat4::rotation_y(a)
+                        * Mat4::scale(Vec3::new(0.35, 0.1, 0.35)),
+                    Material {
+                        color: Color::new(0.1, 0.8, 1., 1.),
+                        textured: false,
+                        metallic: 0.4,
+                        emission: 1.5,
+                    },
+                    Blend::Replace,
+                )?;
+            }
+            let ring = Mesh::torus(64, 12, 2.4, 0.06)?;
+            draw(
+                &ring,
+                Mat4::translation(Vec3::new(0., 0.15, 0.)),
+                Material {
+                    color: Color::new(0.1, 0.85, 1., 1.),
+                    textured: false,
+                    metallic: 0.1,
+                    emission: 1.,
+                },
+                Blend::Replace,
+            )?;
+            let satellite = Mesh::torus(48, 16, 0.5, 0.17)?;
+            for i in 0..3 {
+                let a = i as f32 * 2.094 + time * 0.2;
+                draw(
+                    &satellite,
+                    Mat4::translation(Vec3::new(
+                        a.cos() * 2.1,
+                        2.5 + (a * 1.2).sin() * 0.4,
+                        a.sin() * 2.1,
+                    )) * Mat4::rotation_x(a),
+                    Material {
+                        color: Color::new(0.75, 0.83, 0.9, 1.),
+                        textured: false,
+                        metallic: 1.,
+                        emission: 0.,
+                    },
+                    Blend::Replace,
+                )?;
+            }
+        }
+        _ => {
+            return Err(format!(
+                "unknown scene {name}; choose cube, textured_cube, triangle_3d, showcase"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
