@@ -60,6 +60,16 @@ and scalar coverage/one worker. Render throughput was 3.44/3.66 FPS followed by
 4.01/4.00 FPS. The old executable also showed substantial timing variation.
 These samples do not establish either a regression or a speedup.
 
+## Final executable check
+
+The [packaged 0.3 CLI record](../benchmarks/apple-m2-release-0.3-2026-09-30.json) was measured after the
+capture-directory correction, from clean commit `88aa3b781df9fab4dfebe2f936b4a784ec3ff75b`. At 960×640,
+3 warmups and 20 timed frames, the lit GLSL scene with SIMD coverage/four workers
+measured median 307.5993 ms, p95 357.7266 ms and 3.10 render FPS on the same
+shared desktop. Its executable SHA-256 is `a586469ce1ff05f773d59caca396631dbb51114d73764f90c92ee1e68945d3f6`;
+the release archive contains that exact binary. These results exclude presentation
+and PNG encoding, and do not demonstrate a speedup over the earlier noisy run.
+
 ## Reproduce
 
 ```sh
