@@ -301,6 +301,86 @@ fn lit_glsl_matches_native_scene_and_replays_exactly() {
             .any(|(_, trace)| trace.len() > 100)
     );
 }
+
+#[test]
+fn shadow_glsl_samples_a_serialized_depth_pass_and_replays_exactly() {
+    let vertex_bytes = include_bytes!("../assets/shaders/lit.vert.spv");
+    let fragment_bytes = include_bytes!("../assets/shaders/shadow.frag.spv");
+    let vertex = compiled(vertex_bytes);
+    let fragment = compiled(fragment_bytes);
+    link(&vertex, &fragment).unwrap();
+    let module = Module::parse(fragment_bytes).unwrap();
+    let sample = module
+        .instructions()
+        .iter()
+        .find(|op| op.opcode == 88)
+        .unwrap();
+    let mut invalid_mask = words(fragment_bytes);
+    invalid_mask[sample.word + 5] = 4;
+    assert!(
+        Module::parse(&bytes(&invalid_mask))
+            .and_then(|m| m.translate())
+            .is_err()
+    );
+    let mut invalid_lod = words(fragment_bytes);
+    invalid_lod[sample.word + 6] = sample.operands[3];
+    assert!(
+        Module::parse(&bytes(&invalid_lod))
+            .and_then(|m| m.translate())
+            .is_err()
+    );
+
+    let (capture, depth_stats) = demo::shadow_showcase(97, 65, 0.37).unwrap();
+    assert_eq!(depth_stats.triangles, 12_588);
+    assert!(capture.commands.stream().iter().any(|command| matches!(
+        command,
+        Command::BindTexture { slot: 1, texture, .. }
+            if matches!(texture.format, TextureFormat::Depth32Float)
+                && texture.levels[0].width == 512
+                && texture.levels[0].height == 512
+    )));
+
+    let shadowed = capture.replay().unwrap();
+    let baseline = demo::spirv_showcase(97, 65, 0.37)
+        .unwrap()
+        .replay()
+        .unwrap();
+    let changed_pixels = shadowed
+        .framebuffer
+        .bytes()
+        .chunks_exact(4)
+        .zip(baseline.framebuffer.bytes().chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(
+        changed_pixels > 10,
+        "shadow map changed {changed_pixels} pixels"
+    );
+
+    let path = std::env::temp_dir().join(format!("silicon-shadow-{}.silicon", std::process::id()));
+    capture.save(&path).unwrap();
+    let loaded = FrameCapture::load(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let mut parallel = Renderer::new(97, 65).unwrap();
+    parallel.backend = Backend::Simd;
+    parallel
+        .render_bands(4, |r| Device.submit(&loaded.commands, r).map(|_| ()))
+        .unwrap();
+    assert_eq!(parallel.framebuffer.bytes(), shadowed.framebuffer.bytes());
+    for y in 0..65 {
+        for x in 0..97 {
+            assert_eq!(
+                parallel.framebuffer.depth_at(x, y),
+                shadowed.framebuffer.depth_at(x, y)
+            );
+            assert_eq!(
+                parallel.framebuffer.stencil_at(x, y),
+                shadowed.framebuffer.stencil_at(x, y)
+            );
+        }
+    }
+}
+
 #[test]
 fn extended_math_and_local_pointer_validation_reject_malformed_inputs() {
     let source = include_bytes!("../assets/shaders/lit.frag.spv");

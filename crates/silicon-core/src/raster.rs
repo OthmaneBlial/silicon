@@ -22,6 +22,27 @@ pub struct Statistics {
     pub vertex_time: Duration,
     pub raster_time: Duration,
 }
+impl std::ops::AddAssign<&Self> for Statistics {
+    fn add_assign(&mut self, other: &Self) {
+        self.shader_time += other.shader_time;
+        self.shader_packets += other.shader_packets;
+        self.shader_packet_lanes += other.shader_packet_lanes;
+        self.shader_instructions += other.shader_instructions;
+        self.texture_samples += other.texture_samples;
+        self.discarded += other.discarded;
+        self.vertices += other.vertices;
+        self.triangles += other.triangles;
+        self.clipped += other.clipped;
+        self.culled += other.culled;
+        self.tiles += other.tiles;
+        self.fragments += other.fragments;
+        self.early_z_rejected += other.early_z_rejected;
+        self.stencil_rejected += other.stencil_rejected;
+        self.shaded += other.shaded;
+        self.vertex_time += other.vertex_time;
+        self.raster_time += other.raster_time;
+    }
+}
 #[derive(Clone, Debug)]
 pub struct PixelTrace {
     pub fragment: Fragment,

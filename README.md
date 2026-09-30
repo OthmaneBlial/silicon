@@ -60,10 +60,13 @@ The `spirv_cube` loads ordinary externally compiled GLSL vertex/fragment shaders
 validates a strict SPIR-V 1.0 subset and translates it into the same CPU VM.
 The `spirv_cutout` executes nested GLSL branches, conditional texture sampling,
 Phi/local reconvergence, early return and fragment discard.
+The `shadow_showcase` renders a CPU depth pass for the same OBJ scene and samples
+its depth texture from an ordinary GLSL fragment shader through explicit-LOD SPIR-V.
 
 ```sh
 cargo run --release -p silicon-cli -- run spirv_showcase --threads 4
 cargo run --release -p silicon-cli -- run spirv_cutout --backend simd
+cargo run --release -p silicon-cli -- render shadow_showcase --backend simd --threads 4 --output output/shadows.png
 cargo run --release -p silicon-cli -- run spirv_cube
 cargo run --release -p silicon-cli -- inspect-shader assets/shaders/textured.frag.spv
 cargo run --release -p silicon-cli -- render-shaders assets/shaders/textured.vert.spv assets/shaders/textured.frag.spv --output output/glsl.png

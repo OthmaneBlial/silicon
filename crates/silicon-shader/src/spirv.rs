@@ -145,6 +145,7 @@ impl Op {
             25 => (8, 8),
             27 => (2, 2),
             54 | 81 | 87 | 129 | 131 | 133 | 136 | 142 | 145 | 148 => (4, 4),
+            88 => (6, 6),
             164..=167 | 180 | 182..=184 | 186 | 188 | 190 => (4, 4),
             169 => (5, 5),
             245 => (4, 6),
@@ -224,6 +225,7 @@ impl Op {
             62 => (None, a.clone()),
             79
             | 87
+            | 88
             | 129
             | 131
             | 133
@@ -1357,6 +1359,44 @@ impl<'a> Compiler<'a> {
                     return Err("implicit sampling currently requires the unmodified vec2 fragment input at location 1".into());
                 }
                 let r = self.emit(|dst| Sir::SampleImplicit { dst, uv, texture })?;
+                self.values.insert(
+                    a[1],
+                    Typed {
+                        ty: a[0],
+                        value: Value::Reg(r, false),
+                    },
+                );
+            }
+            88 => {
+                let sampled = self.value(a[2])?;
+                let Value::Texture(texture) = sampled.value else {
+                    return Err("sampled image must be loaded from a sampler binding".into());
+                };
+                let (uv, uv_ty, _) = self.reg(a[3])?;
+                let (lod, lod_ty, _) = self.reg(a[5])?;
+                if self.stage != Stage::Fragment
+                    || self.ty(a[0])? != Ty::Vector(4)
+                    || self.ty(uv_ty)? != Ty::Vector(2)
+                    || self.ty(lod_ty)? != Ty::Float
+                {
+                    return Err(
+                        "explicit sampling requires fragment vec2 coordinates and a scalar LOD"
+                            .into(),
+                    );
+                }
+                if a[4] != 2 {
+                    return Err("explicit sampling supports only the Lod image operand".into());
+                }
+                let coordinate = self.emit(|dst| Sir::Compose {
+                    dst,
+                    sources: [uv, uv, lod, 0],
+                    lanes: [0, 1, 0, 0],
+                })?;
+                let r = self.emit(|dst| Sir::Sample {
+                    dst,
+                    uv: coordinate,
+                    texture,
+                })?;
                 self.values.insert(
                     a[1],
                     Typed {

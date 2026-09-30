@@ -108,13 +108,26 @@ fn options(args: &[String]) -> Result<Options> {
     Ok(o)
 }
 fn frame(r: &mut Renderer, scene: &Scene, threads: usize) -> Result<Option<Submission>> {
+    if scene.scene == "shadow_showcase" {
+        let (capture, depth_stats) = demo::shadow_showcase(scene.width, scene.height, scene.time)?;
+        let submission = if threads == 1 {
+            Some(Device.submit(&capture.commands, r)?)
+        } else {
+            r.render_bands(threads, |band| {
+                Device.submit(&capture.commands, band).map(|_| ())
+            })?;
+            None
+        };
+        r.stats += &depth_stats;
+        return Ok(submission);
+    }
     if threads > 1 {
         r.render_bands(threads, |band| frame(band, scene, 1).map(|_| ()))?;
         return Ok(None);
     }
     if matches!(
         scene.scene.as_str(),
-        "shader_cube" | "spirv_cube" | "spirv_showcase" | "spirv_cutout"
+        "shader_cube" | "spirv_cube" | "spirv_showcase" | "spirv_cutout" | "shadow_showcase"
     ) {
         let c = if scene.scene == "spirv_showcase" {
             demo::spirv_showcase(scene.width, scene.height, scene.time)?
@@ -198,7 +211,7 @@ fn run() -> Result<()> {
     let command = args.first().map_or("help", String::as_str);
     if command == "help" || command == "--help" {
         println!(
-            "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N --report timings.json]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n  silicon inspect-shader shader.spv\n  silicon render-shaders vertex.spv fragment.spv [render options]\n\nExecution: --backend scalar|simd --threads 1..64\nScenes: showcase, cube, textured_cube, triangle_3d, shader_cube, spirv_cube, spirv_showcase, spirv_cutout\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
+            "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N --report timings.json]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n  silicon inspect-shader shader.spv\n  silicon render-shaders vertex.spv fragment.spv [render options]\n\nExecution: --backend scalar|simd --threads 1..64\nScenes: showcase, cube, textured_cube, triangle_3d, shader_cube, spirv_cube, spirv_showcase, spirv_cutout, shadow_showcase\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
         );
         return Ok(());
     }
@@ -485,9 +498,12 @@ fn run() -> Result<()> {
             "spirv_cube" => demo::spirv_cube(o.scene.width, o.scene.height, o.scene.time)?,
             "spirv_showcase" => demo::spirv_showcase(o.scene.width, o.scene.height, o.scene.time)?,
             "spirv_cutout" => demo::spirv_cutout(o.scene.width, o.scene.height, o.scene.time)?,
+            "shadow_showcase" => {
+                demo::shadow_showcase(o.scene.width, o.scene.height, o.scene.time)?.0
+            }
             _ => {
                 return Err(
-                    "serialized capture requires shader_cube, spirv_cube, spirv_showcase or spirv_cutout".into(),
+                    "serialized capture requires shader_cube, spirv_cube, spirv_showcase, spirv_cutout or shadow_showcase".into(),
                 );
             }
         };

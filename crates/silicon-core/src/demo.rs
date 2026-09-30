@@ -27,6 +27,13 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
     if !time.is_finite() {
         return Err("scene time must be finite".into());
     }
+    if name == "shadow_showcase" {
+        let (width, height) = r.surface_size();
+        let (capture, shadow_stats) = shadow_showcase(width, height, time)?;
+        Device.submit(&capture.commands, r)?;
+        r.stats += &shadow_stats;
+        return Ok(());
+    }
     if matches!(
         name,
         "shader_cube" | "spirv_cube" | "spirv_showcase" | "spirv_cutout"
@@ -488,4 +495,108 @@ pub fn spirv_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture
         height,
         commands,
     })
+}
+
+/// Render a CPU depth map first, then sample it from ordinary GLSL/SPIR-V fragment shaders.
+pub fn shadow_showcase(width: u32, height: u32, time: f32) -> Result<(FrameCapture, Statistics)> {
+    use std::sync::Arc;
+    if !time.is_finite() {
+        return Err("scene time must be finite".into());
+    }
+    Framebuffer::new(width, height)?;
+    const SHADOW_SIZE: u32 = 512;
+    let target = Vec3::new(0., 1.2, 0.);
+    let direction = Vec3::new(-0.4, 0.85, 0.6).normalize();
+    let light_view = Mat4::look_at(target + direction * 18., target, Vec3::new(0., 1., 0.));
+    let light_matrix = Mat4::orthographic(-7., 7., -7., 7., 0.1, 30.) * light_view;
+    let mut depth_pass = Renderer::new(SHADOW_SIZE, SHADOW_SIZE)?;
+    visit_scene("showcase", time, |mesh, model, _, blend| {
+        if blend != Blend::Replace {
+            return Err("shadow maps require opaque geometry".into());
+        }
+        let light_mvp = light_matrix * model;
+        depth_pass.draw(
+            &mesh.vertices,
+            Some(&mesh.indices),
+            Pipeline {
+                color_write: false,
+                cull: Cull::Back,
+                ..Default::default()
+            },
+            |v| VertexOutput {
+                position: light_mvp.transform(v.position.extend(1.)),
+                varyings: [Vec4::ZERO; 4],
+            },
+            |_| Some(Color::BLACK),
+        )
+    })?;
+    let shadow_stats = depth_pass.stats.clone();
+    let shadow_texture = Arc::new(Texture::depth32(
+        SHADOW_SIZE,
+        SHADOW_SIZE,
+        &depth_pass.framebuffer.depth,
+    )?);
+
+    static PROGRAMS: OnceLock<shader::Result<(shader::Program, shader::Program)>> = OnceLock::new();
+    let programs = PROGRAMS
+        .get_or_init(|| {
+            compile_graphics(
+                include_bytes!("../../../assets/shaders/lit.vert.spv"),
+                include_bytes!("../../../assets/shaders/shadow.frag.spv"),
+            )
+        })
+        .as_ref()
+        .map_err(|e| e.clone())?;
+    let device = Device;
+    let mut commands = device.commands();
+    commands.begin_render_pass(Color::new(0.022, 0.032, 0.05, 1.));
+    commands.bind_pipeline(Arc::new(ShaderPipeline {
+        state: Pipeline {
+            cull: Cull::Back,
+            ..Default::default()
+        },
+        vertex: programs.0.clone(),
+        fragment: programs.1.clone(),
+    }));
+    commands.bind_texture(0, Arc::new(Texture::checker(128)?), Sampler::default());
+    commands.bind_texture(
+        1,
+        shadow_texture,
+        Sampler {
+            filter: Filter::Nearest,
+            address: Address::Clamp,
+            mip: MipFilter::None,
+        },
+    );
+    let eye = Vec3::new(7.5, 5.8, 10.);
+    let vp = Mat4::perspective(0.78, width as f32 / height as f32, 0.1, 60.)
+        * Mat4::look_at(eye, target, Vec3::new(0., 1., 0.));
+    visit_scene("showcase", time, |mesh, model, material, blend| {
+        if blend != Blend::Replace {
+            return Err("shadow showcase requires opaque draws".into());
+        }
+        let mut uniforms = lighting_uniforms(vp * model, model, material, eye)?;
+        uniforms.extend(light_matrix.0.map(Vec4::from_array));
+        uniforms.push(Vec4::new(
+            0.002,
+            0.3,
+            SHADOW_SIZE as f32,
+            SHADOW_SIZE as f32,
+        ));
+        commands.bind_vertex_buffer(device.create_vertex_buffer(mesh.vertices.clone())?);
+        commands.bind_index_buffer(device.create_index_buffer(mesh.indices.clone())?);
+        commands.bind_uniform_buffer(device.create_uniform_buffer(uniforms)?);
+        commands.draw_indexed(0, mesh.indices.len() as u32);
+        Ok(())
+    })?;
+    commands.end_render_pass();
+    Ok((
+        FrameCapture {
+            version: 1,
+            width,
+            height,
+            commands,
+        },
+        shadow_stats,
+    ))
 }

@@ -1,10 +1,11 @@
-use crate::{Color, Result, Vec2};
+use crate::{Color, Result, Vec2, Vec4};
 use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub enum TextureFormat {
     Rgba8,
     Rgb8,
     R8,
+    Depth32Float,
 }
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
 pub enum Filter {
@@ -37,6 +38,8 @@ pub struct MipLevel {
     pub width: u32,
     pub height: u32,
     pixels: Vec<[u8; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    depth: Option<Vec<f32>>,
 }
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Texture {
@@ -45,7 +48,10 @@ pub struct Texture {
 }
 impl Texture {
     pub fn validate(&self) -> Result<()> {
-        if self.levels.is_empty() || self.levels.len() > 25 {
+        if self.levels.is_empty()
+            || self.levels.len() > 25
+            || (matches!(self.format, TextureFormat::Depth32Float) && self.levels.len() != 1)
+        {
             return Err("texture requires 1..25 mip levels".into());
         }
         let mut previous: Option<(u32, u32)> = None;
@@ -56,7 +62,18 @@ impl Texture {
             if level.width == 0
                 || level.height == 0
                 || count > 16_777_216
-                || count != level.pixels.len()
+                || match self.format {
+                    TextureFormat::Depth32Float => {
+                        !level.pixels.is_empty()
+                            || level.depth.as_ref().is_none_or(|values| {
+                                values.len() != count
+                                    || values
+                                        .iter()
+                                        .any(|v| !v.is_finite() || !(0. ..=1.).contains(v))
+                            })
+                    }
+                    _ => level.pixels.len() != count || level.depth.is_some(),
+                }
             {
                 return Err("invalid texture mip dimensions/storage".into());
             }
@@ -75,6 +92,9 @@ impl Texture {
             TextureFormat::Rgba8 => 4,
             TextureFormat::Rgb8 => 3,
             TextureFormat::R8 => 1,
+            TextureFormat::Depth32Float => {
+                return Err("use Texture::depth32 for floating-point depth data".into());
+            }
         };
         let count = (width as usize)
             .checked_mul(height as usize)
@@ -92,6 +112,7 @@ impl Texture {
                 TextureFormat::Rgba8 => [p[0], p[1], p[2], p[3]],
                 TextureFormat::Rgb8 => [p[0], p[1], p[2], 255],
                 TextureFormat::R8 => [p[0], p[0], p[0], 255],
+                TextureFormat::Depth32Float => unreachable!(),
             })
             .collect();
         Ok(Self {
@@ -100,6 +121,32 @@ impl Texture {
                 width,
                 height,
                 pixels,
+                depth: None,
+            }],
+        })
+    }
+    /// A single-level 32-bit depth texture, ready to sample from a CPU depth pass.
+    pub fn depth32(width: u32, height: u32, values: &[f32]) -> Result<Self> {
+        let count = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or("texture size overflow")?;
+        if width == 0
+            || height == 0
+            || count > 16_777_216
+            || values.len() != count
+            || values
+                .iter()
+                .any(|v| !v.is_finite() || !(0. ..=1.).contains(v))
+        {
+            return Err("invalid depth texture dimensions or values".into());
+        }
+        Ok(Self {
+            format: TextureFormat::Depth32Float,
+            levels: vec![MipLevel {
+                width,
+                height,
+                pixels: Vec::new(),
+                depth: Some(values.to_vec()),
             }],
         })
     }
@@ -125,6 +172,9 @@ impl Texture {
     }
     pub fn generate_mips(&mut self) {
         self.levels.truncate(1);
+        if matches!(self.format, TextureFormat::Depth32Float) {
+            return;
+        }
         while self
             .levels
             .last()
@@ -154,6 +204,7 @@ impl Texture {
                 width: w,
                 height: h,
                 pixels,
+                depth: None,
             });
         }
     }
@@ -210,10 +261,12 @@ impl Texture {
             }
         };
         let texel = |x: i64, y: i64| {
-            Color::from_rgba8(
-                mip.pixels[(address(y, mip.height) * mip.width + address(x, mip.width)) as usize],
-            )
-            .0
+            let i = (address(y, mip.height) * mip.width + address(x, mip.width)) as usize;
+            if let Some(depth) = &mip.depth {
+                Vec4::new(depth[i], 0., 0., 1.)
+            } else {
+                Color::from_rgba8(mip.pixels[i]).0
+            }
         };
         match sampler.filter {
             Filter::Nearest => Color(texel(
@@ -236,9 +289,11 @@ impl Texture {
         }
     }
     pub fn mip_bytes(&self, level: usize) -> Option<Vec<u8>> {
-        self.levels
-            .get(level)
-            .map(|l| l.pixels.iter().flatten().copied().collect())
+        self.levels.get(level).and_then(|l| {
+            l.depth
+                .is_none()
+                .then(|| l.pixels.iter().flatten().copied().collect())
+        })
     }
 }
 #[cfg(test)]
@@ -302,5 +357,66 @@ mod tests {
         let mut odd = Texture::new(3, 1, TextureFormat::R8, &[0, 0, 255]).unwrap();
         odd.generate_mips();
         assert_eq!(odd.mip_bytes(1).unwrap(), [85, 85, 85, 255]);
+    }
+
+    #[test]
+    fn depth32_sampling_and_old_texture_serialization() {
+        let sampler = Sampler {
+            filter: Filter::Nearest,
+            address: Address::Clamp,
+            mip: MipFilter::None,
+        };
+        let mut depth = Texture::depth32(2, 2, &[0.125, 0.375, 0.625, 0.875]).unwrap();
+        depth.validate().unwrap();
+        assert_eq!(depth.mip_bytes(0), None);
+        assert_eq!(
+            depth.sample(Vec2::new(0.25, 0.25), 0., sampler).unwrap().0,
+            Vec4::new(0.125, 0., 0., 1.)
+        );
+        assert_eq!(
+            depth
+                .sample(
+                    Vec2::new(0.5, 0.5),
+                    0.,
+                    Sampler {
+                        filter: Filter::Bilinear,
+                        ..sampler
+                    }
+                )
+                .unwrap()
+                .0,
+            Vec4::new(0.5, 0., 0., 1.)
+        );
+        depth.generate_mips();
+        assert_eq!(depth.levels.len(), 1);
+        let restored: Texture =
+            serde_json::from_slice(&serde_json::to_vec(&depth).unwrap()).unwrap();
+        assert_eq!(
+            restored
+                .sample(Vec2::new(0.75, 0.75), 0., sampler)
+                .unwrap()
+                .0
+                .x,
+            0.875
+        );
+
+        let old: Texture = serde_json::from_slice(
+            br#"{"format":"Rgba8","levels":[{"width":1,"height":1,"pixels":[[1,2,3,4]]}]}"#,
+        )
+        .unwrap();
+        old.validate().unwrap();
+        assert_eq!(
+            old.sample(Vec2::new(0.5, 0.5), 0., sampler)
+                .unwrap()
+                .rgba8(),
+            [1, 2, 3, 4]
+        );
+
+        assert!(Texture::depth32(0, 2, &[]).is_err());
+        assert!(Texture::depth32(1, 1, &[f32::NAN]).is_err());
+        assert!(Texture::depth32(1, 1, &[1.01]).is_err());
+        assert!(Texture::new(1, 1, TextureFormat::Depth32Float, &[0]).is_err());
+        depth.levels[0].depth.as_mut().unwrap()[0] = f32::INFINITY;
+        assert!(depth.validate().is_err());
     }
 }

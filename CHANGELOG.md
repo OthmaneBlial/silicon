@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 — 2026-10-01
+
+- Add validated single-level `Depth32Float` textures and explicit scalar-LOD
+  sampling for transformed fragment coordinates.
+- Render the OBJ showcase in a CPU shadow-depth pass and sample the captured map
+  from ordinary GLSL/SPIR-V; include the scene in the CLI and gallery.
+- Verify depth texture serialization and exact color/depth/stencil replay across
+  scalar and SIMD four-band execution.
+
 ## 0.5.0 — 2026-10-01
 
 - Execute nested structured SIR selections with per-fragment divergence masks,
