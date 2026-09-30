@@ -193,6 +193,10 @@ pub enum Instruction {
         slot: u8,
         src: u8,
     },
+    Neg {
+        dst: u8,
+        src: u8,
+    },
 }
 impl Instruction {
     /// Visit sources before the destination, including repeated source operands.
@@ -240,6 +244,7 @@ impl Instruction {
             Else | EndIf | Return | Discard => return Ok(()),
             Normalize3 { dst, src }
             | Not { dst, src }
+            | Neg { dst, src }
             | Saturate { dst, src }
             | Normalize { dst, src, .. }
             | Length { dst, src, .. }
@@ -462,7 +467,8 @@ impl Program {
                 }
                 Instruction::Normalize3 { dst, src }
                 | Instruction::Saturate { dst, src }
-                | Instruction::Not { dst, src } => {
+                | Instruction::Not { dst, src }
+                | Instruction::Neg { dst, src } => {
                     source(src)?;
                     Some(dst)
                 }
@@ -658,6 +664,14 @@ impl Program {
                 ),
                 Instruction::Uniform { dst, slot } => (Some(dst), get(slot)?),
                 Instruction::Const { dst, value } => (Some(dst), value),
+                Instruction::Neg { dst, src } => (
+                    Some(dst),
+                    Vec4::from_array(
+                        regs[src as usize]
+                            .to_array()
+                            .map(|v| f32::from_bits(v.to_bits() ^ 0x8000_0000)),
+                    ),
+                ),
                 Instruction::Add { dst, a, b } => (Some(dst), regs[a as usize] + regs[b as usize]),
                 Instruction::Sub { dst, a, b } => (Some(dst), regs[a as usize] - regs[b as usize]),
                 Instruction::Mul { dst, a, b } => {

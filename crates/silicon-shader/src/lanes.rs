@@ -1,5 +1,5 @@
 //! Four independent float lanes. Only fixed-size host arrays reach intrinsics.
-use std::ops::{Add, Div, Mul, Sub};
+use std::ops::{Add, Div, Mul, Neg, Sub};
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Lanes(pub [f32; 4]);
 /// One bit per fragment containing an infinity or NaN in any component.
@@ -95,3 +95,34 @@ arithmetic!(Add, add, +, vaddq_f32, _mm_add_ps);
 arithmetic!(Sub, sub, -, vsubq_f32, _mm_sub_ps);
 arithmetic!(Mul, mul, *, vmulq_f32, _mm_mul_ps);
 arithmetic!(Div, div, /, vdivq_f32, _mm_div_ps);
+impl Neg for Lanes {
+    type Output = Self;
+    #[inline]
+    fn neg(self) -> Self {
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: mandatory NEON; load/store each access four valid floats.
+        unsafe {
+            use std::arch::aarch64::*;
+            let mut out = [0.; 4];
+            let bits = vreinterpretq_u32_f32(vld1q_f32(self.0.as_ptr()));
+            let sign = vdupq_n_u32(0x8000_0000);
+            vst1q_f32(
+                out.as_mut_ptr(),
+                vreinterpretq_f32_u32(veorq_u32(bits, sign)),
+            );
+            Self(out)
+        }
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: SSE2 is mandatory on x86-64; unaligned load/store accesses four floats.
+        unsafe {
+            use std::arch::x86_64::*;
+            let mut out = [0.; 4];
+            let value = _mm_loadu_ps(self.0.as_ptr());
+            let sign = _mm_castsi128_ps(_mm_set1_epi32(i32::MIN));
+            _mm_storeu_ps(out.as_mut_ptr(), _mm_xor_ps(value, sign));
+            Self(out)
+        }
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+        Self(self.0.map(|v| f32::from_bits(v.to_bits() ^ 0x8000_0000)))
+    }
+}

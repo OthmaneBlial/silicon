@@ -115,6 +115,54 @@ fn vector_padding_and_implicit_lod_do_not_change_glsl_arithmetic() {
     );
 }
 #[test]
+fn float_negate_preserves_sign_bits_in_scalar_and_packet_execution() {
+    let module = Module::parse(include_bytes!("../assets/shaders/negate.frag.spv")).unwrap();
+    assert!(module.instructions().iter().any(|op| op.opcode == 127));
+    let fragment = module.translate().unwrap();
+    let source = Vec4::new(2., 0., -0., -4.);
+    let expected = [
+        (-2.0f32).to_bits(),
+        (-0.0f32).to_bits(),
+        0.0f32.to_bits(),
+        4.0f32.to_bits(),
+    ];
+    let result = fragment
+        .program
+        .execute(&[source], &[], |_, _| Err("no textures".into()), false)
+        .unwrap()
+        .outputs[0]
+        .to_array();
+    assert_eq!(result.map(f32::to_bits), expected);
+
+    let inputs = [
+        [source],
+        [Vec4::new(-1., 1., -0., 0.)],
+        [Vec4::new(3., -3., 0., -0.)],
+        [Vec4::new(0.5, -0.5, -2., 2.)],
+    ];
+    let empty: &[f32] = &[];
+    let packet = fragment
+        .program
+        .execute4(
+            [&inputs[0], &inputs[1], &inputs[2], &inputs[3]],
+            &[],
+            [empty; 4],
+            0b1111,
+            |_, _, _| Err("no textures".into()),
+            [false; 4],
+        )
+        .unwrap();
+    for (lane, input) in inputs.iter().enumerate() {
+        let expected = input[0]
+            .to_array()
+            .map(|v| f32::from_bits(v.to_bits() ^ 0x8000_0000).to_bits());
+        assert_eq!(
+            packet[lane].outputs[0].to_array().map(f32::to_bits),
+            expected
+        );
+    }
+}
+#[test]
 fn malformed_headers_ids_types_blocks_and_decorations_are_rejected() {
     let module = Module::parse(VERTEX).unwrap();
     let original = words(VERTEX);

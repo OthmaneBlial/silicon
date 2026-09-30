@@ -186,6 +186,7 @@ impl Program {
                 }
                 Uniform { dst, slot } => (Some(dst), splat(get(slot)?)),
                 Const { dst, value } => (Some(dst), splat(value)),
+                Neg { dst, src } => (Some(dst), std::array::from_fn(|i| -regs[src as usize][i])),
                 Add { dst, a, b } => (
                     Some(dst),
                     std::array::from_fn(|i| regs[a as usize][i] + regs[b as usize][i]),

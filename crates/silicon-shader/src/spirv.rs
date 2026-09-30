@@ -71,6 +71,7 @@ pub fn name(op: u16) -> &'static str {
         83 => "OpCopyObject",
         87 => "OpImageSampleImplicitLod",
         88 => "OpImageSampleExplicitLod",
+        127 => "OpFNegate",
         129 => "OpFAdd",
         131 => "OpFSub",
         133 => "OpFMul",
@@ -138,7 +139,7 @@ impl Op {
             0 | 56 | 252 | 253 | 255 => (0, 0),
             19 | 20 | 17 | 248 | 249 => (1, 1),
             14 | 16 | 22 | 41 | 42 | 247 => (2, 2),
-            21 | 23 | 24 | 32 | 43 | 61 | 83 | 168 | 250 => (3, 3),
+            21 | 23 | 24 | 32 | 43 | 61 | 83 | 127 | 168 | 250 => (3, 3),
             59 => (3, 4),
             65 => (4, 5),
             12 => (5, 7),
@@ -221,7 +222,7 @@ impl Op {
                 r.extend_from_slice(&a[2..]);
                 (Some(a[1]), r)
             }
-            61 | 81 | 83 | 168 => (Some(a[1]), vec![a[0], a[2]]),
+            61 | 81 | 83 | 127 | 168 => (Some(a[1]), vec![a[0], a[2]]),
             62 => (None, a.clone()),
             79
             | 87
@@ -1109,6 +1110,21 @@ impl<'a> Compiler<'a> {
                     return Err("copy object type mismatch".into());
                 }
                 self.values.insert(a[1], v);
+            }
+            127 => {
+                let (src, src_ty, _) = self.reg(a[2])?;
+                if src_ty != a[0] || !matches!(self.ty(src_ty)?, Ty::Float | Ty::Vector(_)) {
+                    return Err("float negate type mismatch".into());
+                }
+                let r = self.emit(|dst| Sir::Neg { dst, src })?;
+                let r = self.canonical(r, self.lanes(a[0])?)?;
+                self.values.insert(
+                    a[1],
+                    Typed {
+                        ty: a[0],
+                        value: Value::Reg(r, false),
+                    },
+                );
             }
             129 | 131 | 133 | 136 | 142 | 148 => {
                 let (x, xt, _) = self.reg(a[2])?;
