@@ -1,6 +1,7 @@
 //! SIR: a bounded, validated vec4 register machine shared by both shader stages.
 use serde::{Deserialize, Serialize};
 use silicon_math::Vec4;
+pub mod spirv;
 pub type Result<T> = std::result::Result<T, String>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Instruction {
@@ -64,6 +65,12 @@ pub enum Instruction {
         src: u8,
         lanes: [u8; 4],
     },
+    /// Each output lane selects a lane from its corresponding source register.
+    Compose {
+        dst: u8,
+        sources: [u8; 4],
+        lanes: [u8; 4],
+    },
     /// Four consecutive row-major uniform vec4s form the matrix.
     Mat4 {
         dst: u8,
@@ -71,6 +78,11 @@ pub enum Instruction {
         uniform: u8,
     },
     Sample {
+        dst: u8,
+        uv: u8,
+        texture: u8,
+    },
+    SampleImplicit {
         dst: u8,
         uv: u8,
         texture: u8,
@@ -165,6 +177,19 @@ impl Program {
                     }
                     Some(dst)
                 }
+                Instruction::Compose {
+                    dst,
+                    sources,
+                    lanes,
+                } => {
+                    for src in sources {
+                        source(src)?;
+                    }
+                    if lanes.iter().any(|&i| i >= 4) {
+                        return Err("SIR compose lane exceeds 3".into());
+                    }
+                    Some(dst)
+                }
                 Instruction::Mat4 { dst, src, uniform } => {
                     source(src)?;
                     if uniform > 60 {
@@ -172,7 +197,8 @@ impl Program {
                     }
                     Some(dst)
                 }
-                Instruction::Sample { dst, uv, texture } => {
+                Instruction::Sample { dst, uv, texture }
+                | Instruction::SampleImplicit { dst, uv, texture } => {
                     source(uv)?;
                     if texture >= 16 {
                         return Err("SIR texture slot exceeds 15".into());
@@ -207,6 +233,16 @@ impl Program {
         &self,
         inputs: &[Vec4],
         uniforms: &[Vec4],
+        sample: S,
+        tracing: bool,
+    ) -> Result<Execution> {
+        self.execute_with_lod(inputs, uniforms, &[], sample, tracing)
+    }
+    pub fn execute_with_lod<S: FnMut(usize, Vec4) -> Result<Vec4>>(
+        &self,
+        inputs: &[Vec4],
+        uniforms: &[Vec4],
+        implicit_lods: &[f32],
         mut sample: S,
         tracing: bool,
     ) -> Result<Execution> {
@@ -278,6 +314,16 @@ impl Program {
                     let v = regs[src as usize].to_array();
                     (Some(dst), Vec4::from_array(lanes.map(|i| v[i as usize])))
                 }
+                Instruction::Compose {
+                    dst,
+                    sources,
+                    lanes,
+                } => (
+                    Some(dst),
+                    Vec4::from_array(std::array::from_fn(|i| {
+                        regs[sources[i] as usize].to_array()[lanes[i] as usize]
+                    })),
+                ),
                 Instruction::Mat4 { dst, src, uniform } => {
                     let v = regs[src as usize];
                     (
@@ -290,11 +336,23 @@ impl Program {
                         ),
                     )
                 }
-                Instruction::Sample { dst, uv, texture } => {
+                Instruction::Sample { dst, uv, texture }
+                | Instruction::SampleImplicit { dst, uv, texture } => {
                     result.samples += 1;
+                    let mut coordinate = regs[uv as usize];
+                    if matches!(op, Instruction::SampleImplicit { .. }) {
+                        coordinate.z = *implicit_lods.get(texture as usize).ok_or_else(|| {
+                            format!(
+                                "SIR instruction {pc}: missing implicit LOD for texture {texture}"
+                            )
+                        })?;
+                        if !coordinate.z.is_finite() {
+                            return Err(format!("SIR instruction {pc}: non-finite implicit LOD"));
+                        }
+                    }
                     (
                         Some(dst),
-                        sample(texture as usize, regs[uv as usize])
+                        sample(texture as usize, coordinate)
                             .map_err(|e| format!("SIR instruction {pc}: {e}"))?,
                     )
                 }

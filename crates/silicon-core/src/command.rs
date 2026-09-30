@@ -188,11 +188,18 @@ impl Device {
                         },
                         |f| {
                             let mut input = f.varyings;
-                            let lod = textures[0].map_or(0., |(t, _)| t.lod(f.uv_dx, f.uv_dy));
-                            input[1].z = lod;
+                            let lods =
+                                textures.map(|t| t.map_or(0., |(t, _)| t.lod(f.uv_dx, f.uv_dy)));
+                            input[1].z = lods[0];
                             let e = p
                                 .fragment
-                                .execute(&input, u, sample, debug == Some((f.x, f.y)))
+                                .execute_with_lod(
+                                    &input,
+                                    u,
+                                    &lods,
+                                    sample,
+                                    debug == Some((f.x, f.y)),
+                                )
                                 .map_err(|e| {
                                     format!(
                                         "command {number}, pixel {},{}, fragment shader: {e}",
@@ -210,7 +217,12 @@ impl Device {
                     let count_samples = |p: &Program| {
                         p.instructions()
                             .iter()
-                            .filter(|op| matches!(op, Instruction::Sample { .. }))
+                            .filter(|op| {
+                                matches!(
+                                    op,
+                                    Instruction::Sample { .. } | Instruction::SampleImplicit { .. }
+                                )
+                            })
                             .count() as u64
                     };
                     stats.draws += 1;

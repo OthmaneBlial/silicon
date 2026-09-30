@@ -18,7 +18,7 @@ stencil and blending generate scene pixels entirely on the CPU.
 
 [Watch the CPU-rendered animation](assets/demos/showcase.mp4) ·
 [Architecture](docs/architecture.md) · [Pipeline](docs/graphics-pipeline.md) ·
-[Shader VM](docs/sir.md) · [Roadmap](docs/roadmap.md)
+[Shader VM](docs/sir.md) · [SPIR-V subset](docs/spirv.md) · [Roadmap](docs/roadmap.md)
 
 ## Run it
 
@@ -54,6 +54,17 @@ The showcase uses Rust vertex/fragment closures, a real original OBJ sculpture,
 filtered textures, smooth normals, a normal matrix, Lambert/Blinn-Phong lighting,
 a directional light and a point light. The `shader_cube` executes **both stages**
 through SILICON's validated SIR bytecode interpreter and owned GPU-like commands.
+The `spirv_cube` loads ordinary externally compiled GLSL vertex/fragment shaders,
+validates a strict SPIR-V 1.0 subset and translates it into the same CPU VM.
+
+```sh
+cargo run --release -p silicon-cli -- run spirv_cube
+cargo run --release -p silicon-cli -- inspect-shader assets/shaders/textured.frag.spv
+cargo run --release -p silicon-cli -- render-shaders assets/shaders/textured.vert.spv assets/shaders/textured.frag.spv --output output/glsl.png
+```
+
+See the [exact SPIR-V subset and binding contract](docs/spirv.md).
+External compiler tools are needed only to regenerate shader fixtures.
 
 ```sh
 cargo run --release -p silicon-cli -- render shader_cube --capture output/frame.silicon
@@ -66,7 +77,7 @@ Captures embed actual buffers, textures, uniforms, pipeline state, commands and
 shader bytecode. Replays compare byte-for-byte to the original framebuffer.
 Pixel traces expose primitives, barycentrics, varying values, depth rejection,
 shader instructions, sampled values and final color. Native closures currently
-cannot be captured; recorded SIR commands can.
+cannot be captured; recorded SIR commands, including translated SPIR-V, can.
 
 ```mermaid
 flowchart LR
@@ -90,7 +101,7 @@ flowchart LR
 | Interpolation | Colors/UV/normals/custom vec4 varyings, perspective reconstruction, affine NDC depth |
 | Attachments | RGBA8/BGRA8, depth with 8 compare modes, stencil masks/operations |
 | Texturing | RGBA8/RGB8/R8, nearest/bilinear/trilinear, clamp/repeat/mirror, mip generation/LOD |
-| Shaders | Rust closures; validated bounded SIR vec4 register interpreter |
+| Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 → SIR graphics subset |
 | Output merger | Replace, source alpha, additive and multiplicative blending; color/depth write enables |
 | Execution | Scalar reference, optional NEON/AVX2 coverage4, scoped threads owning disjoint bands |
 | Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling |
@@ -127,15 +138,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 Tests cover math, framebuffer bytes, shared-edge ownership, clipping, depth and
 discard, perspective interpolation, texture addressing/mips, OBJ bounds, stencil,
-shader validation/tracing, command validation, exact capture replay, an approved
+shader validation/tracing, GLSL/SPIR-V translation and malformed modules,
+command validation, exact capture replay, an approved
 PNG and scalar/SIMD/parallel equivalence. Golden changes require an explicit
 `cargo run --release --example shader_cube -- --bless` and image review.
 
 ## Boundaries
 
-This is a research software GPU, not a conformant driver. **SPIR-V, GLSL/WGSL,
-Vulkan/OpenGL compatibility, compute, JIT, MSAA, shadow maps and games are not
-implemented.** Do not infer support from the long-term roadmap. Multiple color
+This is a research software GPU, not a conformant driver. SPIR-V support is
+a narrow straight-line graphics subset with a fixed binding contract. **General
+SPIR-V/GLSL compatibility, WGSL, Vulkan/OpenGL compatibility, compute, JIT, MSAA,
+shadow maps and games are not implemented.** Do not infer support from the long-term roadmap. Multiple color
 attachments and asynchronous queues are also future work.
 
 No Mesa, LLVMpipe, SwiftShader, ANGLE, wgpu backend or existing rasterizer

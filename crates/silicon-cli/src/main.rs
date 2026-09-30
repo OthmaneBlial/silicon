@@ -109,8 +109,12 @@ fn frame(r: &mut Renderer, scene: &Scene, threads: usize) -> Result<Option<Submi
         r.render_bands(threads, |band| frame(band, scene, 1).map(|_| ()))?;
         return Ok(None);
     }
-    if scene.scene == "shader_cube" {
-        let c = demo::shader_cube(scene.width, scene.height, scene.time)?;
+    if scene.scene == "shader_cube" || scene.scene == "spirv_cube" {
+        let c = if scene.scene == "spirv_cube" {
+            demo::spirv_cube(scene.width, scene.height, scene.time)?
+        } else {
+            demo::shader_cube(scene.width, scene.height, scene.time)?
+        };
         Ok(Some(Device.submit(&c.commands, r)?))
     } else {
         demo::render_into(r, &scene.scene, scene.time)?;
@@ -151,22 +155,93 @@ fn report(r: &Renderer, elapsed: f64, submission: Option<&Submission>) {
         );
     }
 }
+fn load_shader(path: &str) -> Result<(shader::spirv::Module, shader::spirv::Compiled)> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > 1024 * 1024 {
+        return Err(format!("{path}: SPIR-V exceeds 1 MiB").into());
+    }
+    let mut bytes = Vec::new();
+    file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    let module = shader::spirv::Module::parse(&bytes).map_err(|e| format!("{path}: {e}"))?;
+    let compiled = module.translate().map_err(|e| format!("{path}: {e}"))?;
+    Ok((module, compiled))
+}
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let command = args.first().map_or("help", String::as_str);
     if command == "help" || command == "--help" {
         println!(
-            "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n\nScenes: showcase, cube, textured_cube, triangle_3d, shader_cube\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
+            "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n  silicon inspect-shader shader.spv\n  silicon render-shaders vertex.spv fragment.spv [render options]\n\nExecution: --backend scalar|simd --threads 1..64\nScenes: showcase, cube, textured_cube, triangle_3d, shader_cube, spirv_cube\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
         );
         return Ok(());
     }
     if command == "info" {
         println!(
-            "SILICON {}\nHost: {} / {}\nThreads available: {}\nRenderer: CPU / scalar / 16x16 tiles\nShader engines: Rust closures, validated SIR interpreter\nCompatibility: no Vulkan/OpenGL/SPIR-V runtime",
+            "SILICON {}\nHost: {} / {}\nThreads available: {}\nRenderer: CPU / scalar / 16x16 tiles\nShader engines: Rust closures, validated SIR interpreter, strict SPIR-V 1.0 subset\nCompatibility: no Vulkan/OpenGL driver",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::ARCH,
             std::env::consts::OS,
             std::thread::available_parallelism().map_or(1, usize::from)
+        );
+        return Ok(());
+    }
+    if command == "inspect-shader" || command == "render-shaders" {
+        let path = args.get(1).ok_or("SPIR-V path required")?;
+        let (module, vertex) = load_shader(path)?;
+        if command == "inspect-shader" {
+            println!(
+                "SPIR-V 1.0 | {:?} main | ID bound {} | {} binary / {} SIR instructions",
+                vertex.stage,
+                module.bound(),
+                module.instructions().len(),
+                vertex.program.instructions().len()
+            );
+            println!(
+                "Inputs: {:?} | outputs: {:?}",
+                vertex.inputs, vertex.outputs
+            );
+            for op in module.instructions() {
+                println!(
+                    "word {}: {} {:?}",
+                    op.word,
+                    shader::spirv::name(op.opcode),
+                    op.operands
+                );
+            }
+            return Ok(());
+        }
+        let fragment_path = args.get(2).ok_or("fragment SPIR-V path required")?;
+        let (_, fragment) = load_shader(fragment_path)?;
+        shader::spirv::link(&vertex, &fragment)?;
+        let o = options(&args[3..])?;
+        let c = demo::shader_cube_with_programs(
+            o.scene.width,
+            o.scene.height,
+            o.scene.time,
+            vertex.program,
+            fragment.program,
+        )?;
+        let mut r = Renderer::new(o.scene.width, o.scene.height)?;
+        r.backend = o.backend;
+        r.debug_pixel = o.pixel;
+        let start = Instant::now();
+        let submission = if o.threads == 1 {
+            Some(Device.submit(&c.commands, &mut r)?)
+        } else {
+            r.render_bands(o.threads, |band| {
+                Device.submit(&c.commands, band).map(|_| ())
+            })?;
+            None
+        };
+        report(&r, start.elapsed().as_secs_f64(), submission.as_ref());
+        r.framebuffer.save_png(&o.output)?;
+        if let Some(path) = o.capture {
+            c.save(path)?;
+        }
+        println!(
+            "Saved {} from externally compiled GLSL/SPIR-V through SIR",
+            o.output
         );
         return Ok(());
     }
@@ -337,10 +412,12 @@ fn run() -> Result<()> {
         }
     }
     if let Some(path) = o.capture {
-        if o.scene.scene != "shader_cube" {
-            return Err("serialized capture currently requires the SIR shader_cube scene".into());
-        }
-        demo::shader_cube(o.scene.width, o.scene.height, o.scene.time)?.save(&path)?;
+        let c = match o.scene.scene.as_str() {
+            "shader_cube" => demo::shader_cube(o.scene.width, o.scene.height, o.scene.time)?,
+            "spirv_cube" => demo::spirv_cube(o.scene.width, o.scene.height, o.scene.time)?,
+            _ => return Err("serialized capture requires shader_cube or spirv_cube".into()),
+        };
+        c.save(&path)?;
         println!("Captured {path}");
     }
     r.framebuffer.save_png(&o.output)?;

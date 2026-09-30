@@ -27,6 +27,16 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
     if !time.is_finite() {
         return Err("scene time must be finite".into());
     }
+    if name == "shader_cube" || name == "spirv_cube" {
+        let (width, height) = r.surface_size();
+        let capture = if name == "spirv_cube" {
+            spirv_cube(width, height, time)?
+        } else {
+            shader_cube(width, height, time)?
+        };
+        Device.submit(&capture.commands, r)?;
+        return Ok(());
+    }
     r.clear(Color::new(0.022, 0.032, 0.05, 1.));
     static TEXTURE: OnceLock<Texture> = OnceLock::new();
     let texture = TEXTURE.get_or_init(|| Texture::checker(128).expect("valid built-in checker"));
@@ -242,17 +252,6 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
 /// A fully recorded SIR draw: geometry, uniforms, textures, pipeline and shader bytecode.
 pub fn shader_cube(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
     use shader::{Instruction::*, Program};
-    use std::sync::Arc;
-    if !time.is_finite() {
-        return Err("scene time must be finite".into());
-    }
-    Framebuffer::new(width, height)?;
-    let device = Device;
-    let mesh = Mesh::cube();
-    let model = crate::Mat4::rotation_y(time + 0.55) * crate::Mat4::rotation_x(0.2);
-    let mvp = crate::Mat4::perspective(0.78, width as f32 / height as f32, 0.1, 60.)
-        * crate::Mat4::look_at(Vec3::new(4., 3., 5.), Vec3::ZERO, Vec3::new(0., 1., 0.))
-        * model;
     let vertex = Program::new(vec![
         Input { dst: 0, slot: 0 },
         Mat4 {
@@ -306,6 +305,27 @@ pub fn shader_cube(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
         Add { dst: 6, a: 6, b: 8 },
         Output { slot: 0, src: 6 },
     ])?;
+    shader_cube_with_programs(width, height, time, vertex, fragment)
+}
+/// The same cube/resources, using caller-supplied vertex and fragment programs.
+pub fn shader_cube_with_programs(
+    width: u32,
+    height: u32,
+    time: f32,
+    vertex: shader::Program,
+    fragment: shader::Program,
+) -> Result<FrameCapture> {
+    use std::sync::Arc;
+    if !time.is_finite() {
+        return Err("scene time must be finite".into());
+    }
+    Framebuffer::new(width, height)?;
+    let device = Device;
+    let mesh = Mesh::cube();
+    let model = crate::Mat4::rotation_y(time + 0.55) * crate::Mat4::rotation_x(0.2);
+    let mvp = crate::Mat4::perspective(0.78, width as f32 / height as f32, 0.1, 60.)
+        * crate::Mat4::look_at(Vec3::new(4., 3., 5.), Vec3::ZERO, Vec3::new(0., 1., 0.))
+        * model;
     let mut uniforms: Vec<_> = mvp.0.into_iter().map(Vec4::from_array).collect();
     uniforms.extend(model.0.into_iter().map(Vec4::from_array));
     let mut commands = device.commands();
@@ -330,4 +350,27 @@ pub fn shader_cube(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
         height,
         commands,
     })
+}
+
+/// GLSL compiled externally by glslang, then translated and executed by SILICON.
+pub fn spirv_cube(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
+    use shader::{
+        Program,
+        spirv::{Module, link},
+    };
+    static PROGRAMS: OnceLock<std::result::Result<(Program, Program), String>> = OnceLock::new();
+    let programs = PROGRAMS
+        .get_or_init(|| {
+            let vertex =
+                Module::parse(include_bytes!("../../../assets/shaders/textured.vert.spv"))?
+                    .translate()?;
+            let fragment =
+                Module::parse(include_bytes!("../../../assets/shaders/textured.frag.spv"))?
+                    .translate()?;
+            link(&vertex, &fragment)?;
+            Ok((vertex.program, fragment.program))
+        })
+        .as_ref()
+        .map_err(|e| e.clone())?;
+    shader_cube_with_programs(width, height, time, programs.0.clone(), programs.1.clone())
 }
