@@ -8,6 +8,13 @@ fn splat(v: Vec4) -> Register {
 fn lane(v: Register, i: usize) -> Vec4 {
     Vec4::from_array(v.map(|v| v.0[i]))
 }
+fn count_instructions(results: &mut [Execution; 4], mask: u8, count: usize) {
+    for (i, result) in results.iter_mut().enumerate() {
+        if mask & (1 << i) != 0 {
+            result.instructions += count;
+        }
+    }
+}
 #[inline]
 fn dot(a: Register, b: Register, n: usize) -> Lanes {
     (0..n).fold(Lanes::splat(0.), |sum, i| sum + a[i] * b[i])
@@ -58,8 +65,8 @@ impl Program {
         let mut regs = [[Lanes::splat(0.); 4]; 64];
         let (mut current, mut live, mut choice) = (active, active, 0u8);
         let mut selections = Vec::new();
-        // One counter per execution mask avoids four scattered result writes per instruction.
-        let mut counts = [0usize; 16];
+        // Flush a run only when its mask changes, avoiding per-instruction result writes.
+        let (mut counted_mask, mut count) = (active, 0);
         let trace_mask = (0..4).fold(0u8, |mask, i| mask | (u8::from(tracing[i]) << i));
         for (pc, op) in self.instructions().iter().enumerate() {
             use Instruction::*;
@@ -314,7 +321,12 @@ impl Program {
                     invalid.trailing_zeros()
                 ));
             }
-            counts[executing as usize] += 1;
+            if executing != counted_mask {
+                count_instructions(&mut results, counted_mask, count);
+                counted_mask = executing;
+                count = 0;
+            }
+            count += 1;
             if executing & trace_mask != 0 {
                 for i in 0..4 {
                     if enabled(i) && tracing[i] {
@@ -343,14 +355,7 @@ impl Program {
                 };
             }
         }
-        for (i, result) in results.iter_mut().enumerate() {
-            result.instructions = counts
-                .iter()
-                .enumerate()
-                .filter(|(mask, _)| mask & (1 << i) != 0)
-                .map(|(_, count)| count)
-                .sum();
-        }
+        count_instructions(&mut results, counted_mask, count);
         Ok(results)
     }
 }

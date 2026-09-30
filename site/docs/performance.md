@@ -17,10 +17,13 @@ and are not the final packaged executable's measurements.
 A subsequent three-second native CPU sample of the initial 0.5 executable
 (SHA-256 `764fb7b5f10c214d35252e636cc280c0cd502a50cad0342869c3b83c28775f9d`)
 and ARM64 disassembly located repeated result-counter loads/adds/stores in the
-fragment VM. The counter update now increments one of sixteen execution-mask
-buckets and reconstructs per-fragment totals after the program, while traces
-use a combined mask to bypass the per-lane tracing loop when disabled.
+fragment VM. The counter update now groups consecutive instructions with the same execution
+mask and applies each run's count to its active fragments, while traces use a
+combined mask to bypass the per-lane tracing loop when disabled.
 All-mask scalar/packet tests retain identical instruction totals and traces.
+A [histogram-counter trial](../benchmarks/apple-m2-control-histogram-2026-10-01.json)
+did not demonstrate a gain on the cutout scene and was replaced by this run
+counter; the raw unsuccessful measurement is retained.
 
 ## 0.4 masked shader packets
 
