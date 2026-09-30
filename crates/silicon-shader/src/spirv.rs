@@ -1164,9 +1164,11 @@ impl<'a> Compiler<'a> {
                     if op.opcode == 169 {
                         let (z, zt, zuv) = self.reg(a[4])?;
                         if self.ty(xt)? != Ty::Bool || yt != zt || yt != a[0] {
-                            return Err("Select requires scalar bool and matching float/vector/bool alternatives".into());
+                            return Err("Select requires scalar bool and matching scalar float/bool alternatives".into());
                         }
-                        self.value_lanes(yt)?;
+                        if self.value_lanes(yt)? != 1 {
+                            return Err("SPIR-V 1.0 vector Select requires a vector bool condition, which is unsupported".into());
+                        }
                         let r = self.emit(|dst| Sir::Select {
                             dst,
                             condition: x,

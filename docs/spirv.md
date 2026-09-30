@@ -66,7 +66,7 @@ commands; replay does not need the original SPIR-V files.
   float/vector/bool `OpPhi`, fragment `OpKill`, and early `OpReturn`.
   Scalar float ordered comparisons (equal, unequal, less/greater, inclusive forms),
   `OpFUnordNotEqual`, scalar bool logical equal/unequal/and/or/not, and `OpSelect`
-  with a scalar bool and matching float/vector/bool alternatives.
+  with a scalar bool and matching scalar float/bool alternatives.
 - Location, Binding, DescriptorSet, Block, BuiltIn Position, ColMajor,
   MatrixStride and Offset decorations, checked against the binding contract.
   Debug names and source-language metadata are read without executing them.

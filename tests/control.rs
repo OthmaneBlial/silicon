@@ -529,6 +529,32 @@ fn malformed_selection_graphs_phi_and_path_definitions_are_rejected() {
         w[op.word + 1 + operand] = value;
         reject(w);
     }
+    // SPIR-V 1.0 requires a vector bool condition for vector Select results.
+    let constants: Vec<_> = module
+        .instructions()
+        .iter()
+        .filter(|op| op.opcode == 44)
+        .collect();
+    let mut w = original.clone();
+    let result = w[3];
+    w[3] += 1;
+    w.splice(
+        merge.word..merge.word,
+        [
+            (6 << 16) | 169,
+            constants[0].operands[0],
+            result,
+            branch.operands[0],
+            constants[0].operands[1],
+            constants[1].operands[1],
+        ],
+    );
+    let b: Vec<_> = w.into_iter().flat_map(u32::to_le_bytes).collect();
+    let error = Module::parse(&b).unwrap().translate().unwrap_err();
+    assert!(
+        error.contains("OpSelect") && error.contains("vector bool"),
+        "{error}"
+    );
     // Remove the local's else initialization in the non-SSA version.
     let local_source = include_bytes!("../assets/shaders/control.frag.spv");
     let local_module = Module::parse(local_source).unwrap();
