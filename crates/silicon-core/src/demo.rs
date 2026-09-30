@@ -34,6 +34,9 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
         r.stats += &shadow_stats;
         return Ok(());
     }
+    if name == "stencil" {
+        return stencil_showcase(r, time);
+    }
     if matches!(
         name,
         "shader_cube" | "spirv_cube" | "spirv_showcase" | "spirv_cutout"
@@ -137,6 +140,114 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
     };
     visit_scene(name, time, draw)
 }
+
+fn stencil_vertex(v: &Vertex) -> VertexOutput {
+    VertexOutput {
+        position: v.position.extend(1.),
+        varyings: [
+            v.color,
+            Vec4::new(v.uv.x, v.uv.y, 0., 0.),
+            Vec4::ZERO,
+            Vec4::ZERO,
+        ],
+    }
+}
+
+fn stencil_showcase(r: &mut Renderer, time: f32) -> Result<()> {
+    let (width, height) = r.surface_size();
+    r.clear(Color::new(0.025, 0.035, 0.055, 1.));
+    let stencil = StencilState {
+        compare: Compare::Always,
+        reference: 1,
+        read_mask: 255,
+        write_mask: 255,
+        fail: StencilOp::Keep,
+        depth_fail: StencilOp::Keep,
+        pass: StencilOp::Replace,
+    };
+    let radius_y = 0.8;
+    let radius_x = radius_y * height as f32 / width as f32;
+    let mut mask = Vec::with_capacity(64 * 3);
+    for i in 0..64 {
+        let a = i as f32 * std::f32::consts::TAU / 64.;
+        let b = (i + 1) as f32 * std::f32::consts::TAU / 64.;
+        for (x, y) in [
+            (0., 0.),
+            (a.cos() * radius_x, a.sin() * radius_y),
+            (b.cos() * radius_x, b.sin() * radius_y),
+        ] {
+            mask.push(Vertex::new(Vec3::new(x, y, 0.5), Color::WHITE));
+        }
+    }
+    r.draw(
+        &mask,
+        None,
+        Pipeline {
+            color_write: false,
+            depth_write: false,
+            stencil: Some(stencil),
+            ..Default::default()
+        },
+        stencil_vertex,
+        |f| Some(f.color()),
+    )?;
+
+    static TEXTURE: OnceLock<Texture> = OnceLock::new();
+    let texture = TEXTURE.get_or_init(|| Texture::checker(128).expect("valid checker texture"));
+    let cube = Mesh::cube();
+    let mvp = Mat4::perspective(0.85, width as f32 / height as f32, 0.1, 20.)
+        * Mat4::look_at(Vec3::new(3., 2., 4.), Vec3::ZERO, Vec3::new(0., 1., 0.))
+        * Mat4::rotation_y(time + 0.6);
+    r.try_draw(
+        &cube.vertices,
+        Some(&cube.indices),
+        Pipeline {
+            stencil: Some(StencilState {
+                compare: Compare::Equal,
+                write_mask: 0,
+                pass: StencilOp::Keep,
+                ..stencil
+            }),
+            ..Default::default()
+        },
+        |v| {
+            let mut out = stencil_vertex(v);
+            out.position = mvp.transform(v.position.extend(1.));
+            Ok(out)
+        },
+        |f| {
+            Ok(Some(texture.sample(
+                f.uv(),
+                texture.lod(f.uv_dx, f.uv_dy),
+                Sampler::default(),
+            )?))
+        },
+    )?;
+
+    let overlay = [
+        Vertex::new(Vec3::new(-0.9, -0.6, 0.1), Color::new(1., 0.2, 0.1, 0.45)),
+        Vertex::new(Vec3::new(0.9, -0.6, 0.1), Color::new(0.1, 1., 0.6, 0.45)),
+        Vertex::new(Vec3::new(0., 0.7, 0.1), Color::new(0.2, 0.3, 1., 0.45)),
+    ];
+    r.draw(
+        &overlay,
+        None,
+        Pipeline {
+            blend: Blend::Alpha,
+            depth_write: false,
+            stencil: Some(StencilState {
+                compare: Compare::Equal,
+                write_mask: 0,
+                pass: StencilOp::Keep,
+                ..stencil
+            }),
+            ..Default::default()
+        },
+        stencil_vertex,
+        |f| Some(f.color()),
+    )
+}
+
 /// Both shader backends draw the same geometry, transforms and materials.
 fn visit_scene(
     name: &str,

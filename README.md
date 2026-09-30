@@ -39,6 +39,7 @@ Headless rendering requires no graphics device or display.
 ```sh
 cargo run --release -p silicon-cli -- render assets/scenes/showcase.json --output output/scene.png
 cargo run --release -p silicon-cli -- render showcase --width 640 --height 400 --threads 4
+cargo run --release -p silicon-cli -- render stencil --backend simd --threads 4 --output output/stencil.png
 cargo run --release --example triangle
 cargo run --release --example textured_cube
 cargo run --release --example stencil
@@ -62,6 +63,8 @@ The `spirv_cutout` executes nested GLSL branches, conditional texture sampling,
 Phi/local reconvergence, early return and fragment discard.
 The `shadow_showcase` renders a CPU depth pass for the same OBJ scene and samples
 its depth texture from an ordinary GLSL fragment shader through explicit-LOD SPIR-V.
+The `stencil` scene uses a circular portal mask for both a textured cube and a
+translucent overlay.
 
 ```sh
 cargo run --release -p silicon-cli -- run spirv_showcase --threads 4

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0 — 2026-10-01
+
+- Make the stencil portal a shared CLI/library scene and constrain its
+  translucent overlay with the same stencil mask.
+- Verify the portal boundary and exact color/depth/stencil output between scalar
+  rendering and SIMD four-band rendering.
+
 ## 0.6.0 — 2026-10-01
 
 - Add validated single-level `Depth32Float` textures and explicit scalar-LOD
