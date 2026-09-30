@@ -3,6 +3,7 @@
 **A GPU built entirely in software.**
 
 [![CI](https://github.com/OthmaneBlial/silicon/actions/workflows/ci.yml/badge.svg)](https://github.com/OthmaneBlial/silicon/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/OthmaneBlial/silicon)](https://github.com/OthmaneBlial/silicon/releases/latest)
 
 [Project site](https://othmaneblial.github.io/silicon/) ·
 [Online docs](https://othmaneblial.github.io/silicon/docs.html)
@@ -20,6 +21,9 @@ stencil and blending generate scene pixels entirely on the CPU.
 [Shader VM](docs/sir.md) · [Roadmap](docs/roadmap.md)
 
 ## Run it
+
+[Download the macOS ARM64 CLI](https://github.com/OthmaneBlial/silicon/releases/latest)
+with checksums, or build from source:
 
 ```sh
 git clone https://github.com/OthmaneBlial/silicon
