@@ -294,6 +294,16 @@ pub fn shader_cube(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
         },
         Add { dst: 4, a: 4, b: 5 },
         Mul { dst: 6, a: 1, b: 4 },
+        Const {
+            dst: 7,
+            value: Vec4::new(1., 1., 1., 0.),
+        },
+        Mul { dst: 6, a: 6, b: 7 },
+        Const {
+            dst: 8,
+            value: Vec4::new(0., 0., 0., 1.),
+        },
+        Add { dst: 6, a: 6, b: 8 },
         Output { slot: 0, src: 6 },
     ])?;
     let mut uniforms: Vec<_> = mvp.0.into_iter().map(Vec4::from_array).collect();

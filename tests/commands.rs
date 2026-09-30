@@ -13,7 +13,7 @@ fn capture_replay_is_exact_and_owns_resources() {
     let stats = Device.submit(&loaded.commands, &mut r).unwrap();
     assert_eq!(stats.draws, 1);
     assert_eq!(stats.texture_samples, r.stats.shaded);
-    assert_eq!(stats.shader_instructions, 24 * 10 + r.stats.shaded * 11);
+    assert_eq!(stats.shader_instructions, 24 * 10 + r.stats.shaded * 15);
 }
 #[test]
 fn invalid_command_stream_never_changes_target() {
@@ -34,7 +34,7 @@ fn selected_pixel_traces_executed_sir() {
     r.debug_pixel = Some((48, 32));
     let s = Device.submit(&c.commands, &mut r).unwrap();
     assert!(!s.shader_traces.is_empty());
-    assert_eq!(s.shader_traces[0].1.len(), 11);
+    assert_eq!(s.shader_traces[0].1.len(), 15);
     assert!(
         s.shader_traces[0]
             .1

@@ -26,7 +26,12 @@ pub fn name(backend: Backend) -> &'static str {
         "scalar (no SIMD backend)"
     }
 }
-pub fn coverage4(base: [i64; 3], step: [i64; 3], inclusive: [bool; 3], backend: Backend) -> u8 {
+pub(crate) fn coverage4(
+    base: [i64; 3],
+    step: [i64; 3],
+    inclusive: [bool; 3],
+    backend: Backend,
+) -> u8 {
     if backend == Backend::Simd {
         #[cfg(target_arch = "aarch64")]
         // SAFETY: NEON is mandatory on aarch64. The helper only loads fixed arrays.

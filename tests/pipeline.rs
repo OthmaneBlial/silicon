@@ -234,3 +234,41 @@ fn stencil_masks_restrict_color_and_pass_ops() {
     assert_eq!(r.framebuffer.pixel(12, 2), Some(Color::BLACK));
     assert!(r.stats.stencil_rejected > 0);
 }
+#[test]
+fn homogeneous_scale_and_extreme_coordinates_remain_safe() {
+    let v = triangle(0.5, Color::WHITE);
+    let mut reference = Renderer::new(8, 8).unwrap();
+    reference.clear(Color::BLACK);
+    reference
+        .draw(&v, None, Pipeline::default(), vertex, |f| Some(f.color()))
+        .unwrap();
+    for scale in [1e-20, 1e20] {
+        let mut r = Renderer::new(8, 8).unwrap();
+        r.clear(Color::BLACK);
+        r.draw(
+            &v,
+            None,
+            Pipeline::default(),
+            |v| {
+                let mut o = vertex(v);
+                o.position = o.position * scale;
+                o
+            },
+            |f| Some(f.color()),
+        )
+        .unwrap();
+        assert_eq!(r.framebuffer.bytes(), reference.framebuffer.bytes());
+    }
+    let v = |p| VertexOutput {
+        position: p,
+        varyings: [Color::WHITE.0; 4],
+    };
+    let clipped = clip_triangle([
+        v(Vec4::new(f32::MAX, 0., 1., 2.)),
+        v(Vec4::new(0., -1., 1., 2.)),
+        v(Vec4::new(0., 1., 1., 2.)),
+    ]);
+    assert!(!clipped.is_empty());
+    assert!(clipped.iter().all(VertexOutput::is_finite));
+    assert!(clipped.iter().all(|v| v.position.x.abs() <= v.position.w));
+}

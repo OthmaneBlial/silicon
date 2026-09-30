@@ -35,7 +35,13 @@ fn options(args: &[String]) -> Result<Options> {
         .filter(|s| !s.starts_with('-'))
         .map_or("showcase", String::as_str);
     let scene = if Path::new(name).is_file() {
-        let bytes = std::fs::read(name)?;
+        use std::io::Read;
+        let file = std::fs::File::open(name)?;
+        if file.metadata()?.len() > 1024 * 1024 {
+            return Err("scene JSON exceeds 1 MiB".into());
+        }
+        let mut bytes = Vec::new();
+        file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
         if bytes.len() > 1024 * 1024 {
             return Err("scene JSON exceeds 1 MiB".into());
         }
@@ -132,6 +138,12 @@ fn report(r: &Renderer, elapsed: f64, submission: Option<&Submission>) {
         r.stats.vertex_time.as_secs_f64() * 1000.,
         r.stats.raster_time.as_secs_f64() * 1000.
     );
+    if r.profile_shaders {
+        println!(
+            "Fragment shader accumulated time: {:.3} ms (instrumented)",
+            r.stats.shader_time.as_secs_f64() * 1000.
+        );
+    }
     if let Some(s) = submission {
         println!(
             "Draws: {} | SIR instructions: {} | texture samples: {}",
@@ -211,6 +223,7 @@ fn run() -> Result<()> {
     }
     let mut o = options(&args[1..])?;
     let mut r = Renderer::new(o.scene.width, o.scene.height)?;
+    r.profile_shaders = command == "profile";
     r.debug_pixel = o.pixel;
     r.backend = o.backend;
     if command == "benchmark" {

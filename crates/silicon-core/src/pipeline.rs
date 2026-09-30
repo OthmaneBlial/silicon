@@ -185,13 +185,18 @@ pub fn clip_triangle(triangle: [VertexOutput; 3]) -> Vec<VertexOutput> {
     }
     let mut poly = triangle.to_vec();
     for plane in 0..6 {
-        let distance = |v: Vec4| match plane {
-            0 => v.w + v.x,
-            1 => v.w - v.x,
-            2 => v.w + v.y,
-            3 => v.w - v.y,
-            4 => v.z,
-            _ => v.w - v.z,
+        // f64 distances avoid overflow when an external shader emits large,
+        // finite clip coordinates. Intersections remain f32 shader values.
+        let distance = |v: Vec4| {
+            let (x, y, z, w) = (v.x as f64, v.y as f64, v.z as f64, v.w as f64);
+            match plane {
+                0 => w + x,
+                1 => w - x,
+                2 => w + y,
+                3 => w - y,
+                4 => z,
+                _ => w - z,
+            }
         };
         let mut out = Vec::with_capacity(poly.len() + 1);
         if let Some(&last) = poly.last() {
@@ -200,7 +205,19 @@ pub fn clip_triangle(triangle: [VertexOutput; 3]) -> Vec<VertexOutput> {
             for &b in &poly {
                 let db = distance(b.position);
                 if (da >= 0.) != (db >= 0.) {
-                    out.push(a.lerp(b, da / (da - db)));
+                    let aw = -db / (da - db);
+                    let bw = da / (da - db);
+                    let mix = |a: Vec4, b: Vec4| {
+                        let a = a.to_array();
+                        let b = b.to_array();
+                        Vec4::from_array(std::array::from_fn(|i| {
+                            (a[i] as f64 * aw + b[i] as f64 * bw) as f32
+                        }))
+                    };
+                    out.push(VertexOutput {
+                        position: mix(a.position, b.position),
+                        varyings: std::array::from_fn(|i| mix(a.varyings[i], b.varyings[i])),
+                    });
                 }
                 if db >= 0. {
                     out.push(b);

@@ -4,6 +4,7 @@ const SUBPIXEL: i64 = 256;
 const TILE: u32 = 16;
 #[derive(Clone, Debug, Default)]
 pub struct Statistics {
+    pub shader_time: Duration,
     pub vertices: u64,
     pub triangles: u64,
     pub clipped: u64,
@@ -25,6 +26,7 @@ pub struct PixelTrace {
     pub stencil_pass: bool,
 }
 pub struct Renderer {
+    pub profile_shaders: bool,
     row_offset: u32,
     viewport_height: u32,
     pub backend: Backend,
@@ -51,6 +53,7 @@ fn top_left(a: ScreenVertex, b: ScreenVertex) -> bool {
 impl Renderer {
     pub fn new(width: u32, height: u32) -> Result<Self> {
         Ok(Self {
+            profile_shaders: false,
             backend: Backend::Scalar,
             row_offset: 0,
             viewport_height: height,
@@ -146,22 +149,28 @@ impl Renderer {
         state: Pipeline,
         shader: &F,
     ) -> Result<()> {
-        if v.iter().any(|v| v.position.w <= 1e-8) {
+        if v.iter().any(|v| v.position.w <= 0.) {
             return Ok(());
         }
         let w = self.framebuffer.width;
         let h = self.framebuffer.height;
         let full_height = self.viewport_height;
+        let min_w = v.iter().map(|v| v.position.w).fold(f32::INFINITY, f32::min);
         let mut s = std::array::from_fn::<_, 3, _>(|source| {
             let v = v[source];
-            let iw = 1. / v.position.w;
+            // A common scale cancels from perspective reconstruction and avoids
+            // reciprocal overflow for tiny positive homogeneous coordinates.
+            let iw = min_w / v.position.w;
             ScreenVertex {
                 source,
-                x: ((v.position.x * iw * 0.5 + 0.5) * w as f32 * SUBPIXEL as f32).round() as i64,
-                y: ((0.5 - v.position.y * iw * 0.5) * full_height as f32 * SUBPIXEL as f32).round()
-                    as i64
+                x: ((v.position.x / v.position.w * 0.5 + 0.5) * w as f32 * SUBPIXEL as f32).round()
+                    as i64,
+                y: ((0.5 - v.position.y / v.position.w * 0.5)
+                    * full_height as f32
+                    * SUBPIXEL as f32)
+                    .round() as i64
                     - self.row_offset as i64 * SUBPIXEL,
-                z: v.position.z * iw,
+                z: v.position.z / v.position.w,
                 inv_w: iw,
                 varyings: v.varyings,
             }
@@ -285,6 +294,9 @@ impl Renderer {
         let varyings = interpolate(bary);
         let vx = interpolate(std::array::from_fn(|i| bary[i] + dx[i]));
         let vy = interpolate(std::array::from_fn(|i| bary[i] + dy[i]));
+        if !varyings.iter().all(|v| v.is_finite()) || !vx[1].is_finite() || !vy[1].is_finite() {
+            return Err("perspective interpolation exceeded finite f32 range".into());
+        }
         let input = Fragment {
             x,
             y: y + self.row_offset,
@@ -301,12 +313,16 @@ impl Renderer {
             uv_dx: Vec2::new(vx[1].x - varyings[1].x, vx[1].y - varyings[1].y),
             uv_dy: Vec2::new(vy[1].x - varyings[1].x, vy[1].y - varyings[1].y),
         };
+        let shader_start = (self.profile_shaders && stencil_pass && depth_pass).then(Instant::now);
         let output = if stencil_pass && depth_pass {
             self.stats.shaded += 1;
             shader(&input)?
         } else {
             None
         };
+        if let Some(start) = shader_start {
+            self.stats.shader_time += start.elapsed();
+        }
         if debug {
             self.traces.push(PixelTrace {
                 fragment: input,
@@ -433,6 +449,7 @@ impl Renderer {
             bands.push(Renderer {
                 framebuffer: fb,
                 backend: self.backend,
+                profile_shaders: self.profile_shaders,
                 stats: Statistics::default(),
                 debug_pixel: self.debug_pixel,
                 traces: Vec::new(),
@@ -479,6 +496,7 @@ impl Renderer {
             self.stats.shaded += band.stats.shaded;
             self.stats.early_z_rejected += band.stats.early_z_rejected;
             self.stats.stencil_rejected += band.stats.stencil_rejected;
+            self.stats.shader_time += band.stats.shader_time;
             self.stats.vertex_time += band.stats.vertex_time;
             self.stats.raster_time += band.stats.raster_time;
             self.traces.extend(band.traces);

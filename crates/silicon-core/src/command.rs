@@ -388,6 +388,9 @@ impl FrameCapture {
         Ok(capture)
     }
     pub fn replay(&self) -> Result<Renderer> {
+        if self.version != 1 {
+            return Err("unsupported capture version".into());
+        }
         let mut r = Renderer::new(self.width, self.height)?;
         Device.submit(&self.commands, &mut r)?;
         Ok(r)
