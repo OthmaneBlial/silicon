@@ -45,23 +45,30 @@ impl Program {
         if active & !15 != 0 {
             return Err("SIR packet mask exceeds four lanes".into());
         }
-        let enabled = |i: usize| active & (1 << i) != 0;
-        let mut results = std::array::from_fn(|i| Execution {
+        let mut results = std::array::from_fn(|_| Execution {
             outputs: [Vec4::ZERO; 8],
-            instructions: if enabled(i) {
-                self.instructions().len()
-            } else {
-                0
-            },
+            instructions: 0,
             samples: 0,
             trace: Vec::new(),
+            discarded: false,
         });
         if active == 0 {
             return Ok(results);
         }
         let mut regs = [[Lanes::splat(0.); 4]; 64];
+        let (mut current, mut live, mut choice) = (active, active, 0u8);
+        let mut selections = Vec::new();
         for (pc, op) in self.instructions().iter().enumerate() {
             use Instruction::*;
+            let executing = if matches!(op, Else | EndIf) {
+                selections.last().map_or(0, |&(parent, _)| parent & live)
+            } else {
+                current
+            };
+            if executing == 0 && !matches!(op, If { .. } | Else | EndIf) {
+                continue;
+            }
+            let enabled = |i: usize| executing & (1 << i) != 0;
             let get = |slot: u8| -> Result<Vec4> {
                 uniforms
                     .get(slot as usize)
@@ -69,6 +76,88 @@ impl Program {
                     .ok_or_else(|| format!("SIR instruction {pc}: missing uniform {slot}"))
             };
             let (dst, value) = match *op {
+                If { condition } => {
+                    let value = if executing != 0 {
+                        regs[condition as usize]
+                    } else {
+                        splat(Vec4::ZERO)
+                    };
+                    let yes = (0..4).fold(0u8, |mask, i| {
+                        mask | (u8::from(enabled(i) && value[0].0[i] != 0.) << i)
+                    });
+                    selections.push((current, yes));
+                    current = yes;
+                    (None, value)
+                }
+                Else => {
+                    let (parent, yes) = *selections.last().unwrap();
+                    current = parent & !yes & live;
+                    (None, splat(Vec4::ZERO))
+                }
+                EndIf => {
+                    let (parent, yes) = selections.pop().unwrap();
+                    current = parent & live;
+                    choice = yes;
+                    (None, splat(Vec4::ZERO))
+                }
+                Merge { dst, a, b } => (
+                    Some(dst),
+                    std::array::from_fn(|c| {
+                        Lanes(std::array::from_fn(|i| {
+                            regs[if choice & (1 << i) != 0 { a } else { b } as usize][c].0[i]
+                        }))
+                    }),
+                ),
+                Return | Discard => {
+                    for (i, result) in results.iter_mut().enumerate() {
+                        if enabled(i) {
+                            result.discarded = matches!(op, Discard);
+                        }
+                    }
+                    live &= !executing;
+                    current = 0;
+                    (None, splat(Vec4::ZERO))
+                }
+                Compare { dst, a, b, kind } => (
+                    Some(dst),
+                    std::array::from_fn(|c| {
+                        Lanes(std::array::from_fn(|i| {
+                            u8::from(kind.apply(regs[a as usize][c].0[i], regs[b as usize][c].0[i]))
+                                as f32
+                        }))
+                    }),
+                ),
+                Logical { dst, a, b, kind } => (
+                    Some(dst),
+                    std::array::from_fn(|c| {
+                        Lanes(std::array::from_fn(|i| {
+                            u8::from(kind.apply(regs[a as usize][c].0[i], regs[b as usize][c].0[i]))
+                                as f32
+                        }))
+                    }),
+                ),
+                Not { dst, src } => (
+                    Some(dst),
+                    regs[src as usize].map(|v| Lanes(v.0.map(|n| u8::from(n == 0.) as f32))),
+                ),
+                Select {
+                    dst,
+                    condition,
+                    a,
+                    b,
+                } => (
+                    Some(dst),
+                    std::array::from_fn(|c| {
+                        Lanes(std::array::from_fn(|i| {
+                            regs[if regs[condition as usize][c].0[i] != 0. {
+                                a
+                            } else {
+                                b
+                            } as usize][c]
+                                .0[i]
+                        }))
+                    }),
+                ),
                 Input { dst, slot } => {
                     let mut values = [Vec4::ZERO; 4];
                     for i in 0..4 {
@@ -215,7 +304,7 @@ impl Program {
                     (None, regs[src as usize])
                 }
             };
-            let invalid = crate::lanes::non_finite(value) & active;
+            let invalid = crate::lanes::non_finite(value) & executing;
             if invalid != 0 {
                 return Err(format!(
                     "SIR instruction {pc}, lane {}: non-finite arithmetic result",
@@ -223,6 +312,9 @@ impl Program {
                 ));
             }
             for i in 0..4 {
+                if enabled(i) {
+                    results[i].instructions += 1;
+                }
                 if enabled(i) && tracing[i] {
                     results[i].trace.push(Trace {
                         instruction: pc,
@@ -232,7 +324,20 @@ impl Program {
                 }
             }
             if let Some(dst) = dst {
-                regs[dst as usize] = value;
+                // Preserve the other live branch's register contents during divergence.
+                regs[dst as usize] = if executing == live {
+                    value
+                } else {
+                    std::array::from_fn(|c| {
+                        Lanes(std::array::from_fn(|i| {
+                            if enabled(i) {
+                                value[c].0[i]
+                            } else {
+                                regs[dst as usize][c].0[i]
+                            }
+                        }))
+                    })
+                };
             }
         }
         Ok(results)

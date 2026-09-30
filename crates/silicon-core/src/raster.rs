@@ -7,6 +7,9 @@ pub struct Statistics {
     pub shader_time: Duration,
     pub shader_packets: u64,
     pub shader_packet_lanes: u64,
+    pub shader_instructions: u64,
+    pub texture_samples: u64,
+    pub discarded: u64,
     pub vertices: u64,
     pub triangles: u64,
     pub clipped: u64,
@@ -400,6 +403,9 @@ impl Renderer {
             debug,
         } = prepared;
         let z = input.depth;
+        if stencil_pass && depth_pass && output.is_none() {
+            self.stats.discarded += 1;
+        }
         if debug {
             self.traces.push(PixelTrace {
                 fragment: input,
@@ -576,6 +582,9 @@ impl Renderer {
             self.stats.shader_time += band.stats.shader_time;
             self.stats.shader_packets += band.stats.shader_packets;
             self.stats.shader_packet_lanes += band.stats.shader_packet_lanes;
+            self.stats.shader_instructions += band.stats.shader_instructions;
+            self.stats.texture_samples += band.stats.texture_samples;
+            self.stats.discarded += band.stats.discarded;
             self.stats.vertex_time += band.stats.vertex_time;
             self.stats.raster_time += band.stats.raster_time;
             self.traces.extend(band.traces);

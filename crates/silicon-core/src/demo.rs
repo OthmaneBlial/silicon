@@ -27,11 +27,15 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
     if !time.is_finite() {
         return Err("scene time must be finite".into());
     }
-    if matches!(name, "shader_cube" | "spirv_cube" | "spirv_showcase") {
+    if matches!(
+        name,
+        "shader_cube" | "spirv_cube" | "spirv_showcase" | "spirv_cutout"
+    ) {
         let (width, height) = r.surface_size();
         let capture = match name {
             "spirv_showcase" => spirv_showcase(width, height, time)?,
             "spirv_cube" => spirv_cube(width, height, time)?,
+            "spirv_cutout" => spirv_cutout(width, height, time)?,
             _ => shader_cube(width, height, time)?,
         };
         Device.submit(&capture.commands, r)?;
@@ -371,25 +375,42 @@ pub fn shader_cube_with_programs(
 
 /// GLSL compiled externally by glslang, then translated and executed by SILICON.
 pub fn spirv_cube(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
-    use shader::{
-        Program,
-        spirv::{Module, link},
-    };
-    static PROGRAMS: OnceLock<std::result::Result<(Program, Program), String>> = OnceLock::new();
+    static PROGRAMS: OnceLock<shader::Result<(shader::Program, shader::Program)>> = OnceLock::new();
     let programs = PROGRAMS
         .get_or_init(|| {
-            let vertex =
-                Module::parse(include_bytes!("../../../assets/shaders/textured.vert.spv"))?
-                    .translate()?;
-            let fragment =
-                Module::parse(include_bytes!("../../../assets/shaders/textured.frag.spv"))?
-                    .translate()?;
-            link(&vertex, &fragment)?;
-            Ok((vertex.program, fragment.program))
+            compile_graphics(
+                include_bytes!("../../../assets/shaders/textured.vert.spv"),
+                include_bytes!("../../../assets/shaders/textured.frag.spv"),
+            )
         })
         .as_ref()
         .map_err(|e| e.clone())?;
     shader_cube_with_programs(width, height, time, programs.0.clone(), programs.1.clone())
+}
+
+/// Nested GLSL discard, conditional sampling, Phi merge and early return on a textured cube.
+pub fn spirv_cutout(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
+    static PROGRAMS: OnceLock<shader::Result<(shader::Program, shader::Program)>> = OnceLock::new();
+    let programs = PROGRAMS
+        .get_or_init(|| {
+            compile_graphics(
+                include_bytes!("../../../assets/shaders/textured.vert.spv"),
+                include_bytes!("../../../assets/shaders/control.ssa.frag.spv"),
+            )
+        })
+        .as_ref()
+        .map_err(|e| e.clone())?;
+    shader_cube_with_programs(width, height, time, programs.0.clone(), programs.1.clone())
+}
+fn compile_graphics(
+    vertex: &[u8],
+    fragment: &[u8],
+) -> shader::Result<(shader::Program, shader::Program)> {
+    use shader::spirv::{Module, link};
+    let vertex = Module::parse(vertex)?.translate()?;
+    let fragment = Module::parse(fragment)?.translate()?;
+    link(&vertex, &fragment)?;
+    Ok((vertex.program, fragment.program))
 }
 
 fn lighting_uniforms(mvp: Mat4, model: Mat4, material: Material, eye: Vec3) -> Result<Vec<Vec4>> {
@@ -415,24 +436,18 @@ fn lighting_uniforms(mvp: Mat4, model: Mat4, material: Material, eye: Vec3) -> R
 }
 /// The lit OBJ showcase executes ordinary GLSL through SPIR-V, SIR and recorded draws.
 pub fn spirv_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
-    use shader::{
-        Program,
-        spirv::{Module, link},
-    };
     use std::sync::Arc;
     if !time.is_finite() {
         return Err("scene time must be finite".into());
     }
     Framebuffer::new(width, height)?;
-    static PROGRAMS: OnceLock<std::result::Result<(Program, Program), String>> = OnceLock::new();
+    static PROGRAMS: OnceLock<shader::Result<(shader::Program, shader::Program)>> = OnceLock::new();
     let programs = PROGRAMS
         .get_or_init(|| {
-            let vertex = Module::parse(include_bytes!("../../../assets/shaders/lit.vert.spv"))?
-                .translate()?;
-            let fragment = Module::parse(include_bytes!("../../../assets/shaders/lit.frag.spv"))?
-                .translate()?;
-            link(&vertex, &fragment)?;
-            Ok((vertex.program, fragment.program))
+            compile_graphics(
+                include_bytes!("../../../assets/shaders/lit.vert.spv"),
+                include_bytes!("../../../assets/shaders/lit.frag.spv"),
+            )
         })
         .as_ref()
         .map_err(|e| e.clone())?;

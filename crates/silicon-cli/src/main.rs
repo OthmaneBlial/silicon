@@ -114,10 +114,12 @@ fn frame(r: &mut Renderer, scene: &Scene, threads: usize) -> Result<Option<Submi
     }
     if matches!(
         scene.scene.as_str(),
-        "shader_cube" | "spirv_cube" | "spirv_showcase"
+        "shader_cube" | "spirv_cube" | "spirv_showcase" | "spirv_cutout"
     ) {
         let c = if scene.scene == "spirv_showcase" {
             demo::spirv_showcase(scene.width, scene.height, scene.time)?
+        } else if scene.scene == "spirv_cutout" {
+            demo::spirv_cutout(scene.width, scene.height, scene.time)?
         } else if scene.scene == "spirv_cube" {
             demo::spirv_cube(scene.width, scene.height, scene.time)?
         } else {
@@ -142,8 +144,12 @@ fn report(r: &Renderer, elapsed: f64, submission: Option<&Submission>) {
         r.stats.vertices, r.stats.triangles, r.stats.clipped, r.stats.culled
     );
     println!(
-        "Tile visits: {} | fragments: {} | early-Z: {} | shaded: {}",
-        r.stats.tiles, r.stats.fragments, r.stats.early_z_rejected, r.stats.shaded
+        "Tile visits: {} | fragments: {} | early-Z: {} | shaded: {} | discarded: {}",
+        r.stats.tiles,
+        r.stats.fragments,
+        r.stats.early_z_rejected,
+        r.stats.shaded,
+        r.stats.discarded
     );
     println!(
         "Accumulated worker stage times: vertex {:.3} ms | clipping + raster + shading + ROP {:.3} ms",
@@ -166,9 +172,12 @@ fn report(r: &Renderer, elapsed: f64, submission: Option<&Submission>) {
         );
     }
     if let Some(s) = submission {
+        println!("Draws: {}", s.draws);
+    }
+    if r.stats.shader_instructions > 0 {
         println!(
-            "Draws: {} | SIR instructions: {} | texture samples: {}",
-            s.draws, s.shader_instructions, s.texture_samples
+            "Executed SIR instructions: {} | texture samples: {}",
+            r.stats.shader_instructions, r.stats.texture_samples
         );
     }
 }
@@ -189,7 +198,7 @@ fn run() -> Result<()> {
     let command = args.first().map_or("help", String::as_str);
     if command == "help" || command == "--help" {
         println!(
-            "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N --report timings.json]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n  silicon inspect-shader shader.spv\n  silicon render-shaders vertex.spv fragment.spv [render options]\n\nExecution: --backend scalar|simd --threads 1..64\nScenes: showcase, cube, textured_cube, triangle_3d, shader_cube, spirv_cube, spirv_showcase\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
+            "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N --report timings.json]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n  silicon inspect-shader shader.spv\n  silicon render-shaders vertex.spv fragment.spv [render options]\n\nExecution: --backend scalar|simd --threads 1..64\nScenes: showcase, cube, textured_cube, triangle_3d, shader_cube, spirv_cube, spirv_showcase, spirv_cutout\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
         );
         return Ok(());
     }
@@ -338,6 +347,9 @@ fn run() -> Result<()> {
         let mut total_triangles = 0u64;
         let mut total_packets = 0u64;
         let mut packet_lanes = 0u64;
+        let mut instructions = 0u64;
+        let mut samples = 0u64;
+        let mut discarded = 0u64;
         for _ in 0..count {
             let start = Instant::now();
             frame(&mut r, &o.scene, o.threads)?;
@@ -346,6 +358,9 @@ fn run() -> Result<()> {
             total_triangles += r.stats.triangles;
             total_packets += r.stats.shader_packets;
             packet_lanes += r.stats.shader_packet_lanes;
+            instructions += r.stats.shader_instructions;
+            samples += r.stats.texture_samples;
+            discarded += r.stats.discarded;
         }
         if let Some(path) = &o.benchmark_report {
             let path = Path::new(path);
@@ -366,6 +381,9 @@ fn run() -> Result<()> {
                 "submitted_triangles": total_triangles,
                 "shader_packets": total_packets,
                 "packet_active_lanes": packet_lanes,
+                "executed_shader_instructions": instructions,
+                "texture_samples": samples,
+                "discarded_fragments": discarded,
             });
             std::fs::write(path, serde_json::to_vec_pretty(&data)?)?;
         }
@@ -466,9 +484,10 @@ fn run() -> Result<()> {
             "shader_cube" => demo::shader_cube(o.scene.width, o.scene.height, o.scene.time)?,
             "spirv_cube" => demo::spirv_cube(o.scene.width, o.scene.height, o.scene.time)?,
             "spirv_showcase" => demo::spirv_showcase(o.scene.width, o.scene.height, o.scene.time)?,
+            "spirv_cutout" => demo::spirv_cutout(o.scene.width, o.scene.height, o.scene.time)?,
             _ => {
                 return Err(
-                    "serialized capture requires shader_cube, spirv_cube or spirv_showcase".into(),
+                    "serialized capture requires shader_cube, spirv_cube, spirv_showcase or spirv_cutout".into(),
                 );
             }
         };

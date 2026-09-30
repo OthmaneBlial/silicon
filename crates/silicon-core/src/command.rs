@@ -164,6 +164,8 @@ impl Device {
                     let shader_traces = std::cell::RefCell::new(Vec::new());
                     let simd = r.backend == Backend::Simd;
                     let packets = std::cell::Cell::new(0u64);
+                    let instructions = std::cell::Cell::new(0u64);
+                    let samples = std::cell::Cell::new(0u64);
                     r.try_draw_packets(
                         v,
                         ind,
@@ -183,6 +185,8 @@ impl Device {
                                     false,
                                 )
                                 .map_err(|e| format!("command {number}, vertex shader: {e}"))?;
+                            instructions.set(instructions.get() + e.instructions as u64);
+                            samples.set(samples.get() + e.samples as u64);
                             Ok(VertexOutput {
                                 position: e.outputs[0],
                                 varyings: std::array::from_fn(|i| e.outputs[i + 1]),
@@ -229,12 +233,14 @@ impl Device {
                                     if mask & (1 << i) == 0 {
                                         continue;
                                     }
+                                    instructions.set(instructions.get() + e.instructions as u64);
+                                    samples.set(samples.get() + e.samples as u64);
                                     if !e.trace.is_empty() {
                                         shader_traces
                                             .borrow_mut()
                                             .push((fragments[i].primitive, e.trace));
                                     }
-                                    colors[i] = Some(Color(e.outputs[0]));
+                                    colors[i] = (!e.discarded).then_some(Color(e.outputs[0]));
                                 }
                             } else {
                                 for i in 0..4 {
@@ -252,12 +258,14 @@ impl Device {
                                                 fragments[i].x, fragments[i].y
                                             )
                                         })?;
+                                    instructions.set(instructions.get() + e.instructions as u64);
+                                    samples.set(samples.get() + e.samples as u64);
                                     if !e.trace.is_empty() {
                                         shader_traces
                                             .borrow_mut()
                                             .push((fragments[i].primitive, e.trace));
                                     }
-                                    colors[i] = Some(Color(e.outputs[0]));
+                                    colors[i] = (!e.discarded).then_some(Color(e.outputs[0]));
                                 }
                             }
                             Ok(colors)
@@ -268,24 +276,11 @@ impl Device {
                         r.stats.shader_packet_lanes += r.stats.shaded - previous;
                     }
                     stats.shader_traces.extend(shader_traces.into_inner());
-                    let shaded = r.stats.shaded - previous;
-                    let count_samples = |p: &Program| {
-                        p.instructions()
-                            .iter()
-                            .filter(|op| {
-                                matches!(
-                                    op,
-                                    Instruction::Sample { .. } | Instruction::SampleImplicit { .. }
-                                )
-                            })
-                            .count() as u64
-                    };
                     stats.draws += 1;
-                    stats.shader_instructions += v.len() as u64
-                        * p.vertex.instructions().len() as u64
-                        + shaded * p.fragment.instructions().len() as u64;
-                    stats.texture_samples += v.len() as u64 * count_samples(&p.vertex)
-                        + shaded * count_samples(&p.fragment);
+                    stats.shader_instructions += instructions.get();
+                    stats.texture_samples += samples.get();
+                    r.stats.shader_instructions += instructions.get();
+                    r.stats.texture_samples += samples.get();
                 }
             }
         }
@@ -367,7 +362,17 @@ impl CommandBuffer {
                     pass = false;
                 }
                 _ if !pass => return Err(error("command must be inside a render pass").into()),
-                Command::BindPipeline(_) => p = true,
+                Command::BindPipeline(pipeline) => {
+                    if pipeline
+                        .vertex
+                        .instructions()
+                        .iter()
+                        .any(|op| matches!(op, Instruction::Discard))
+                    {
+                        return Err(error("discard is only allowed in fragment shaders").into());
+                    }
+                    p = true;
+                }
                 Command::BindVertices(b) => {
                     Device.create_vertex_buffer(b.data.to_vec())?;
                     if b.usage != BufferUsage::Vertex {

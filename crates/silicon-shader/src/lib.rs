@@ -5,8 +5,82 @@ mod lanes;
 mod packet;
 pub mod spirv;
 pub type Result<T> = std::result::Result<T, String>;
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum Comparison {
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+}
+impl Comparison {
+    fn apply(self, a: f32, b: f32) -> bool {
+        match self {
+            Self::Equal => a == b,
+            Self::NotEqual => a != b,
+            Self::Less => a < b,
+            Self::LessEqual => a <= b,
+            Self::Greater => a > b,
+            Self::GreaterEqual => a >= b,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum Logic {
+    And,
+    Or,
+    Equal,
+    NotEqual,
+}
+impl Logic {
+    fn apply(self, a: f32, b: f32) -> bool {
+        let (a, b) = (a != 0., b != 0.);
+        match self {
+            Self::And => a && b,
+            Self::Or => a || b,
+            Self::Equal => a == b,
+            Self::NotEqual => a != b,
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Instruction {
+    Compare {
+        dst: u8,
+        a: u8,
+        b: u8,
+        kind: Comparison,
+    },
+    Logical {
+        dst: u8,
+        a: u8,
+        b: u8,
+        kind: Logic,
+    },
+    Not {
+        dst: u8,
+        src: u8,
+    },
+    Select {
+        dst: u8,
+        condition: u8,
+        a: u8,
+        b: u8,
+    },
+    If {
+        condition: u8,
+    },
+    Else,
+    EndIf,
+    /// Coalesce the preceding selection's true/false values; must immediately follow EndIf/Merge.
+    Merge {
+        dst: u8,
+        a: u8,
+        b: u8,
+    },
+    Return,
+    Discard,
     Input {
         dst: u8,
         slot: u8,
@@ -132,6 +206,9 @@ impl Instruction {
             | Div { dst, a, b }
             | Dot3 { dst, a, b }
             | Dot4 { dst, a, b }
+            | Compare { dst, a, b, .. }
+            | Logical { dst, a, b, .. }
+            | Merge { dst, a, b }
             | Pow { dst, a, b }
             | Min { dst, a, b }
             | Max { dst, a, b } => {
@@ -145,7 +222,24 @@ impl Instruction {
                 *t = f(*t, false)?;
                 dst
             }
+            Select {
+                dst,
+                condition,
+                a,
+                b,
+            } => {
+                *condition = f(*condition, false)?;
+                *a = f(*a, false)?;
+                *b = f(*b, false)?;
+                dst
+            }
+            If { condition } => {
+                *condition = f(*condition, false)?;
+                return Ok(());
+            }
+            Else | EndIf | Return | Discard => return Ok(()),
             Normalize3 { dst, src }
+            | Not { dst, src }
             | Saturate { dst, src }
             | Normalize { dst, src, .. }
             | Length { dst, src, .. }
@@ -201,23 +295,102 @@ pub struct Execution {
     pub instructions: usize,
     pub samples: usize,
     pub trace: Vec<Trace>,
+    pub discarded: bool,
+}
+#[derive(Clone, Copy)]
+struct Definitions {
+    registers: [bool; 64],
+    outputs: [bool; 8],
+    live: bool,
+}
+impl Definitions {
+    fn join(self, other: Self) -> Self {
+        if !self.live {
+            return other;
+        }
+        if !other.live {
+            return self;
+        }
+        Self {
+            registers: std::array::from_fn(|i| self.registers[i] && other.registers[i]),
+            outputs: std::array::from_fn(|i| self.outputs[i] && other.outputs[i]),
+            live: true,
+        }
+    }
 }
 impl Program {
     pub fn new(ops: Vec<Instruction>) -> Result<Self> {
         if ops.is_empty() || ops.len() > 4096 {
             return Err("SIR requires 1..4096 instructions".into());
         }
-        let mut defined = [false; 64];
-        let mut outputs = [false; 8];
+        let mut state = Definitions {
+            registers: [false; 64],
+            outputs: [false; 8],
+            live: true,
+        };
+        let mut selections: Vec<(Definitions, Option<Definitions>)> = Vec::new();
+        let mut merging: Option<(Definitions, Definitions)> = None;
         for (pc, op) in ops.iter().enumerate() {
+            if !matches!(op, Instruction::Merge { .. }) {
+                merging = None;
+            }
             let source = |r: u8| -> Result<()> {
-                if r >= 64 || !defined[r as usize] {
+                if r >= 64 || !state.registers[r as usize] {
                     Err(format!("SIR instruction {pc}: undefined register r{r}"))
                 } else {
                     Ok(())
                 }
             };
             let dst = match *op {
+                Instruction::If { condition } => {
+                    source(condition)?;
+                    if selections.len() >= 64 {
+                        return Err("SIR selection nesting exceeds 64".into());
+                    }
+                    selections.push((state, None));
+                    None
+                }
+                Instruction::Else => {
+                    let (entry, branch) = selections.last_mut().ok_or("SIR Else without If")?;
+                    if branch.is_some() {
+                        return Err("SIR duplicate Else".into());
+                    }
+                    *branch = Some(state);
+                    state = *entry;
+                    None
+                }
+                Instruction::EndIf => {
+                    let (_, branch) = selections.pop().ok_or("SIR EndIf without If")?;
+                    let branch = branch.ok_or("SIR If requires Else before EndIf")?;
+                    merging = Some((branch, state));
+                    state = branch.join(state);
+                    None
+                }
+                Instruction::Merge { dst, a, b } => {
+                    let (yes, no) =
+                        merging.ok_or("SIR Merge must immediately follow a selection")?;
+                    if a >= 64
+                        || b >= 64
+                        || (yes.live && !yes.registers[a as usize])
+                        || (no.live && !no.registers[b as usize])
+                    {
+                        return Err(format!("SIR instruction {pc}: undefined selection input"));
+                    }
+                    Some(dst)
+                }
+                Instruction::Return => {
+                    if state.live && !state.outputs[0] {
+                        return Err(
+                            "SIR Return must follow output slot 0 on every live path".into()
+                        );
+                    }
+                    state.live = false;
+                    None
+                }
+                Instruction::Discard => {
+                    state.live = false;
+                    None
+                }
                 Instruction::Input { dst, slot } => {
                     if slot >= 16 {
                         return Err(format!("SIR instruction {pc}: input slot exceeds 15"));
@@ -249,6 +422,22 @@ impl Program {
                     source(b)?;
                     Some(dst)
                 }
+                Instruction::Compare { dst, a, b, .. } | Instruction::Logical { dst, a, b, .. } => {
+                    source(a)?;
+                    source(b)?;
+                    Some(dst)
+                }
+                Instruction::Select {
+                    dst,
+                    condition,
+                    a,
+                    b,
+                } => {
+                    source(condition)?;
+                    source(a)?;
+                    source(b)?;
+                    Some(dst)
+                }
                 Instruction::Mix { dst, a, b, t } => {
                     source(a)?;
                     source(b)?;
@@ -271,7 +460,9 @@ impl Program {
                     }
                     Some(dst)
                 }
-                Instruction::Normalize3 { dst, src } | Instruction::Saturate { dst, src } => {
+                Instruction::Normalize3 { dst, src }
+                | Instruction::Saturate { dst, src }
+                | Instruction::Not { dst, src } => {
                     source(src)?;
                     Some(dst)
                 }
@@ -315,7 +506,7 @@ impl Program {
                     if slot >= 8 {
                         return Err("SIR output slot exceeds 7".into());
                     }
-                    outputs[slot as usize] = true;
+                    state.outputs[slot as usize] = true;
                     None
                 }
             };
@@ -323,11 +514,14 @@ impl Program {
                 if dst >= 64 {
                     return Err(format!("SIR instruction {pc}: register exceeds r63"));
                 }
-                defined[dst as usize] = true;
+                state.registers[dst as usize] = true;
             }
         }
-        if !outputs[0] {
-            return Err("SIR must write output slot 0".into());
+        if !selections.is_empty() {
+            return Err("SIR unclosed selection".into());
+        }
+        if state.live && !state.outputs[0] {
+            return Err("SIR must write output slot 0 on every live path".into());
         }
         Ok(Self { ops })
     }
@@ -354,11 +548,27 @@ impl Program {
         let mut regs = [Vec4::ZERO; 64];
         let mut result = Execution {
             outputs: [Vec4::ZERO; 8],
-            instructions: self.ops.len(),
+            instructions: 0,
             samples: 0,
             trace: Vec::new(),
+            discarded: false,
         };
+        let (mut active, mut live, mut choice) = (true, true, false);
+        let mut selections = Vec::new();
         for (pc, op) in self.ops.iter().enumerate() {
+            let executing = if matches!(op, Instruction::Else | Instruction::EndIf) {
+                selections.last().is_some_and(|&(parent, _)| parent && live)
+            } else {
+                active
+            };
+            if !executing
+                && !matches!(
+                    op,
+                    Instruction::If { .. } | Instruction::Else | Instruction::EndIf
+                )
+            {
+                continue;
+            }
             let get = |slot: u8| -> Result<Vec4> {
                 uniforms
                     .get(slot as usize)
@@ -366,6 +576,79 @@ impl Program {
                     .ok_or_else(|| format!("SIR instruction {pc}: missing uniform {slot}"))
             };
             let (dst, value) = match *op {
+                Instruction::If { condition } => {
+                    let value = if executing {
+                        regs[condition as usize]
+                    } else {
+                        Vec4::ZERO
+                    };
+                    let yes = executing && value.x != 0.;
+                    selections.push((active, yes));
+                    active = yes;
+                    (None, value)
+                }
+                Instruction::Else => {
+                    let (parent, yes) = *selections.last().unwrap();
+                    active = parent && !yes && live;
+                    (None, Vec4::ZERO)
+                }
+                Instruction::EndIf => {
+                    let (parent, yes) = selections.pop().unwrap();
+                    active = parent && live;
+                    choice = yes;
+                    (None, Vec4::ZERO)
+                }
+                Instruction::Merge { dst, a, b } => {
+                    (Some(dst), regs[if choice { a } else { b } as usize])
+                }
+                Instruction::Return | Instruction::Discard => {
+                    result.discarded = matches!(op, Instruction::Discard);
+                    live = false;
+                    active = false;
+                    (None, Vec4::ZERO)
+                }
+                Instruction::Compare { dst, a, b, kind } => (
+                    Some(dst),
+                    Vec4::from_array(std::array::from_fn(|i| {
+                        u8::from(kind.apply(
+                            regs[a as usize].to_array()[i],
+                            regs[b as usize].to_array()[i],
+                        )) as f32
+                    })),
+                ),
+                Instruction::Logical { dst, a, b, kind } => (
+                    Some(dst),
+                    Vec4::from_array(std::array::from_fn(|i| {
+                        u8::from(kind.apply(
+                            regs[a as usize].to_array()[i],
+                            regs[b as usize].to_array()[i],
+                        )) as f32
+                    })),
+                ),
+                Instruction::Not { dst, src } => (
+                    Some(dst),
+                    Vec4::from_array(
+                        regs[src as usize]
+                            .to_array()
+                            .map(|v| u8::from(v == 0.) as f32),
+                    ),
+                ),
+                Instruction::Select {
+                    dst,
+                    condition,
+                    a,
+                    b,
+                } => (
+                    Some(dst),
+                    Vec4::from_array(std::array::from_fn(|i| {
+                        regs[if regs[condition as usize].to_array()[i] != 0. {
+                            a
+                        } else {
+                            b
+                        } as usize]
+                            .to_array()[i]
+                    })),
+                ),
                 Instruction::Input { dst, slot } => (
                     Some(dst),
                     inputs
@@ -519,6 +802,10 @@ impl Program {
                     (None, v)
                 }
             };
+            if !executing {
+                continue;
+            }
+            result.instructions += 1;
             if !value.is_finite() {
                 return Err(format!(
                     "SIR instruction {pc}: non-finite arithmetic result"

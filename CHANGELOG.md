@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0 — 2026-10-01
+
+- Execute nested structured SIR selections with per-fragment divergence masks,
+  reconvergence, comparisons/logical math, select/merge, early return and discard.
+- Lower ordinary GLSL/SPIR-V acyclic branches, scalar bool, local snapshots and
+  Phi values with predecessor, type and per-path definition validation.
+- Add the captured `spirv_cutout` scene and real glslang/SPIRV-Tools fixtures;
+  scalar, packet and band rendering preserve exact color/depth/stencil.
+- Count actual executed shader instructions, texture samples and discarded
+  fragments, including physical vertex work repeated by worker bands.
+- Reject vertex discard before any command mutates the framebuffer; bound
+  selection nesting and reject loops, switches and overlapping graph regions.
+
 ## 0.4.0 — 2026-09-30
 
 Recorded SIR fragment shaders now execute in masked groups of four with NEON

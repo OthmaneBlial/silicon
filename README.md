@@ -58,9 +58,12 @@ The native `showcase` remains an independent Rust shader reference. The `shader_
 through SILICON's validated SIR bytecode interpreter and owned GPU-like commands.
 The `spirv_cube` loads ordinary externally compiled GLSL vertex/fragment shaders,
 validates a strict SPIR-V 1.0 subset and translates it into the same CPU VM.
+The `spirv_cutout` executes nested GLSL branches, conditional texture sampling,
+Phi/local reconvergence, early return and fragment discard.
 
 ```sh
 cargo run --release -p silicon-cli -- run spirv_showcase --threads 4
+cargo run --release -p silicon-cli -- run spirv_cutout --backend simd
 cargo run --release -p silicon-cli -- run spirv_cube
 cargo run --release -p silicon-cli -- inspect-shader assets/shaders/textured.frag.spv
 cargo run --release -p silicon-cli -- render-shaders assets/shaders/textured.vert.spv assets/shaders/textured.frag.spv --output output/glsl.png
@@ -104,7 +107,7 @@ flowchart LR
 | Interpolation | Colors/UV/normals/custom vec4 varyings, perspective reconstruction, affine NDC depth |
 | Attachments | RGBA8/BGRA8, depth with 8 compare modes, stencil masks/operations |
 | Texturing | RGBA8/RGB8/R8, nearest/bilinear/trilinear, clamp/repeat/mirror, mip generation/LOD |
-| Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 → SIR graphics subset |
+| Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 → SIR; nested selections, Phi, early return/discard |
 | Output merger | Replace, source alpha, additive and multiplicative blending; color/depth write enables |
 | Execution | Scalar reference, optional SIMD coverage4 and NEON/SSE four-fragment SIR, disjoint worker bands |
 | Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling |
@@ -127,7 +130,8 @@ python3 benchmarks/run.py --frames 30
 
 Benchmarks include frame rendering, exclude image encoding/window presentation,
 and report measured median/p95 and throughput. `--report` retains chronological
-frame times, backend/worker configuration and actual shader packet occupancy. Profile additionally instruments
+frame times, backend/worker configuration, actual shader packet occupancy and executed
+instruction/sample/discard counts. Profile additionally instruments
 fragment shader time; per-worker accumulated stage times can exceed wall time.
 See [performance notes](docs/performance.md) for actual host measurements and
 limits. The animation uses offline frames encoded at 24 fps; it is not an FPS
@@ -152,7 +156,7 @@ PNG and scalar/SIMD/parallel equivalence. Golden changes require an explicit
 ## Boundaries
 
 This is a research software GPU, not a conformant driver. SPIR-V support is
-a narrow straight-line graphics subset with a fixed binding contract. **General
+a narrow graphics subset with acyclic structured selections with a fixed binding contract. **General
 SPIR-V/GLSL compatibility, WGSL, Vulkan/OpenGL compatibility, compute, JIT, MSAA,
 shadow maps and games are not implemented.** Do not infer support from the long-term roadmap. Multiple color
 attachments and asynchronous queues are also future work.

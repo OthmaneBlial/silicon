@@ -1,6 +1,7 @@
 //! A deliberately strict SPIR-V 1.0 graphics subset, lowered into the SIR VM.
 //! No guest pointers, compiler dependency, dynamic code, or host GPU execution.
-use crate::{Instruction as Sir, Program, Result};
+use crate::{Comparison, Instruction as Sir, Logic, Program, Result};
+mod control;
 use silicon_math::Vec4;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -42,6 +43,7 @@ pub fn name(op: u16) -> &'static str {
         16 => "OpExecutionMode",
         17 => "OpCapability",
         19 => "OpTypeVoid",
+        20 => "OpTypeBool",
         21 => "OpTypeInt",
         22 => "OpTypeFloat",
         23 => "OpTypeVector",
@@ -51,6 +53,8 @@ pub fn name(op: u16) -> &'static str {
         30 => "OpTypeStruct",
         32 => "OpTypePointer",
         33 => "OpTypeFunction",
+        41 => "OpConstantTrue",
+        42 => "OpConstantFalse",
         43 => "OpConstant",
         44 => "OpConstantComposite",
         54 => "OpFunction",
@@ -74,6 +78,19 @@ pub fn name(op: u16) -> &'static str {
         142 => "OpVectorTimesScalar",
         145 => "OpMatrixTimesVector",
         148 => "OpDot",
+        164 => "OpLogicalEqual",
+        165 => "OpLogicalNotEqual",
+        166 => "OpLogicalOr",
+        167 => "OpLogicalAnd",
+        168 => "OpLogicalNot",
+        169 => "OpSelect",
+        180 => "OpFOrdEqual",
+        182 => "OpFOrdNotEqual",
+        183 => "OpFUnordNotEqual",
+        184 => "OpFOrdLessThan",
+        186 => "OpFOrdGreaterThan",
+        188 => "OpFOrdLessThanEqual",
+        190 => "OpFOrdGreaterThanEqual",
         245 => "OpPhi",
         247 => "OpSelectionMerge",
         248 => "OpLabel",
@@ -81,6 +98,7 @@ pub fn name(op: u16) -> &'static str {
         250 => "OpBranchConditional",
         252 => "OpKill",
         253 => "OpReturn",
+        255 => "OpUnreachable",
         _ => "unknown opcode",
     }
 }
@@ -117,16 +135,19 @@ impl Op {
         let a = &self.operands;
         let n = a.len();
         let (min, max) = match self.opcode {
-            0 | 56 | 253 => (0, 0),
-            19 | 17 | 248 => (1, 1),
-            14 | 16 | 22 => (2, 2),
-            21 | 23 | 24 | 32 | 43 | 61 | 83 => (3, 3),
+            0 | 56 | 252 | 253 | 255 => (0, 0),
+            19 | 20 | 17 | 248 | 249 => (1, 1),
+            14 | 16 | 22 | 41 | 42 | 247 => (2, 2),
+            21 | 23 | 24 | 32 | 43 | 61 | 83 | 168 | 250 => (3, 3),
             59 => (3, 4),
             65 => (4, 5),
             12 => (5, 7),
             25 => (8, 8),
             27 => (2, 2),
             54 | 81 | 87 | 129 | 131 | 133 | 136 | 142 | 145 | 148 => (4, 4),
+            164..=167 | 180 | 182..=184 | 186 | 188 | 190 => (4, 4),
+            169 => (5, 5),
+            245 => (4, 6),
             62 => (2, 2),
             3 => (2, 2),
             5 | 11 => (2, usize::MAX),
@@ -137,10 +158,13 @@ impl Op {
             79 => (6, 8),
             71 => (2, 3),
             72 => (3, 4),
-            _ => return Err(self.error("unsupported instruction in the straight-line subset")),
+            _ => return Err(self.error("unsupported instruction in the graphics subset")),
         };
         if !(min..=max).contains(&n) {
             return Err(self.error(format!("expected {min}..{max} operands, found {n}")));
+        }
+        if self.opcode == 245 && !n.is_multiple_of(2) {
+            return Err(self.error("Phi requires value/predecessor pairs"));
         }
         let (result, refs) = match self.opcode {
             5 => {
@@ -171,12 +195,12 @@ impl Op {
                 (None, r)
             }
             16 | 71 | 72 => (None, vec![a[0]]),
-            19 | 21 | 22 | 248 => (Some(a[0]), vec![]),
+            19 | 20 | 21 | 22 | 248 => (Some(a[0]), vec![]),
             23 | 24 | 27 | 33 => (Some(a[0]), vec![a[1]]),
             25 => (Some(a[0]), vec![a[1]]),
             30 => (Some(a[0]), a[1..].to_vec()),
             32 => (Some(a[0]), vec![a[2]]),
-            43 => (Some(a[1]), vec![a[0]]),
+            41..=43 => (Some(a[1]), vec![a[0]]),
             59 => (
                 Some(a[1]),
                 std::iter::once(a[0])
@@ -191,16 +215,30 @@ impl Op {
                     .collect(),
             ),
             54 => (Some(a[1]), vec![a[0], a[3]]),
-            44 | 80 | 65 => {
+            44 | 80 | 65 | 169 | 245 => {
                 let mut r = vec![a[0]];
                 r.extend_from_slice(&a[2..]);
                 (Some(a[1]), r)
             }
-            61 | 81 | 83 => (Some(a[1]), vec![a[0], a[2]]),
+            61 | 81 | 83 | 168 => (Some(a[1]), vec![a[0], a[2]]),
             62 => (None, a.clone()),
-            79 | 87 | 129 | 131 | 133 | 136 | 142 | 145 | 148 => {
-                (Some(a[1]), vec![a[0], a[2], a[3]])
-            }
+            79
+            | 87
+            | 129
+            | 131
+            | 133
+            | 136
+            | 142
+            | 145
+            | 148
+            | 164..=167
+            | 180
+            | 182..=184
+            | 186
+            | 188
+            | 190 => (Some(a[1]), vec![a[0], a[2], a[3]]),
+            247 | 249 => (None, vec![a[0]]),
+            250 => (None, a.clone()),
             _ => (None, vec![]),
         };
         Ok((result, refs))
@@ -296,6 +334,7 @@ impl Module {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Ty {
     Void,
+    Bool,
     Int,
     Float,
     Vector(u8),
@@ -338,6 +377,8 @@ struct Compiler<'a> {
     types: BTreeMap<u32, Ty>,
     values: BTreeMap<u32, Typed>,
     locals: BTreeMap<u32, Typed>,
+    globals: BTreeSet<u32>,
+    available: Option<BTreeSet<u32>>,
     decorations: BTreeMap<(u32, Option<usize>), Decoration>,
     ops: Vec<Sir>,
     next: u16,
@@ -452,6 +493,8 @@ impl<'a> Compiler<'a> {
             types: BTreeMap::new(),
             values: BTreeMap::new(),
             locals: BTreeMap::new(),
+            globals: BTreeSet::new(),
+            available: None,
             decorations,
             ops: vec![Sir::Const {
                 dst: 0,
@@ -477,6 +520,15 @@ impl<'a> Compiler<'a> {
         }
     }
     fn value(&self, id: u32) -> Result<Typed> {
+        if self
+            .available
+            .as_ref()
+            .is_some_and(|ids| !ids.contains(&id) && !self.globals.contains(&id))
+        {
+            return Err(format!(
+                "value %{id} does not dominate this control-flow path"
+            ));
+        }
         self.values
             .get(&id)
             .cloned()
@@ -642,7 +694,7 @@ impl<'a> Compiler<'a> {
                 }
             }
             7 => {
-                self.lanes(base)?;
+                self.value_lanes(base)?;
                 if d != Decoration::default() {
                     return Err("local variables cannot have resource/interface decorations".into());
                 }
@@ -683,6 +735,13 @@ impl<'a> Compiler<'a> {
             _ => Err("unsupported uniform member type".into()),
         }
     }
+    fn value_lanes(&self, id: u32) -> Result<u8> {
+        if self.ty(id)? == Ty::Bool {
+            Ok(1)
+        } else {
+            self.lanes(id)
+        }
+    }
     fn canonical(&mut self, r: u8, n: u8) -> Result<u8> {
         if n == 1 {
             self.emit(|dst| Sir::Swizzle {
@@ -701,6 +760,9 @@ impl<'a> Compiler<'a> {
         match op.opcode {
             19 => {
                 self.types.insert(a[0], Ty::Void);
+            }
+            20 => {
+                self.types.insert(a[0], Ty::Bool);
             }
             21 => {
                 if a[1] != 32 || a[2] > 1 {
@@ -763,6 +825,23 @@ impl<'a> Compiler<'a> {
                 }
                 self.types.insert(a[0], Ty::Function(a[1]));
             }
+            41 | 42 => {
+                if self.ty(a[0])? != Ty::Bool {
+                    return Err("boolean constant type mismatch".into());
+                }
+                let f = f32::from(u8::from(op.opcode == 41));
+                let r = self.emit(|dst| Sir::Const {
+                    dst,
+                    value: Vec4::new(f, f, f, f),
+                })?;
+                self.values.insert(
+                    a[1],
+                    Typed {
+                        ty: a[0],
+                        value: Value::Reg(r, false),
+                    },
+                );
+            }
             43 => {
                 let value = match self.ty(a[0])? {
                     Ty::Int => Value::Int(a[2]),
@@ -795,7 +874,7 @@ impl<'a> Compiler<'a> {
                     };
                     base = match self.ty(base)? {
                         Ty::Struct(m) if [2, 3].contains(&storage) => *m.get(index as usize).ok_or("struct member index out of bounds")?,
-                        Ty::Vector(n) if [2, 7].contains(&storage) && index < u32::from(n) && self.ty(target)? == Ty::Float => target,
+                        Ty::Vector(n) if [1, 2, 7].contains(&storage) && index < u32::from(n) && self.ty(target)? == Ty::Float => target,
                         _ => return Err("access chain supports uniform members and uniform/local vector components".into()),
                     };
                     path.push(index as usize);
@@ -817,67 +896,79 @@ impl<'a> Compiler<'a> {
                     return Err("load result/pointee type mismatch".into());
                 }
                 let d = self.decoration(root, None);
-                let value =
-                    match storage {
-                        0 if path.is_empty() => {
-                            Value::Texture(d.binding.ok_or("sampler lacks binding")? as u8)
-                        }
-                        1 if path.is_empty() => {
-                            let slot = d.location.ok_or("input lacks location")? as u8;
-                            let n = self.lanes(base)?;
-                            let r = self.emit(|dst| Sir::Input { dst, slot })?;
-                            let r = self.canonical(r, n)?;
-                            Value::Reg(r, self.stage == Stage::Fragment && slot == 1 && n == 2)
-                        }
-                        2 if path.first() == Some(&0) => {
-                            let uniform = d.binding.ok_or("uniform lacks binding")? as u8 * 4;
-                            if self.ty(base)? == Ty::Matrix && path.len() == 1 {
-                                Value::Matrix(uniform)
+                let value = match storage {
+                    0 if path.is_empty() => {
+                        Value::Texture(d.binding.ok_or("sampler lacks binding")? as u8)
+                    }
+                    1 if path.len() <= 1 => {
+                        let slot = d.location.ok_or("input lacks location")? as u8;
+                        let n = self.lanes(base)?;
+                        let r = self.emit(|dst| Sir::Input { dst, slot })?;
+                        let r = if let Some(&lane) = path.first() {
+                            self.emit(|dst| Sir::Swizzle {
+                                dst,
+                                src: r,
+                                lanes: [lane as u8; 4],
+                            })?
+                        } else {
+                            self.canonical(r, n)?
+                        };
+                        Value::Reg(
+                            r,
+                            path.is_empty() && self.stage == Stage::Fragment && slot == 1 && n == 2,
+                        )
+                    }
+                    2 if path.first() == Some(&0) => {
+                        let uniform = d.binding.ok_or("uniform lacks binding")? as u8 * 4;
+                        if self.ty(base)? == Ty::Matrix && path.len() == 1 {
+                            Value::Matrix(uniform)
+                        } else {
+                            let r = self.emit(|dst| Sir::Uniform { dst, slot: uniform })?;
+                            let r = if path.len() == 2 {
+                                let lane = path[1] as u8;
+                                self.emit(|dst| Sir::Swizzle {
+                                    dst,
+                                    src: r,
+                                    lanes: [lane; 4],
+                                })?
                             } else {
-                                let r = self.emit(|dst| Sir::Uniform { dst, slot: uniform })?;
-                                let r = if path.len() == 2 {
-                                    let lane = path[1] as u8;
-                                    self.emit(|dst| Sir::Swizzle {
-                                        dst,
-                                        src: r,
-                                        lanes: [lane; 4],
-                                    })?
-                                } else {
-                                    self.canonical(r, self.lanes(base)?)?
-                                };
-                                Value::Reg(r, false)
-                            }
-                        }
-                        7 => {
-                            let local = self
-                                .locals
-                                .get(&root)
-                                .cloned()
-                                .ok_or("local variable loaded before initialization")?;
-                            let Value::Reg(r, uv) = local.value else {
-                                unreachable!()
+                                self.canonical(r, self.lanes(base)?)?
                             };
-                            if path.is_empty() {
-                                Value::Reg(r, uv)
-                            } else if path.len() == 1 {
-                                let lane = path[0] as u8;
-                                Value::Reg(
-                                    self.emit(|dst| Sir::Swizzle {
-                                        dst,
-                                        src: r,
-                                        lanes: [lane; 4],
-                                    })?,
-                                    false,
-                                )
-                            } else {
-                                return Err("nested local access unsupported".into());
-                            }
+                            Value::Reg(r, false)
                         }
-                        _ => return Err(
+                    }
+                    7 => {
+                        let local = self
+                            .locals
+                            .get(&root)
+                            .cloned()
+                            .ok_or("local variable loaded before initialization")?;
+                        let Value::Reg(r, uv) = local.value else {
+                            unreachable!()
+                        };
+                        if path.is_empty() {
+                            Value::Reg(r, uv)
+                        } else if path.len() == 1 {
+                            let lane = path[0] as u8;
+                            Value::Reg(
+                                self.emit(|dst| Sir::Swizzle {
+                                    dst,
+                                    src: r,
+                                    lanes: [lane; 4],
+                                })?,
+                                false,
+                            )
+                        } else {
+                            return Err("nested local access unsupported".into());
+                        }
+                    }
+                    _ => {
+                        return Err(
                             "load supports inputs, sampler/uniform bindings and local variables"
                                 .into(),
-                        ),
-                    };
+                        );
+                    }
+                };
                 self.values.insert(a[1], Typed { ty: a[0], value });
             }
             62 => {
@@ -1061,6 +1152,84 @@ impl<'a> Compiler<'a> {
                     },
                 );
             }
+            164..=169 | 180 | 182..=184 | 186 | 188 | 190 => {
+                let (x, xt, _) = self.reg(a[2])?;
+                let r = if op.opcode == 168 {
+                    if self.ty(xt)? != Ty::Bool || xt != a[0] {
+                        return Err("logical Not requires bool".into());
+                    }
+                    self.emit(|dst| Sir::Not { dst, src: x })?
+                } else {
+                    let (y, yt, yuv) = self.reg(a[3])?;
+                    if op.opcode == 169 {
+                        let (z, zt, zuv) = self.reg(a[4])?;
+                        if self.ty(xt)? != Ty::Bool || yt != zt || yt != a[0] {
+                            return Err("Select requires scalar bool and matching float/vector/bool alternatives".into());
+                        }
+                        self.value_lanes(yt)?;
+                        let r = self.emit(|dst| Sir::Select {
+                            dst,
+                            condition: x,
+                            a: y,
+                            b: z,
+                        })?;
+                        self.values.insert(
+                            a[1],
+                            Typed {
+                                ty: a[0],
+                                value: Value::Reg(r, yuv && zuv),
+                            },
+                        );
+                        return Ok(());
+                    }
+                    if xt != yt || self.ty(a[0])? != Ty::Bool {
+                        return Err("comparison type mismatch".into());
+                    }
+                    if op.opcode < 168 {
+                        if self.ty(xt)? != Ty::Bool {
+                            return Err("logical operation requires bool operands".into());
+                        }
+                        let kind = match op.opcode {
+                            164 => Logic::Equal,
+                            165 => Logic::NotEqual,
+                            166 => Logic::Or,
+                            _ => Logic::And,
+                        };
+                        self.emit(|dst| Sir::Logical {
+                            dst,
+                            a: x,
+                            b: y,
+                            kind,
+                        })?
+                    } else {
+                        if self.ty(xt)? != Ty::Float {
+                            return Err("comparison requires scalar float32 operands".into());
+                        }
+                        // SIR rejects non-finite values, so ordered/unordered != are equivalent here.
+                        let kind = match op.opcode {
+                            180 => Comparison::Equal,
+                            182 | 183 => Comparison::NotEqual,
+                            184 => Comparison::Less,
+                            186 => Comparison::Greater,
+                            188 => Comparison::LessEqual,
+                            _ => Comparison::GreaterEqual,
+                        };
+                        self.emit(|dst| Sir::Compare {
+                            dst,
+                            a: x,
+                            b: y,
+                            kind,
+                        })?
+                    }
+                };
+                self.values.insert(
+                    a[1],
+                    Typed {
+                        ty: a[0],
+                        value: Value::Reg(r, false),
+                    },
+                );
+            }
             145 => {
                 let m = self.value(a[2])?;
                 let Value::Matrix(uniform) = m.value else {
@@ -1199,74 +1368,38 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
     fn run(mut self) -> Result<Compiled> {
-        let mut phase = 0;
-        let mut function = false;
-        let mut executable = false;
-        for op in &self.module.instructions {
+        let ops = &self.module.instructions;
+        let start = ops
+            .iter()
+            .position(|op| op.opcode == 54)
+            .ok_or("SPIR-V missing main function")?;
+        for op in &ops[..start] {
             match op.opcode {
-                54 => {
-                    if phase != 0
-                        || function
-                        || op.operands[1] != self.entry
-                        || self.ty(op.operands[0])? != Ty::Void
-                        || op.operands[2] != 0
-                        || self.ty(op.operands[3])? != Ty::Function(op.operands[0])
-                    {
-                        return Err(op.error("requires one void main() function without controls"));
-                    }
-                    function = true;
-                    phase = 1;
-                }
-                248 => {
-                    if phase != 1 {
-                        return Err(op.error("requires exactly one basic block"));
-                    }
-                    phase = 2;
-                }
-                253 => {
-                    if phase != 2 {
-                        return Err(op.error("return outside the main block"));
-                    }
-                    phase = 3;
-                }
-                56 => {
-                    if phase != 3 {
-                        return Err(op.error("function must end immediately after return"));
-                    }
-                    phase = 4;
-                }
-                59 if phase == 2 => {
-                    if executable || op.operands[2] != 7 {
-                        return Err(op.error("Function variables must start the first block"));
-                    }
-                    self.instruction(op).map_err(|e| op.error(e))?;
-                }
                 19..=44 | 59 => {
-                    if phase != 0 {
-                        return Err(op.error("declaration outside module scope"));
-                    }
                     if op.opcode == 59 && op.operands[2] == 7 {
                         return Err(op.error("Function variable outside function"));
                     }
                     self.instruction(op).map_err(|e| op.error(e))?;
                 }
-                12 | 61..=65 | 79..=87 | 129..=148 => {
-                    if phase != 2 {
-                        return Err(op.error("executable instruction outside main block"));
-                    }
-                    executable = true;
-                    self.instruction(op).map_err(|e| op.error(e))?;
-                }
-                _ => {
-                    if phase != 0 && op.opcode != 0 {
-                        return Err(op.error("metadata inside or after function"));
-                    }
-                }
+                0 | 3 | 5 | 6 | 11 | 14..=17 | 71 | 72 => {}
+                _ => return Err(op.error("instruction outside main function")),
             }
         }
-        if !function || phase != 4 {
-            return Err("SPIR-V missing complete main function/block/return".into());
+        let function = &ops[start];
+        if function.operands[1] != self.entry
+            || self.ty(function.operands[0])? != Ty::Void
+            || function.operands[2] != 0
+            || self.ty(function.operands[3])? != Ty::Function(function.operands[0])
+        {
+            return Err(function.error("requires one void main() function without controls"));
         }
+        if ops.last().is_none_or(|op| op.opcode != 56) {
+            return Err("SPIR-V missing main FunctionEnd".into());
+        }
+        self.globals = self.values.keys().copied().collect();
+        self.available = Some(BTreeSet::new());
+        self.lower_control(&ops[start + 1..ops.len() - 1])?;
+        self.available = None;
         for id in &self.interfaces {
             let (_, _, s, _) = self.pointer(*id)?;
             if ![1, 3].contains(&s) {
@@ -1333,19 +1466,6 @@ impl<'a> Compiler<'a> {
                 if op.operands[1] as usize >= m.len() {
                     return Err(op.error("member name index out of bounds"));
                 }
-            }
-        }
-        if !self.written.contains(&0) {
-            return Err(
-                "SPIR-V shader must write Position (vertex) or location 0 (fragment)".into(),
-            );
-        }
-        for &loc in self.outputs.keys() {
-            if !self
-                .written
-                .contains(&(loc + u8::from(self.stage == Stage::Vertex)))
-            {
-                return Err(format!("output location {loc} is never written"));
             }
         }
         Ok(Compiled {
