@@ -15,6 +15,7 @@ p.add_argument('--baseline-report', action='store_true', help='retain per-frame 
 p.add_argument('--binary', default=Path('target/release/silicon'), type=Path)
 p.add_argument('--frames', default=20, type=int)
 p.add_argument('--scene', default='spirv_showcase')
+p.add_argument('--workers', type=int, nargs='+', choices=range(1, 65), default=(1, 4))
 p.add_argument('--output', default=Path('output/comparison.json'), type=Path)
 a = p.parse_args()
 if a.frames < 1:
@@ -36,7 +37,7 @@ record = {
 }
 # Two rounds, reversing configuration order to expose drift rather than hiding it.
 configurations = [(label, path, backend, workers)
-                  for workers in (1, 4)
+                  for workers in a.workers
                   for label, path, backend in [('baseline', baseline, 'simd'),
                                                ('current', binary, 'scalar'),
                                                ('current', binary, 'simd')]]

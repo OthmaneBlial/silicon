@@ -378,10 +378,18 @@ impl Renderer {
                     / denom
             })
         };
+        let interpolate_uv = |b: [f32; 3]| {
+            let weights = std::array::from_fn::<_, 3, _>(|i| b[i] * s[i].inv_w);
+            let denom = weights.iter().sum::<f32>();
+            (s[0].varyings[1] * weights[0]
+                + s[1].varyings[1] * weights[1]
+                + s[2].varyings[1] * weights[2])
+                / denom
+        };
         let varyings = interpolate(bary);
-        let vx = interpolate(std::array::from_fn(|i| bary[i] + dx[i]));
-        let vy = interpolate(std::array::from_fn(|i| bary[i] + dy[i]));
-        if !varyings.iter().all(|v| v.is_finite()) || !vx[1].is_finite() || !vy[1].is_finite() {
+        let uv_x = interpolate_uv(std::array::from_fn(|i| bary[i] + dx[i]));
+        let uv_y = interpolate_uv(std::array::from_fn(|i| bary[i] + dy[i]));
+        if !varyings.iter().all(|v| v.is_finite()) || !uv_x.is_finite() || !uv_y.is_finite() {
             return Err("perspective interpolation exceeded finite f32 range".into());
         }
         let input = Fragment {
@@ -397,8 +405,8 @@ impl Renderer {
                 Vec3::new(original[0], original[1], original[2])
             },
             varyings,
-            uv_dx: Vec2::new(vx[1].x - varyings[1].x, vx[1].y - varyings[1].y),
-            uv_dy: Vec2::new(vy[1].x - varyings[1].x, vy[1].y - varyings[1].y),
+            uv_dx: Vec2::new(uv_x.x - varyings[1].x, uv_x.y - varyings[1].y),
+            uv_dy: Vec2::new(uv_y.x - varyings[1].x, uv_y.y - varyings[1].y),
         };
         Ok(Some(PreparedFragment {
             input,

@@ -135,6 +135,57 @@ fn perspective_correct_varying_and_affine_depth() {
     assert!((f.depth - 0.5).abs() < 1e-6);
 }
 #[test]
+fn perspective_correct_uv_derivatives_match_one_pixel_reference() {
+    let mut vertices = [
+        Vertex::new(Vec3::new(-1., -1., 0.5), Color::WHITE),
+        Vertex::new(Vec3::new(-1., 1., 0.5), Color::WHITE),
+        Vertex::new(Vec3::new(1., -1., 0.5), Color::WHITE),
+    ];
+    vertices[0].uv = Vec2::new(0., 0.);
+    vertices[1].uv = Vec2::new(0., 1.);
+    vertices[2].uv = Vec2::new(1., 0.);
+    let mut r = Renderer::new(8, 8).unwrap();
+    r.clear(Color::BLACK);
+    r.debug_pixel = Some((2, 4));
+    r.draw(
+        &vertices,
+        None,
+        Pipeline::default(),
+        |v| {
+            let mut out = vertex(v);
+            out.position = out.position * if v.position.y > 0. { 2. } else { 1. };
+            out
+        },
+        |f| Some(f.color()),
+    )
+    .unwrap();
+
+    let fragment = r.traces[0].fragment;
+    let bary = [
+        fragment.barycentric.x,
+        fragment.barycentric.y,
+        fragment.barycentric.z,
+    ];
+    let uv_at = |bary: [f32; 3]| {
+        let weights = [bary[0], bary[1] * 0.5, bary[2]];
+        let denominator = weights.iter().sum::<f32>();
+        Vec2::new(weights[2] / denominator, weights[1] / denominator)
+    };
+    let center = uv_at(bary);
+    let pixel = 1. / 8.;
+    let dx = [-pixel, 0., pixel];
+    let dy = [pixel, -pixel, 0.];
+    assert_eq!(fragment.uv(), center);
+    assert_eq!(
+        fragment.uv_dx,
+        uv_at(std::array::from_fn(|i| bary[i] + dx[i])) - center
+    );
+    assert_eq!(
+        fragment.uv_dy,
+        uv_at(std::array::from_fn(|i| bary[i] + dy[i])) - center
+    );
+}
+#[test]
 fn lines_clip_and_cover_endpoints() {
     let mut fb = Framebuffer::new(8, 8).unwrap();
     fb.clear(Color::BLACK);
