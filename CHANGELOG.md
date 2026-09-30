@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 — 2026-09-30
+
+The full lit OBJ showcase now executes ordinary GLSL through SPIR-V and SIR:
+30 recorded draws, 12,588 triangles, normal transforms, Lambert/Blinn-Phong,
+directional/point lights, textures, fog and display transfer. The compiler adds
+float/vector locals, snapshot/component stores, one-member float/vector uniform
+blocks and checked GLSL.std.450 math. SSA temporaries recycle into the existing
+64 runtime registers. The scene shares geometry/materials with the native reference.
+Capture exports now create missing parent directories, matching PNG export.
+
+Four additional tests verify locals and padding, malformed extended instructions,
+register lifetimes/capacity, native lighting/depth equivalence and exact captured
+scalar/SIMD/four-band replay. Branches, loops, function calls, general shader/API
+compatibility and compute remain unsupported.
+
 ## 0.2.0 — 2026-09-30
 
 Strict SPIR-V 1.0 binary parsing and typed SIR lowering; ordinary externally

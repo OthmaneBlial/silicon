@@ -377,6 +377,10 @@ impl CommandBuffer {
 impl FrameCapture {
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         self.commands.validate()?;
+        let path = path.as_ref();
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
         std::fs::write(path, serde_json::to_vec(self)?)?;
         Ok(())
     }

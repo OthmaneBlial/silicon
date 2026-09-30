@@ -3,10 +3,13 @@ use silicon::*;
 fn capture_replay_is_exact_and_owns_resources() {
     let c = demo::shader_cube(96, 64, 0.).unwrap();
     let expected = c.replay().unwrap().framebuffer.bytes().to_vec();
-    let path = std::env::temp_dir().join(format!("silicon-test-{}.silicon", std::process::id()));
+    let directory =
+        std::env::temp_dir().join(format!("silicon-test-capture-{}", std::process::id()));
+    let path = directory.join("nested/frame.silicon");
+    assert!(!path.exists());
     c.save(&path).unwrap();
     let loaded = FrameCapture::load(&path).unwrap();
-    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
     assert_eq!(loaded.replay().unwrap().framebuffer.bytes(), expected);
     assert!(expected.chunks_exact(4).any(|p| p[0] > 100));
     let mut r = Renderer::new(96, 64).unwrap();
