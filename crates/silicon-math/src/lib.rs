@@ -1,9 +1,10 @@
 //! Small row-major math toolkit. Right-handed world, +Y up, clip depth 0..w.
+use serde::{Deserialize, Serialize};
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 macro_rules! vector {
     ($name:ident, $($field:ident),+) => {
-        #[derive(Clone, Copy, Debug, Default, PartialEq)]
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
         pub struct $name { $(pub $field: f32),+ }
         impl $name {
             pub const ZERO: Self = Self { $($field: 0.0),+ };
@@ -50,7 +51,7 @@ impl Vec4 {
         Self::new(v[0], v[1], v[2], v[3])
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Mat3(pub [[f32; 3]; 3]);
 impl Mat3 {
     pub const IDENTITY: Self = Self([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]);
@@ -76,7 +77,7 @@ impl Mat3 {
         Some(Self([[x.x, y.x, z.x], [x.y, y.y, z.y], [x.z, y.z, z.z]]))
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Mat4(pub [[f32; 4]; 4]);
 impl Mat4 {
     pub const IDENTITY: Self = Self([

@@ -151,3 +151,86 @@ fn lines_clip_and_cover_endpoints() {
     draw_line(&mut fb, Vec2::new(0., 0.), Vec2::new(7., 7.), Color::WHITE).unwrap();
     assert_eq!(fb.pixel(7, 7), Some(Color::WHITE));
 }
+#[test]
+fn scalar_simd_and_parallel_frames_are_identical() {
+    let c = demo::shader_cube(97, 65, 0.4).unwrap();
+    let expected = c.replay().unwrap();
+    for backend in [Backend::Scalar, Backend::Simd] {
+        for threads in [1, 2, 4] {
+            let mut r = Renderer::new(97, 65).unwrap();
+            r.backend = backend;
+            r.render_bands(threads, |r| Device.submit(&c.commands, r).map(|_| ()))
+                .unwrap();
+            assert_eq!(
+                r.framebuffer.bytes(),
+                expected.framebuffer.bytes(),
+                "{backend:?}/{threads}"
+            );
+            assert_eq!(r.stats.fragments, expected.stats.fragments);
+            assert_eq!(r.stats.shaded, expected.stats.shaded);
+            assert_eq!(r.stats.triangles, 12);
+        }
+    }
+}
+#[test]
+fn stencil_masks_restrict_color_and_pass_ops() {
+    let mut r = Renderer::new(16, 16).unwrap();
+    r.clear(Color::BLACK);
+    let st = StencilState {
+        compare: Compare::Always,
+        reference: 3,
+        read_mask: 255,
+        write_mask: 15,
+        fail: StencilOp::Keep,
+        depth_fail: StencilOp::Keep,
+        pass: StencilOp::Replace,
+    };
+    r.draw(
+        &triangle(0.5, Color::WHITE),
+        None,
+        Pipeline {
+            color_write: false,
+            depth_write: false,
+            stencil: Some(st),
+            ..Default::default()
+        },
+        vertex,
+        |f| Some(f.color()),
+    )
+    .unwrap();
+    assert!(
+        r.framebuffer
+            .bytes()
+            .chunks_exact(4)
+            .all(|p| p == [0, 0, 0, 255])
+    );
+    assert_eq!(r.framebuffer.stencil_at(2, 12), Some(3));
+    let st = StencilState {
+        compare: Compare::Equal,
+        write_mask: 0,
+        pass: StencilOp::Keep,
+        ..st
+    };
+    let quad = [
+        Vertex::new(Vec3::new(-1., -1., 0.2), Color::WHITE),
+        Vertex::new(Vec3::new(1., -1., 0.2), Color::WHITE),
+        Vertex::new(Vec3::new(-1., 1., 0.2), Color::WHITE),
+        Vertex::new(Vec3::new(1., -1., 0.2), Color::WHITE),
+        Vertex::new(Vec3::new(1., 1., 0.2), Color::WHITE),
+        Vertex::new(Vec3::new(-1., 1., 0.2), Color::WHITE),
+    ];
+    r.draw(
+        &quad,
+        None,
+        Pipeline {
+            stencil: Some(st),
+            ..Default::default()
+        },
+        vertex,
+        |f| Some(f.color()),
+    )
+    .unwrap();
+    assert_eq!(r.framebuffer.pixel(2, 12), Some(Color::WHITE));
+    assert_eq!(r.framebuffer.pixel(12, 2), Some(Color::BLACK));
+    assert!(r.stats.stencil_rejected > 0);
+}

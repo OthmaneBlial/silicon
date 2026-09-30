@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 silicon-math = { path = "../silicon-math" }
+serde = { version = "1.0", features = ["derive"] }

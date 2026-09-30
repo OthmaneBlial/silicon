@@ -1,48 +1,75 @@
 use crate::{Color, Result, Vec2};
-#[derive(Clone, Copy, Debug)]
+use serde::{Deserialize, Serialize};
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub enum TextureFormat {
     Rgba8,
     Rgb8,
     R8,
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
 pub enum Filter {
     Nearest,
     #[default]
     Bilinear,
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
 pub enum Address {
     Clamp,
     #[default]
     Repeat,
     Mirror,
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
 pub enum MipFilter {
     None,
     Nearest,
     #[default]
     Trilinear,
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
 pub struct Sampler {
     pub filter: Filter,
     pub address: Address,
     pub mip: MipFilter,
 }
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MipLevel {
     pub width: u32,
     pub height: u32,
     pixels: Vec<[u8; 4]>,
 }
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Texture {
     pub format: TextureFormat,
     pub levels: Vec<MipLevel>,
 }
 impl Texture {
+    pub fn validate(&self) -> Result<()> {
+        if self.levels.is_empty() || self.levels.len() > 25 {
+            return Err("texture requires 1..25 mip levels".into());
+        }
+        let mut previous: Option<(u32, u32)> = None;
+        for level in &self.levels {
+            let count = (level.width as usize)
+                .checked_mul(level.height as usize)
+                .ok_or("texture size overflow")?;
+            if level.width == 0
+                || level.height == 0
+                || count > 16_777_216
+                || count != level.pixels.len()
+            {
+                return Err("invalid texture mip dimensions/storage".into());
+            }
+            if previous.is_some_and(|(w, h)| {
+                level.width != (w / 2).max(1) || level.height != (h / 2).max(1)
+            }) {
+                return Err("invalid mip chain dimensions".into());
+            }
+            previous = Some((level.width, level.height));
+        }
+        Ok(())
+    }
+
     pub fn new(width: u32, height: u32, format: TextureFormat, bytes: &[u8]) -> Result<Self> {
         let components = match format {
             TextureFormat::Rgba8 => 4,

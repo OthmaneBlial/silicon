@@ -1,5 +1,6 @@
 //! Reproducible CPU-only scenes. Native Rust closures are the first shader backend.
 use crate::*;
+use std::sync::OnceLock;
 #[derive(Clone, Copy, Debug)]
 pub struct Material {
     pub color: Color,
@@ -27,7 +28,8 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
         return Err("scene time must be finite".into());
     }
     r.clear(Color::new(0.022, 0.032, 0.05, 1.));
-    let texture = Texture::checker(128)?;
+    static TEXTURE: OnceLock<Texture> = OnceLock::new();
+    let texture = TEXTURE.get_or_init(|| Texture::checker(128).expect("valid built-in checker"));
     let cube = Mesh::cube();
     let eye = if name == "showcase" {
         Vec3::new(7.5, 5.8, 10.)
@@ -45,7 +47,7 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
     );
     let proj = Mat4::perspective(
         0.78,
-        r.framebuffer.width as f32 / r.framebuffer.height as f32,
+        r.surface_size().0 as f32 / r.surface_size().1 as f32,
         0.1,
         60.,
     );
@@ -147,9 +149,13 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
                 Blend::Replace,
             )?;
             // A real OBJ file exercises the same asset loader as user models.
-            let sculpture = Mesh::from_obj(include_str!("../../../assets/models/sculpture.obj"))?;
+            static SCULPTURE: OnceLock<Mesh> = OnceLock::new();
+            let sculpture = SCULPTURE.get_or_init(|| {
+                Mesh::from_obj(include_str!("../../../assets/models/sculpture.obj"))
+                    .expect("tested built-in OBJ")
+            });
             draw(
-                &sculpture,
+                sculpture,
                 Mat4::translation(Vec3::new(0., 2.2, 0.))
                     * Mat4::rotation_y(time * 0.4)
                     * Mat4::rotation_x(1.15),
@@ -188,9 +194,11 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
                     Blend::Replace,
                 )?;
             }
-            let ring = Mesh::torus(64, 12, 2.4, 0.06)?;
+            static RING: OnceLock<Mesh> = OnceLock::new();
+            let ring =
+                RING.get_or_init(|| Mesh::torus(64, 12, 2.4, 0.06).expect("valid built-in torus"));
             draw(
-                &ring,
+                ring,
                 Mat4::translation(Vec3::new(0., 0.15, 0.)),
                 Material {
                     color: Color::new(0.1, 0.85, 1., 1.),
@@ -200,11 +208,13 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
                 },
                 Blend::Replace,
             )?;
-            let satellite = Mesh::torus(48, 16, 0.5, 0.17)?;
+            static SATELLITE: OnceLock<Mesh> = OnceLock::new();
+            let satellite = SATELLITE
+                .get_or_init(|| Mesh::torus(48, 16, 0.5, 0.17).expect("valid built-in torus"));
             for i in 0..3 {
                 let a = i as f32 * 2.094 + time * 0.2;
                 draw(
-                    &satellite,
+                    satellite,
                     Mat4::translation(Vec3::new(
                         a.cos() * 2.1,
                         2.5 + (a * 1.2).sin() * 0.4,
@@ -228,4 +238,86 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
         }
     }
     Ok(())
+}
+/// A fully recorded SIR draw: geometry, uniforms, textures, pipeline and shader bytecode.
+pub fn shader_cube(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
+    use shader::{Instruction::*, Program};
+    use std::sync::Arc;
+    if !time.is_finite() {
+        return Err("scene time must be finite".into());
+    }
+    Framebuffer::new(width, height)?;
+    let device = Device;
+    let mesh = Mesh::cube();
+    let model = crate::Mat4::rotation_y(time + 0.55) * crate::Mat4::rotation_x(0.2);
+    let mvp = crate::Mat4::perspective(0.78, width as f32 / height as f32, 0.1, 60.)
+        * crate::Mat4::look_at(Vec3::new(4., 3., 5.), Vec3::ZERO, Vec3::new(0., 1., 0.))
+        * model;
+    let vertex = Program::new(vec![
+        Input { dst: 0, slot: 0 },
+        Mat4 {
+            dst: 1,
+            src: 0,
+            uniform: 0,
+        },
+        Output { slot: 0, src: 1 },
+        Input { dst: 2, slot: 1 },
+        Output { slot: 1, src: 2 },
+        Input { dst: 3, slot: 2 },
+        Output { slot: 2, src: 3 },
+        Input { dst: 4, slot: 3 },
+        Mat4 {
+            dst: 5,
+            src: 4,
+            uniform: 4,
+        },
+        Output { slot: 3, src: 5 },
+    ])?;
+    let fragment = Program::new(vec![
+        Input { dst: 0, slot: 1 },
+        Sample {
+            dst: 1,
+            uv: 0,
+            texture: 0,
+        },
+        Input { dst: 2, slot: 2 },
+        Normalize3 { dst: 2, src: 2 },
+        Const {
+            dst: 3,
+            value: Vec3::new(-0.4, 0.85, 0.6).normalize().extend(0.),
+        },
+        Dot3 { dst: 4, a: 2, b: 3 },
+        Saturate { dst: 4, src: 4 },
+        Const {
+            dst: 5,
+            value: Vec4::new(0.2, 0.2, 0.2, 0.2),
+        },
+        Add { dst: 4, a: 4, b: 5 },
+        Mul { dst: 6, a: 1, b: 4 },
+        Output { slot: 0, src: 6 },
+    ])?;
+    let mut uniforms: Vec<_> = mvp.0.into_iter().map(Vec4::from_array).collect();
+    uniforms.extend(model.0.into_iter().map(Vec4::from_array));
+    let mut commands = device.commands();
+    commands.begin_render_pass(Color::new(0.022, 0.032, 0.05, 1.));
+    commands.bind_pipeline(Arc::new(ShaderPipeline {
+        state: Pipeline {
+            cull: Cull::Back,
+            ..Default::default()
+        },
+        vertex,
+        fragment,
+    }));
+    commands.bind_vertex_buffer(device.create_vertex_buffer(mesh.vertices)?);
+    commands.bind_index_buffer(device.create_index_buffer(mesh.indices.clone())?);
+    commands.bind_uniform_buffer(device.create_uniform_buffer(uniforms)?);
+    commands.bind_texture(0, Arc::new(Texture::checker(128)?), Sampler::default());
+    commands.draw_indexed(0, mesh.indices.len() as u32);
+    commands.end_render_pass();
+    Ok(FrameCapture {
+        version: 1,
+        width,
+        height,
+        commands,
+    })
 }

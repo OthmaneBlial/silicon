@@ -15,3 +15,10 @@ pub use texture::*;
 mod mesh;
 pub use mesh::*;
 pub mod demo;
+
+mod command;
+pub use command::*;
+pub use silicon_shader as shader;
+
+pub mod simd;
+pub use simd::Backend;

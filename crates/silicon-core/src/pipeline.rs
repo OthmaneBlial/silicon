@@ -1,5 +1,6 @@
 use crate::{Color, Vec2, Vec3, Vec4};
-#[derive(Clone, Copy, Debug)]
+use serde::{Deserialize, Serialize};
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct Vertex {
     pub position: Vec3,
     pub normal: Vec3,
@@ -17,7 +18,7 @@ impl Vertex {
     }
 }
 /// Slots: color, UV, normal, world position. Each is a perspective-correct vec4.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct VertexOutput {
     pub position: Vec4,
     pub varyings: [Vec4; 4],
@@ -33,7 +34,7 @@ impl VertexOutput {
         self.position.is_finite() && self.varyings.iter().all(|v| v.is_finite())
     }
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct Fragment {
     pub x: u32,
     pub y: u32,
@@ -58,7 +59,7 @@ impl Fragment {
         self.varyings[3].xyz()
     }
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 pub enum Compare {
     Never,
     #[default]
@@ -84,20 +85,20 @@ impl Compare {
         }
     }
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 pub enum Cull {
     #[default]
     None,
     Front,
     Back,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 pub enum FrontFace {
     #[default]
     Ccw,
     Cw,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 pub enum Blend {
     #[default]
     Replace,
@@ -122,7 +123,7 @@ impl Blend {
         }
     }
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 pub enum StencilOp {
     #[default]
     Keep,
@@ -144,7 +145,7 @@ impl StencilOp {
         }
     }
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct StencilState {
     pub compare: Compare,
     pub reference: u8,
@@ -154,8 +155,9 @@ pub struct StencilState {
     pub depth_fail: StencilOp,
     pub pass: StencilOp,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct Pipeline {
+    pub color_write: bool,
     pub depth_compare: Compare,
     pub depth_write: bool,
     pub cull: Cull,
@@ -166,6 +168,7 @@ pub struct Pipeline {
 impl Default for Pipeline {
     fn default() -> Self {
         Self {
+            color_write: true,
             depth_compare: Compare::Less,
             depth_write: true,
             cull: Cull::None,

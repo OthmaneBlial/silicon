@@ -25,6 +25,9 @@ pub struct PixelTrace {
     pub stencil_pass: bool,
 }
 pub struct Renderer {
+    row_offset: u32,
+    viewport_height: u32,
+    pub backend: Backend,
     pub framebuffer: Framebuffer,
     pub stats: Statistics,
     pub debug_pixel: Option<(u32, u32)>,
@@ -48,6 +51,9 @@ fn top_left(a: ScreenVertex, b: ScreenVertex) -> bool {
 impl Renderer {
     pub fn new(width: u32, height: u32) -> Result<Self> {
         Ok(Self {
+            backend: Backend::Scalar,
+            row_offset: 0,
+            viewport_height: height,
             framebuffer: Framebuffer::new(width, height)?,
             stats: Statistics::default(),
             debug_pixel: None,
@@ -73,6 +79,26 @@ impl Renderer {
         V: Fn(&Vertex) -> VertexOutput,
         F: Fn(&Fragment) -> Option<Color>,
     {
+        self.try_draw(
+            vertices,
+            indices,
+            pipeline,
+            |v| Ok(vertex(v)),
+            |f| Ok(fragment(f)),
+        )
+    }
+    pub fn try_draw<V, F>(
+        &mut self,
+        vertices: &[Vertex],
+        indices: Option<&[u32]>,
+        pipeline: Pipeline,
+        vertex: V,
+        fragment: F,
+    ) -> Result<()>
+    where
+        V: Fn(&Vertex) -> Result<VertexOutput>,
+        F: Fn(&Fragment) -> Result<Option<Color>>,
+    {
         let count = indices.map_or(vertices.len(), |i| i.len());
         if !count.is_multiple_of(3) {
             return Err("triangle list draw requires a multiple of 3 vertices/indices".into());
@@ -81,7 +107,7 @@ impl Renderer {
             return Err("draw index outside vertex buffer".into());
         }
         let start = Instant::now();
-        let transformed: Vec<_> = vertices.iter().map(vertex).collect();
+        let transformed: Vec<_> = vertices.iter().map(vertex).collect::<Result<Vec<_>>>()?;
         if !transformed.iter().all(VertexOutput::is_finite) {
             return Err("vertex shader produced a non-finite output".into());
         }
@@ -107,31 +133,34 @@ impl Renderer {
                     primitive,
                     pipeline,
                     &fragment,
-                );
+                )?;
             }
         }
         self.stats.raster_time += start.elapsed();
         Ok(())
     }
-    fn triangle<F: Fn(&Fragment) -> Option<Color>>(
+    fn triangle<F: Fn(&Fragment) -> Result<Option<Color>>>(
         &mut self,
         v: [VertexOutput; 3],
         primitive: u32,
         state: Pipeline,
         shader: &F,
-    ) {
+    ) -> Result<()> {
         if v.iter().any(|v| v.position.w <= 1e-8) {
-            return;
+            return Ok(());
         }
         let w = self.framebuffer.width;
         let h = self.framebuffer.height;
+        let full_height = self.viewport_height;
         let mut s = std::array::from_fn::<_, 3, _>(|source| {
             let v = v[source];
             let iw = 1. / v.position.w;
             ScreenVertex {
                 source,
                 x: ((v.position.x * iw * 0.5 + 0.5) * w as f32 * SUBPIXEL as f32).round() as i64,
-                y: ((0.5 - v.position.y * iw * 0.5) * h as f32 * SUBPIXEL as f32).round() as i64,
+                y: ((0.5 - v.position.y * iw * 0.5) * full_height as f32 * SUBPIXEL as f32).round()
+                    as i64
+                    - self.row_offset as i64 * SUBPIXEL,
                 z: v.position.z * iw,
                 inv_w: iw,
                 varyings: v.varyings,
@@ -139,7 +168,7 @@ impl Renderer {
         });
         let mut area = edge(s[0], s[1], s[2].x, s[2].y);
         if area == 0 {
-            return;
+            return Ok(());
         }
         let front = match state.front_face {
             FrontFace::Ccw => area < 0,
@@ -147,7 +176,7 @@ impl Renderer {
         };
         if (state.cull == Cull::Back && !front) || (state.cull == Cull::Front && front) {
             self.stats.culled += 1;
-            return;
+            return Ok(());
         }
         if area < 0 {
             s.swap(1, 2);
@@ -178,24 +207,38 @@ impl Renderer {
                             y as i64 * SUBPIXEL + SUBPIXEL / 2,
                         )
                     });
-                    for x in tx..end_x {
-                        if e.iter()
-                            .zip(inclusive)
-                            .all(|(&e, t)| e > 0 || (e == 0 && t))
-                        {
-                            let bary = e.map(|e| e as f32 * inv_area);
-                            self.fragment(x, y, primitive, bary, dx, dy, s, state, shader);
+                    let step = edges.map(|(a, b)| -(b.y - a.y) * SUBPIXEL);
+                    for x in (tx..end_x).step_by(4) {
+                        let mask = simd::coverage4(e, step, inclusive, self.backend);
+                        for lane in 0..(end_x - x).min(4) {
+                            if mask & (1 << lane) != 0 {
+                                let bary = std::array::from_fn(|i| {
+                                    (e[i] + step[i] * lane as i64) as f32 * inv_area
+                                });
+                                self.fragment(
+                                    x + lane,
+                                    y,
+                                    primitive,
+                                    bary,
+                                    dx,
+                                    dy,
+                                    s,
+                                    state,
+                                    shader,
+                                )?;
+                            }
                         }
                         for i in 0..3 {
-                            e[i] -= (edges[i].1.y - edges[i].0.y) * SUBPIXEL;
+                            e[i] += step[i] * 4;
                         }
                     }
                 }
             }
         }
+        Ok(())
     }
     #[allow(clippy::too_many_arguments)]
-    fn fragment<F: Fn(&Fragment) -> Option<Color>>(
+    fn fragment<F: Fn(&Fragment) -> Result<Option<Color>>>(
         &mut self,
         x: u32,
         y: u32,
@@ -206,7 +249,7 @@ impl Renderer {
         s: [ScreenVertex; 3],
         state: Pipeline,
         shader: &F,
-    ) {
+    ) -> Result<()> {
         self.stats.fragments += 1;
         let index = (y * self.framebuffer.width + x) as usize;
         let z = (0..3).map(|i| bary[i] * s[i].z).sum::<f32>().clamp(0., 1.);
@@ -218,7 +261,7 @@ impl Renderer {
             )
         });
         let depth_pass = state.depth_compare.test(z, old_depth);
-        let debug = self.debug_pixel == Some((x, y));
+        let debug = self.debug_pixel == Some((x, y + self.row_offset));
         if !stencil_pass {
             self.stats.stencil_rejected += 1;
             self.stencil_op(index, state.stencil.map(|s| (s, s.fail)));
@@ -227,7 +270,7 @@ impl Renderer {
             self.stencil_op(index, state.stencil.map(|s| (s, s.depth_fail)));
         }
         if !debug && (!stencil_pass || !depth_pass) {
-            return;
+            return Ok(());
         }
         let interpolate = |b: [f32; 3]| {
             let weights = std::array::from_fn::<_, 3, _>(|i| b[i] * s[i].inv_w);
@@ -244,7 +287,7 @@ impl Renderer {
         let vy = interpolate(std::array::from_fn(|i| bary[i] + dy[i]));
         let input = Fragment {
             x,
-            y,
+            y: y + self.row_offset,
             primitive,
             depth: z,
             barycentric: {
@@ -260,7 +303,7 @@ impl Renderer {
         };
         let output = if stencil_pass && depth_pass {
             self.stats.shaded += 1;
-            shader(&input)
+            shader(&input)?
         } else {
             None
         };
@@ -275,7 +318,7 @@ impl Renderer {
         }
         if let Some(color) = output {
             if !color.0.is_finite() {
-                return;
+                return Err("fragment shader produced a non-finite color".into());
             }
             self.stencil_op(index, state.stencil.map(|s| (s, s.pass)));
             if state.depth_write {
@@ -286,8 +329,11 @@ impl Renderer {
             } else {
                 state.blend.apply(color, self.framebuffer.read(index))
             };
-            self.framebuffer.write(index, color);
+            if state.color_write {
+                self.framebuffer.write(index, color);
+            }
         }
+        Ok(())
     }
     fn stencil_op(&mut self, index: usize, state: Option<(StencilState, StencilOp)>) {
         if let Some((s, op)) = state {
@@ -352,4 +398,94 @@ pub fn draw_line(fb: &mut Framebuffer, a: Vec2, b: Vec2, color: Color) -> Result
         }
     }
     Ok(())
+}
+impl Renderer {
+    /// Raster workers own disjoint horizontal bands and retain submission order.
+    /// ponytail: geometry setup is repeated per band; bin prepared triangles when
+    /// profiling shows setup dominates. No framebuffer lock or unsafe sharing.
+    pub fn render_bands<F>(&mut self, threads: usize, render: F) -> Result<()>
+    where
+        F: Fn(&mut Renderer) -> Result<()> + Sync,
+    {
+        if !(1..=64).contains(&threads) {
+            return Err("raster workers must be 1..64".into());
+        }
+        if threads == 1 {
+            return render(self);
+        }
+        let workers = threads.min(self.framebuffer.height as usize);
+        let rows = self.framebuffer.height.div_ceil(workers as u32);
+        let width = self.framebuffer.width;
+        let mut bands = Vec::new();
+        for y in (0..self.framebuffer.height).step_by(rows as usize) {
+            let height = rows.min(self.framebuffer.height - y);
+            let start = (y * width) as usize;
+            let end = ((y + height) * width) as usize;
+            let fb = Framebuffer {
+                width,
+                height,
+                stride: self.framebuffer.stride,
+                format: self.framebuffer.format,
+                pixels: self.framebuffer.pixels[start * 4..end * 4].to_vec(),
+                depth: self.framebuffer.depth[start..end].to_vec(),
+                stencil: self.framebuffer.stencil[start..end].to_vec(),
+            };
+            bands.push(Renderer {
+                framebuffer: fb,
+                backend: self.backend,
+                stats: Statistics::default(),
+                debug_pixel: self.debug_pixel,
+                traces: Vec::new(),
+                row_offset: y,
+                viewport_height: self.framebuffer.height,
+            });
+        }
+        let outputs = std::thread::scope(|scope| {
+            let render = &render;
+            let tasks: Vec<_> = bands
+                .into_iter()
+                .map(|mut band| {
+                    scope.spawn(move || {
+                        render(&mut band)?;
+                        Ok(band)
+                    })
+                })
+                .collect();
+            tasks
+                .into_iter()
+                .map(|t| {
+                    t.join()
+                        .map_err(|_| "raster worker panicked".into())
+                        .and_then(|r: Result<Renderer>| r)
+                })
+                .collect::<Result<Vec<_>>>()
+        })?;
+        self.stats = Statistics::default();
+        self.traces.clear();
+        for (i, band) in outputs.into_iter().enumerate() {
+            let start = (band.row_offset * width) as usize;
+            let end = start + (band.framebuffer.height * width) as usize;
+            self.framebuffer.pixels[start * 4..end * 4].copy_from_slice(&band.framebuffer.pixels);
+            self.framebuffer.depth[start..end].copy_from_slice(&band.framebuffer.depth);
+            self.framebuffer.stencil[start..end].copy_from_slice(&band.framebuffer.stencil);
+            if i == 0 {
+                self.stats.vertices = band.stats.vertices;
+                self.stats.triangles = band.stats.triangles;
+                self.stats.clipped = band.stats.clipped;
+                self.stats.culled = band.stats.culled;
+            }
+            self.stats.tiles += band.stats.tiles;
+            self.stats.fragments += band.stats.fragments;
+            self.stats.shaded += band.stats.shaded;
+            self.stats.early_z_rejected += band.stats.early_z_rejected;
+            self.stats.stencil_rejected += band.stats.stencil_rejected;
+            self.stats.vertex_time += band.stats.vertex_time;
+            self.stats.raster_time += band.stats.raster_time;
+            self.traces.extend(band.traces);
+        }
+        Ok(())
+    }
+    pub fn surface_size(&self) -> (u32, u32) {
+        (self.framebuffer.width, self.viewport_height)
+    }
 }

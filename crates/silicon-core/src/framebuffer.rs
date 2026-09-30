@@ -1,6 +1,7 @@
 use crate::{Result, Vec4};
+use serde::{Deserialize, Serialize};
 use std::{fs::File, io::BufWriter, path::Path};
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Color(pub Vec4);
 impl Color {
     pub const BLACK: Self = Self(Vec4::new(0., 0., 0., 1.));
@@ -17,19 +18,19 @@ impl Color {
         Self(Vec4::from_array(v.map(|x| x as f32 / 255.)))
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub enum PixelFormat {
     Rgba8,
     Bgra8,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
     pub x: u32,
     pub y: u32,
     pub width: u32,
     pub height: u32,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct Viewport {
     pub x: f32,
     pub y: f32,
@@ -101,6 +102,13 @@ impl Framebuffer {
         }
         Some(self.read((y * self.width + x) as usize))
     }
+    pub fn stencil_at(&self, x: u32, y: u32) -> Option<u8> {
+        if x >= self.width || y >= self.height {
+            None
+        } else {
+            Some(self.stencil[(y * self.width + x) as usize])
+        }
+    }
     pub fn depth_at(&self, x: u32, y: u32) -> Option<f32> {
         if x >= self.width || y >= self.height {
             None
@@ -121,6 +129,20 @@ impl Framebuffer {
             c.swap(0, 2);
         }
         self.pixels[index * 4..index * 4 + 4].copy_from_slice(&c);
+    }
+    pub fn present_into(&self, output: &mut [u32]) -> Result<()> {
+        if output.len() != self.pixels.len() / 4 {
+            return Err("presentation buffer size mismatch".into());
+        }
+        for (out, p) in output.iter_mut().zip(self.pixels.chunks_exact(4)) {
+            let (r, b) = if self.format == PixelFormat::Rgba8 {
+                (p[0], p[2])
+            } else {
+                (p[2], p[0])
+            };
+            *out = ((r as u32) << 16) | ((p[1] as u32) << 8) | b as u32;
+        }
+        Ok(())
     }
     pub fn present_buffer(&self) -> Vec<u32> {
         self.pixels
