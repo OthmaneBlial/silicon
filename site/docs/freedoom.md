@@ -37,7 +37,7 @@ routes follow id Software's
 [`G_DoCompleted`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/g_game.c)
 and [`P_UseSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c).
 The E1M2 capture below records the
-sector-clipped BSP-cell pass with its episode sky: 8,001 triangles across 335
+sector-clipped BSP-cell pass with its episode sky: 8,059 triangles across 364
 draws and 804 of 1,104 horizontal leaves. The sky texture fills the previously
 clear opening near the right edge. Visual completeness beyond E1M2 remains in
 progress. The first command writes
@@ -47,15 +47,16 @@ to open ordinary doors, operate manual lifts, or use the exit, and Escape to
 exit. Every frame submits the scene again through SILICON; movement stays inside
 a BSP-leaf floor, keeps a 16-unit margin from one-sided or explicitly blocking
 lines, limits steps to 24 units, and requires 56 units of ceiling clearance.
-WAD stim packs, medikits, clips, ammo boxes, green/blue armor, armor bonuses,
-and keys render as cutout billboards. Pickups require clear sight and a 24-unit
-range. Health/ammo and armor upgrades stay on the map when they cannot improve
-the player's inventory; repeated keys and armor bonuses are consumed on contact.
-Health caps at 100,
-armor at 200, and pistol ammo at 200. Green armor absorbs one third of damage,
-blue armor one half, and armor bonuses add one point up to 200. These rules
-follow id Software's [`P_GiveArmor`, `P_TouchSpecialThing`, and
-`P_DamageMobj`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c).
+WAD stim packs, medikits, health bonuses, soul spheres, clips, ammo boxes,
+green/blue armor, armor bonuses, and keys render as cutout billboards. Pickups
+require clear sight and a 24-unit range. Health/ammo and armor upgrades stay on
+the map when they cannot improve the player's inventory; repeated keys, health
+bonuses, soul spheres, and armor bonuses are consumed on contact. Standard
+health pickups stop at 100; health bonuses and soul spheres can raise health to
+200. Armor caps at 200 and pistol ammo at 200. Green armor absorbs one third of
+damage, blue armor one half, and armor bonuses add one point up to 200. These
+rules follow id Software's [`P_GiveBody`, `P_GiveArmor`,
+`P_TouchSpecialThing`, and `P_DamageMobj`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c).
 The player starts with
 50 pistol rounds. Press `E` within 64 units from the front of a special-1 door
 to raise its back sector at 70 units per second, wait 150 tics (about 4.3
@@ -175,9 +176,9 @@ bands reach the depth test first. This can reject hidden fragments before the
 fragment shader runs, while preserving the framebuffer; it does not implement
 Doom's BSP wall occlusion or per-column portal clipping. At the checked-in
 960×720 start view, 570 of 682 subsectors remain in the horizontal BSP view and
-SILICON submits 5,651 triangles across 229 draws. The WAD's 29 pickup things
-include nine health/ammo items, one blue card, one green armor, and 18 armor
-bonuses; none of the armor items appear in the checked-in capture.
+SILICON submits 5,711 triangles across 259 draws. The WAD's 59 pickup things
+include nine health/ammo items, 30 health bonuses, one blue card, one green
+armor, and 18 armor bonuses; the armor items do not appear in the capture.
 The sky draw follows opaque map batches with `LessEqual` depth testing and depth
 writes disabled, so the rasterizer rejects sky samples behind nearer map
 geometry before it runs the sky shader. The panorama sits 64 map units inside

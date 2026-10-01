@@ -8,6 +8,8 @@
   keys now open their matching special-28, special-27, and special-26 doors.
 - Add Doom green/blue armor and armor bonuses, with damage absorption for
   melee, hitscan, fireball, and nukage attacks.
+- Render and collect Doom health bonuses and soul spheres, following their
+  separate 100/200 health caps.
 
 ## 0.7.0 — 2026-10-01
 

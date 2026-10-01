@@ -142,12 +142,12 @@ unchanged upstream fragment shader run through SILICON. See the
 [source, license, and adaptation notes](docs/third-party-demo.md).
 
 Phase 70 renders Freedoom E1M1 geometry, textures, all 29 normal-skill enemy
-sprites, nine health/ammo pickups, one blue keycard, one green armor pickup,
-18 armor bonuses, and the pistol through SILICON. Its map loader also renders
-and collects matching red, yellow, and blue keycards and skulls on maps that
-contain them. BSP child bounds cull the
+sprites, nine health/ammo pickups, 30 health bonuses, one blue keycard, one
+green armor pickup, 18 armor bonuses, and the pistol through SILICON. Its map
+loader also renders and collects matching red, yellow, and blue keycards and
+skulls on maps that contain them. BSP child bounds cull the
 horizontal view cone, and per-mesh bounds test all six frustum planes.
-The checked-in start view submits 5,651 triangles across 229 draws in 570 of
+The checked-in start view submits 5,711 triangles across 259 draws in 570 of
 682 horizontal BSP leaves. The armor items do not appear in the captured pixels.
 `F_SKY1` surfaces use the map's WAD sky texture.
 View-visible map meshes are grouped by material inside coarse depth bands so

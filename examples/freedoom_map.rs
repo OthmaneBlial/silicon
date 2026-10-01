@@ -1569,12 +1569,24 @@ struct Pickup {
     sprite: [u8; 4],
     x: f32,
     y: f32,
-    health: i32,
-    ammo: i32,
-    keys: u8,
-    armor_points: i32,
-    armor_class: u8,
+    effect: PickupEffect,
     active: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PickupEffect {
+    Health {
+        amount: i32,
+        max: i32,
+        consume_at_max: bool,
+    },
+    Ammo(i32),
+    Key(u8),
+    Armor {
+        points: i32,
+        class: u8,
+    },
+    ArmorBonus,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1725,21 +1737,63 @@ fn projectile_vertices(
     )
 }
 
-fn pickup_definition(kind: u16) -> Option<([u8; 4], i32, i32, u8, i32, u8)> {
+fn pickup_definition(kind: u16) -> Option<([u8; 4], PickupEffect)> {
     match kind {
-        5 => Some((*b"BKEY", 0, 0, KEY_BLUE, 0, 0)),
-        6 => Some((*b"YKEY", 0, 0, KEY_YELLOW, 0, 0)),
-        13 => Some((*b"RKEY", 0, 0, KEY_RED, 0, 0)),
-        40 => Some((*b"BSKU", 0, 0, KEY_BLUE, 0, 0)),
-        39 => Some((*b"YSKU", 0, 0, KEY_YELLOW, 0, 0)),
-        38 => Some((*b"RSKU", 0, 0, KEY_RED, 0, 0)),
-        2011 => Some((*b"STIM", 10, 0, 0, 0, 0)),
-        2012 => Some((*b"MEDI", 25, 0, 0, 0, 0)),
-        2007 => Some((*b"CLIP", 0, 10, 0, 0, 0)),
-        2048 => Some((*b"AMMO", 0, 50, 0, 0, 0)),
-        2018 => Some((*b"ARM1", 0, 0, 0, 100, 1)),
-        2019 => Some((*b"ARM2", 0, 0, 0, 200, 2)),
-        2015 => Some((*b"BON2", 0, 0, 0, 1, 0)),
+        5 => Some((*b"BKEY", PickupEffect::Key(KEY_BLUE))),
+        6 => Some((*b"YKEY", PickupEffect::Key(KEY_YELLOW))),
+        13 => Some((*b"RKEY", PickupEffect::Key(KEY_RED))),
+        40 => Some((*b"BSKU", PickupEffect::Key(KEY_BLUE))),
+        39 => Some((*b"YSKU", PickupEffect::Key(KEY_YELLOW))),
+        38 => Some((*b"RSKU", PickupEffect::Key(KEY_RED))),
+        2011 => Some((
+            *b"STIM",
+            PickupEffect::Health {
+                amount: 10,
+                max: 100,
+                consume_at_max: false,
+            },
+        )),
+        2012 => Some((
+            *b"MEDI",
+            PickupEffect::Health {
+                amount: 25,
+                max: 100,
+                consume_at_max: false,
+            },
+        )),
+        2014 => Some((
+            *b"BON1",
+            PickupEffect::Health {
+                amount: 1,
+                max: 200,
+                consume_at_max: true,
+            },
+        )),
+        2013 => Some((
+            *b"SOUL",
+            PickupEffect::Health {
+                amount: 100,
+                max: 200,
+                consume_at_max: true,
+            },
+        )),
+        2007 => Some((*b"CLIP", PickupEffect::Ammo(10))),
+        2048 => Some((*b"AMMO", PickupEffect::Ammo(50))),
+        2018 => Some((
+            *b"ARM1",
+            PickupEffect::Armor {
+                points: 100,
+                class: 1,
+            },
+        )),
+        2019 => Some((
+            *b"ARM2",
+            PickupEffect::Armor {
+                points: 200,
+                class: 2,
+            },
+        )),
+        2015 => Some((*b"BON2", PickupEffect::ArmorBonus)),
         _ => None,
     }
 }
@@ -1772,29 +1826,46 @@ fn collect_pickups(
         {
             continue;
         }
-        let next_health = (*health + pickup.health).min(100);
-        let next_ammo = (*ammo + pickup.ammo).min(200);
-        let next_keys = *keys | pickup.keys;
+        let mut next_health = *health;
+        let mut consume_at_max = false;
+        let mut next_ammo = *ammo;
+        let mut next_keys = *keys;
         let mut next_armor = *armor;
-        if pickup.armor_class > 0 {
-            if next_armor.points < pickup.armor_points {
-                next_armor = Armor {
-                    points: pickup.armor_points,
-                    class: pickup.armor_class,
-                };
+        match pickup.effect {
+            PickupEffect::Health {
+                amount,
+                max,
+                consume_at_max: consume,
+            } => {
+                if *health < max {
+                    next_health = (*health + amount).min(max);
+                }
+                consume_at_max = consume;
             }
-        } else if pickup.armor_points > 0 && next_armor.points < 200 {
-            next_armor.points = (next_armor.points + pickup.armor_points).min(200);
-            if next_armor.class == 0 {
-                next_armor.class = 1;
+            PickupEffect::Ammo(amount) => next_ammo = (*ammo + amount).min(200),
+            PickupEffect::Key(key) => next_keys |= key,
+            PickupEffect::Armor { points, class } => {
+                if next_armor.points < points {
+                    next_armor = Armor { points, class };
+                }
             }
+            PickupEffect::ArmorBonus if next_armor.points < 200 => {
+                next_armor.points = (next_armor.points + 1).min(200);
+                if next_armor.class == 0 {
+                    next_armor.class = 1;
+                }
+            }
+            PickupEffect::ArmorBonus => {}
         }
         if next_health == *health
             && next_ammo == *ammo
             && next_keys == *keys
             && next_armor == *armor
-            && pickup.keys == 0
-            && !(pickup.armor_points > 0 && pickup.armor_class == 0)
+            && !matches!(
+                pickup.effect,
+                PickupEffect::Key(_) | PickupEffect::ArmorBonus
+            )
+            && !consume_at_max
         {
             continue;
         }
@@ -3564,9 +3635,7 @@ impl PreparedScene {
                     animation_time: 0.0,
                     angle: thing_angle as f32,
                 });
-            } else if let Some((prefix, health, ammo, keys, armor_points, armor_class)) =
-                pickup_definition(kind)
-            {
+            } else if let Some((prefix, effect)) = pickup_definition(kind) {
                 if let Entry::Vacant(entry) = pickup_sprites.entry(prefix) {
                     let mut name = [0; 8];
                     name[..4].copy_from_slice(&prefix);
@@ -3577,11 +3646,7 @@ impl PreparedScene {
                     sprite: prefix,
                     x: x as f32,
                     y: y as f32,
-                    health,
-                    ammo,
-                    keys,
-                    armor_points,
-                    armor_class,
+                    effect,
                     active: true,
                 });
             }
@@ -4255,6 +4320,17 @@ fn main() -> api::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pickup(kind: u16, x: f32, y: f32) -> Pickup {
+        let (sprite, effect) = pickup_definition(kind).expect("known test pickup");
+        Pickup {
+            sprite,
+            x,
+            y,
+            effect,
+            active: true,
+        }
+    }
 
     #[test]
     fn doom_sky_uses_angle_columns_and_episode_texture() {
@@ -6596,11 +6672,87 @@ mod tests {
             (39, *b"YSKU", KEY_YELLOW),
             (38, *b"RSKU", KEY_RED),
         ] {
-            assert_eq!(pickup_definition(kind), Some((sprite, 0, 0, key, 0, 0)));
+            assert_eq!(
+                pickup_definition(kind),
+                Some((sprite, PickupEffect::Key(key)))
+            );
         }
-        assert_eq!(pickup_definition(2018), Some((*b"ARM1", 0, 0, 0, 100, 1)));
-        assert_eq!(pickup_definition(2019), Some((*b"ARM2", 0, 0, 0, 200, 2)));
-        assert_eq!(pickup_definition(2015), Some((*b"BON2", 0, 0, 0, 1, 0)));
+        assert_eq!(
+            pickup_definition(2018),
+            Some((
+                *b"ARM1",
+                PickupEffect::Armor {
+                    points: 100,
+                    class: 1
+                }
+            ))
+        );
+        assert_eq!(
+            pickup_definition(2019),
+            Some((
+                *b"ARM2",
+                PickupEffect::Armor {
+                    points: 200,
+                    class: 2
+                }
+            ))
+        );
+        assert_eq!(
+            pickup_definition(2015),
+            Some((*b"BON2", PickupEffect::ArmorBonus))
+        );
+        assert_eq!(
+            pickup_definition(2011),
+            Some((
+                *b"STIM",
+                PickupEffect::Health {
+                    amount: 10,
+                    max: 100,
+                    consume_at_max: false
+                }
+            ))
+        );
+        assert_eq!(
+            pickup_definition(2012),
+            Some((
+                *b"MEDI",
+                PickupEffect::Health {
+                    amount: 25,
+                    max: 100,
+                    consume_at_max: false
+                }
+            ))
+        );
+        assert_eq!(
+            pickup_definition(2014),
+            Some((
+                *b"BON1",
+                PickupEffect::Health {
+                    amount: 1,
+                    max: 200,
+                    consume_at_max: true
+                }
+            ))
+        );
+        assert_eq!(
+            pickup_definition(2013),
+            Some((
+                *b"SOUL",
+                PickupEffect::Health {
+                    amount: 100,
+                    max: 200,
+                    consume_at_max: true
+                }
+            ))
+        );
+        assert_eq!(
+            pickup_definition(2007),
+            Some((*b"CLIP", PickupEffect::Ammo(10)))
+        );
+        assert_eq!(
+            pickup_definition(2048),
+            Some((*b"AMMO", PickupEffect::Ammo(50)))
+        );
         let mut map = Map {
             vertices: vec![Vertex2 { x: 12.0, y: -32.0 }, Vertex2 { x: 12.0, y: 32.0 }],
             sectors: vec![],
@@ -6617,72 +6769,12 @@ mod tests {
             angle: 0.0,
         };
         let mut pickups = [
-            Pickup {
-                sprite: *b"STIM",
-                x: 0.0,
-                y: 0.0,
-                health: 10,
-                ammo: 0,
-                keys: 0,
-                armor_points: 0,
-                armor_class: 0,
-                active: true,
-            },
-            Pickup {
-                sprite: *b"CLIP",
-                x: 0.0,
-                y: 0.0,
-                health: 0,
-                ammo: 10,
-                keys: 0,
-                armor_points: 0,
-                armor_class: 0,
-                active: true,
-            },
-            Pickup {
-                sprite: *b"MEDI",
-                x: 100.0,
-                y: 0.0,
-                health: 25,
-                ammo: 0,
-                keys: 0,
-                armor_points: 0,
-                armor_class: 0,
-                active: true,
-            },
-            Pickup {
-                sprite: *b"BKEY",
-                x: 0.0,
-                y: 0.0,
-                health: 0,
-                ammo: 0,
-                keys: KEY_BLUE,
-                armor_points: 0,
-                armor_class: 0,
-                active: true,
-            },
-            Pickup {
-                sprite: *b"YKEY",
-                x: 0.0,
-                y: 0.0,
-                health: 0,
-                ammo: 0,
-                keys: KEY_YELLOW,
-                armor_points: 0,
-                armor_class: 0,
-                active: true,
-            },
-            Pickup {
-                sprite: *b"RKEY",
-                x: 0.0,
-                y: 0.0,
-                health: 0,
-                ammo: 0,
-                keys: KEY_RED,
-                armor_points: 0,
-                armor_class: 0,
-                active: true,
-            },
+            pickup(2011, 0.0, 0.0),
+            pickup(2007, 0.0, 0.0),
+            pickup(2012, 100.0, 0.0),
+            pickup(5, 0.0, 0.0),
+            pickup(6, 0.0, 0.0),
+            pickup(13, 0.0, 0.0),
         ];
         let mut health = 95;
         let mut ammo = 195;
@@ -6746,17 +6838,7 @@ mod tests {
         assert!(pickups[2].active);
 
         map.lines.push([0, 1, 1, u16::MAX, u16::MAX, 0, 0]);
-        let mut hidden = [Pickup {
-            sprite: *b"STIM",
-            x: 20.0,
-            y: 0.0,
-            health: 10,
-            ammo: 0,
-            keys: 0,
-            armor_points: 0,
-            armor_class: 0,
-            active: true,
-        }];
+        let mut hidden = [pickup(2011, 20.0, 0.0)];
         health = 80;
         assert_eq!(
             collect_pickups(
@@ -6772,6 +6854,114 @@ mod tests {
         );
         assert_eq!(health, 80);
         assert!(hidden[0].active);
+    }
+
+    #[test]
+    fn health_bonuses_and_soulspheres_follow_doom_health_caps() {
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut health = 95;
+        let mut ammo = 50;
+        let mut keys = 0;
+        let mut armor = Armor::default();
+        let mut pickups = [
+            pickup(2011, 0.0, 0.0),
+            pickup(2013, 0.0, 0.0),
+            pickup(2014, 0.0, 0.0),
+            pickup(2012, 0.0, 0.0),
+        ];
+
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+            ),
+            3
+        );
+        assert_eq!(health, 200);
+        assert!(!pickups[0].active && !pickups[1].active && !pickups[2].active);
+        assert!(pickups[3].active);
+
+        health = 199;
+        pickups[1].active = true;
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+            ),
+            1
+        );
+        assert_eq!(health, 200);
+
+        health = 100;
+        pickups[2].active = true;
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+            ),
+            1
+        );
+        assert_eq!(health, 101);
+
+        health = 199;
+        pickups[2].active = true;
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+            ),
+            1
+        );
+        assert_eq!(health, 200);
+
+        pickups[1].active = true;
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+            ),
+            1
+        );
+        assert_eq!(health, 200);
     }
 
     #[test]
@@ -6836,21 +7026,10 @@ mod tests {
         let mut ammo = 50;
         let mut keys = 0;
         let mut armor = Armor::default();
-        let pickup = |sprite, armor_points, armor_class| Pickup {
-            sprite,
-            x: 0.0,
-            y: 0.0,
-            health: 0,
-            ammo: 0,
-            keys: 0,
-            armor_points,
-            armor_class,
-            active: true,
-        };
         let mut pickups = [
-            pickup(*b"ARM1", 100, 1),
-            pickup(*b"BON2", 1, 0),
-            pickup(*b"ARM2", 200, 2),
+            pickup(2018, 0.0, 0.0),
+            pickup(2015, 0.0, 0.0),
+            pickup(2019, 0.0, 0.0),
         ];
         assert_eq!(
             collect_pickups(
