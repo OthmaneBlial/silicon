@@ -328,6 +328,29 @@ frame measured 9,993 ms on Apple M2, while four workers at 160×96 measured
 79.5 ms. The full-resolution workload is useful for manual profiling but too
 slow for the routine multi-configuration sweep.
 
+A five-frame sweep with three warmups on Apple M2 / macOS 26.6 produced these
+medians and p95 values. `tile_stress` ran at 960×640; `overdraw` ran at 160×96.
+The [raw record](../benchmarks/apple-m2-synthetic-raster-2026-10-02.json)
+contains all 35 scene/configuration samples and identifies the clean source
+commit and executable hash.
+
+| Scene | Backend | Workers | Median / p95 ms |
+| --- | --- | ---: | ---: |
+| tile_stress | scalar | 1 | 24.8947 / 24.9272 |
+| tile_stress | simd | 1 | 25.6888 / 25.9586 |
+| tile_stress | scalar | 2 | 14.6532 / 15.9208 |
+| tile_stress | scalar | 4 | 12.4175 / 13.4775 |
+| tile_stress | simd | 4 | 16.6008 / 21.5905 |
+| overdraw | scalar | 1 | 169.7011 / 286.8877 |
+| overdraw | simd | 1 | 156.7192 / 184.4108 |
+| overdraw | scalar | 2 | 132.5443 / 212.9102 |
+| overdraw | scalar | 4 | 68.7366 / 90.3669 |
+| overdraw | simd | 4 | 58.0001 / 71.1632 |
+
+This was one sequential pass on a shared desktop, so treat the values as a
+workload baseline rather than a controlled comparison between backends or
+worker counts.
+
 ## Reproduce
 
 ```sh
