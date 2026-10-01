@@ -64,7 +64,11 @@ tag-3 line targets sectors 76, 126, and 129; their floor heights lower from
 id Software's
 [`P_UseSpecialLine` and `lowerFloorToLowest` action](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c)
 and [`EV_DoFloor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_floor.c).
-Locked doors, enemy-triggered platforms, and other line specials remain
+Collect the blue keycard to use E1M1's special-26 blue-locked door lines. The
+WAD has one blue-card thing (type 5), drawn with `BKEYA0`; the original engine
+checks for the blue card or skull before opening these doors in
+[`EV_VerticalDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c).
+Other key colors, enemy-triggered platforms, and other line specials remain
 unsupported.
 
 The combat slice loads four normal-skill enemy types from WAD things and their
@@ -125,20 +129,21 @@ bands reach the depth test first. This can reject hidden fragments before the
 fragment shader runs, while preserving the framebuffer; it does not implement
 Doom's BSP wall occlusion or per-column portal clipping. At the checked-in
 960×720 start view, 567 of 682 subsectors remain in the horizontal BSP view and
-SILICON submits 4,046 triangles across 208 draws, including the newly rendered
-masked middle textures. Five alternating release renders on Apple M2 measured
-median process CPU time of 0.62 s with depth bands and 0.69 s at the preceding
-revision; both produced the same RGBA pixels at this view. This fixed-pose
-measurement is not an engine-wide benchmark. Earlier opaque-only counts were
+SILICON submits 4,048 triangles across 209 draws, including the newly rendered
+masked middle textures. Five release renders on Apple M2 measured median process
+CPU time of 0.52 s. The earlier depth-band comparison measured 0.62 s against
+0.69 s at its predecessor. This fixed-pose measurement is not an engine-wide
+benchmark. Earlier opaque-only counts were
 3,896 triangles and 164 draws for this view. The screenshot shows the player
-start, pistol, and a medikit; enemies are outside that camera view. A temporary WAD
-with only its player start moved was used to capture an enemy sprite in view;
+start, pistol, and a medikit; enemies are outside that camera view. A temporary
+WAD with only its player start moved was used to capture an enemy sprite in view;
 that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
-gib states, Doom's detailed actor navigation, other sound events, keys and
-locked doors, crossing specials other than special 2 and 88, other use specials,
+gib states, Doom's detailed actor navigation, other sound events, other key
+colors and locked-door types, crossing specials other than special 2 and 88,
+other use specials,
 level progression after E1M1, other weapons and their ammunition, and full weapon
 animation beyond the brief idle/fire pose remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in

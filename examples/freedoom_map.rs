@@ -27,6 +27,7 @@ const ACTOR_IDLE_CYCLE: f32 = 20.0 / 35.0;
 const LINE_TWO_SIDED: u16 = 4;
 const LINE_SOUND_BLOCK: u16 = 64;
 const LINE_DOOR_RAISE: u16 = 1;
+const LINE_BLUE_LOCKED_DOOR: u16 = 26;
 const LINE_BLAZING_DOOR_RAISE: u16 = 117;
 const LINE_WALK_OPEN_DOOR: u16 = 2;
 const LINE_USE_DOWN_WAIT_UP_PLATFORM: u16 = 62;
@@ -1101,6 +1102,7 @@ struct Pickup {
     y: f32,
     health: i32,
     ammo: i32,
+    blue_key: bool,
     active: bool,
 }
 
@@ -1246,12 +1248,13 @@ fn projectile_vertices(
     )
 }
 
-fn pickup_definition(kind: u16) -> Option<([u8; 4], i32, i32)> {
+fn pickup_definition(kind: u16) -> Option<([u8; 4], i32, i32, bool)> {
     match kind {
-        2011 => Some((*b"STIM", 10, 0)),
-        2012 => Some((*b"MEDI", 25, 0)),
-        2007 => Some((*b"CLIP", 0, 10)),
-        2048 => Some((*b"AMMO", 0, 50)),
+        5 => Some((*b"BKEY", 0, 0, true)),
+        2011 => Some((*b"STIM", 10, 0, false)),
+        2012 => Some((*b"MEDI", 25, 0, false)),
+        2007 => Some((*b"CLIP", 0, 10, false)),
+        2048 => Some((*b"AMMO", 0, 50, false)),
         _ => None,
     }
 }
@@ -1262,6 +1265,7 @@ fn collect_pickups(
     player: Player,
     health: &mut i32,
     ammo: &mut i32,
+    blue_key: &mut bool,
 ) -> usize {
     let mut collected = 0;
     for pickup in pickups.iter_mut().filter(|pickup| pickup.active) {
@@ -1284,11 +1288,13 @@ fn collect_pickups(
         }
         let next_health = (*health + pickup.health).min(100);
         let next_ammo = (*ammo + pickup.ammo).min(200);
-        if next_health == *health && next_ammo == *ammo {
+        let next_blue_key = *blue_key || pickup.blue_key;
+        if next_health == *health && next_ammo == *ammo && next_blue_key == *blue_key {
             continue;
         }
         *health = next_health;
         *ammo = next_ammo;
+        *blue_key = next_blue_key;
         pickup.active = false;
         collected += 1;
     }
@@ -2045,9 +2051,14 @@ fn use_line(map: &Map, player: Player) -> Option<(usize, u16)> {
     None
 }
 
-fn manual_door(map: &Map, line_index: usize) -> Option<Door> {
+fn manual_door(map: &Map, line_index: usize, blue_key: bool) -> Option<Door> {
     let line = *map.lines.get(line_index)?;
-    if !matches!(line[5], LINE_DOOR_RAISE | LINE_BLAZING_DOOR_RAISE) || line[4] == u16::MAX {
+    if !matches!(
+        line[5],
+        LINE_DOOR_RAISE | LINE_BLUE_LOCKED_DOOR | LINE_BLAZING_DOOR_RAISE
+    ) || (line[5] == LINE_BLUE_LOCKED_DOOR && !blue_key)
+        || line[4] == u16::MAX
+    {
         return None;
     }
     let mut door = sector_door(map, map.sides.get(line[4] as usize)?.sector, true)?;
@@ -2759,7 +2770,7 @@ impl PreparedScene {
                     animation_time: 0.0,
                     angle: thing_angle as f32,
                 });
-            } else if let Some((prefix, health, ammo)) = pickup_definition(kind) {
+            } else if let Some((prefix, health, ammo, blue_key)) = pickup_definition(kind) {
                 if let Entry::Vacant(entry) = pickup_sprites.entry(prefix) {
                     let mut name = [0; 8];
                     name[..4].copy_from_slice(&prefix);
@@ -2772,6 +2783,7 @@ impl PreparedScene {
                     y: y as f32,
                     health,
                     ammo,
+                    blue_key,
                     active: true,
                 });
             }
@@ -3057,6 +3069,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     let mut pickups = scene.pickups.clone();
     let mut health = 100;
     let mut ammo = 50;
+    let mut blue_key = false;
     let mut kills = 0;
     let mut collected = 0;
     let mut activated_sectors = 0;
@@ -3117,13 +3130,16 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 if special == LINE_EXIT_USE {
                     exited = true;
                 } else if matches!(special, LINE_DOOR_RAISE | LINE_BLAZING_DOOR_RAISE)
-                    && let Some(door) = manual_door(&scene.map, line)
-                    && !doors
-                        .iter()
-                        .any(|active: &Door| active.sector == door.sector)
+                    || special == LINE_BLUE_LOCKED_DOOR
                 {
-                    doors.push(door);
-                    activated_sectors += 1;
+                    if let Some(door) = manual_door(&scene.map, line, blue_key)
+                        && !doors
+                            .iter()
+                            .any(|active: &Door| active.sector == door.sector)
+                    {
+                        doors.push(door);
+                        activated_sectors += 1;
+                    }
                 } else if special == LINE_USE_LOWER_FLOOR_TO_LOWEST {
                     let started = lower_to_lowest_floors(&mut scene.map, line, &platforms);
                     activated_sectors += started.len();
@@ -3135,8 +3151,14 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 }
             }
             if !exited {
-                collected +=
-                    collect_pickups(&scene.map, &mut pickups, player, &mut health, &mut ammo);
+                collected += collect_pickups(
+                    &scene.map,
+                    &mut pickups,
+                    player,
+                    &mut health,
+                    &mut ammo,
+                    &mut blue_key,
+                );
                 shot_cooldown = (shot_cooldown - delta).max(0.0);
                 weapon_flash = (weapon_flash - delta).max(0.0);
                 if window.is_key_pressed(Key::Space, KeyRepeat::No)
@@ -3185,7 +3207,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_subsector_order(&scene.map, player).len();
         window.set_title(&format!(
-            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | blue key {blue_key} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.actors.len(),
             triangles,
             submission.draws,
@@ -3196,7 +3218,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     }
     save_frame(&renderer, output)?;
     println!(
-        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, {activated_sectors} sector actions, health {health}, exited {exited}; saved {}",
+        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, {activated_sectors} sector actions, health {health}, blue key {blue_key}, exited {exited}; saved {}",
         scene.actors.len(),
         output.display()
     );
@@ -3767,7 +3789,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_doors_raise_reopen_the_portal_and_close_after_waiting() {
+    fn manual_doors_raise_reopen_the_portal_and_blue_locks_require_the_card() {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
@@ -3822,7 +3844,7 @@ mod tests {
         );
         let point = Vertex2 { x: 0.0, y: 0.0 };
         assert!(!actor_path_clear(&map, point, point));
-        let mut doors = vec![manual_door(&map, 0).unwrap()];
+        let mut doors = vec![manual_door(&map, 0, false).unwrap()];
         assert!(update_doors(
             &mut map,
             &mut doors,
@@ -3850,6 +3872,10 @@ mod tests {
         assert_eq!(map.sectors[1].ceiling, 0.0);
         assert!(doors.is_empty());
 
+        map.lines[0][5] = LINE_BLUE_LOCKED_DOOR;
+        assert!(manual_door(&map, 0, false).is_none());
+        assert_eq!(manual_door(&map, 0, true).unwrap().speed, DOOR_SPEED);
+
         map.lines[0][5] = LINE_BLAZING_DOOR_RAISE;
         let player = Player {
             x: 32.0,
@@ -3857,7 +3883,7 @@ mod tests {
             angle: 180.0,
         };
         assert_eq!(use_line(&map, player), Some((0, LINE_BLAZING_DOOR_RAISE)));
-        let mut doors = vec![manual_door(&map, 0).unwrap()];
+        let mut doors = vec![manual_door(&map, 0, false).unwrap()];
         assert_eq!(doors[0].speed, BLAZING_DOOR_SPEED);
         assert!(update_doors(
             &mut map,
@@ -4973,7 +4999,8 @@ mod tests {
     }
 
     #[test]
-    fn health_and_pistol_ammo_pickups_apply_caps_and_stay_when_unneeded() {
+    fn health_ammo_and_blue_key_pickups_apply_caps_and_stay_when_unneeded() {
+        assert_eq!(pickup_definition(5), Some((*b"BKEY", 0, 0, true)));
         let mut map = Map {
             vertices: vec![Vertex2 { x: 12.0, y: -32.0 }, Vertex2 { x: 12.0, y: 32.0 }],
             sectors: vec![],
@@ -4996,6 +5023,7 @@ mod tests {
                 y: 0.0,
                 health: 10,
                 ammo: 0,
+                blue_key: false,
                 active: true,
             },
             Pickup {
@@ -5004,6 +5032,7 @@ mod tests {
                 y: 0.0,
                 health: 0,
                 ammo: 10,
+                blue_key: false,
                 active: true,
             },
             Pickup {
@@ -5012,24 +5041,58 @@ mod tests {
                 y: 0.0,
                 health: 25,
                 ammo: 0,
+                blue_key: false,
+                active: true,
+            },
+            Pickup {
+                sprite: *b"BKEY",
+                x: 0.0,
+                y: 0.0,
+                health: 0,
+                ammo: 0,
+                blue_key: true,
                 active: true,
             },
         ];
         let mut health = 95;
         let mut ammo = 195;
+        let mut blue_key = false;
         assert_eq!(
-            collect_pickups(&map, &mut pickups, player, &mut health, &mut ammo),
-            2
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut blue_key
+            ),
+            3
         );
         assert_eq!((health, ammo), (100, 200));
+        assert!(blue_key);
         assert!(!pickups[0].active && !pickups[1].active && pickups[2].active);
+        assert!(!pickups[3].active);
         assert_eq!(
-            collect_pickups(&map, &mut pickups, player, &mut health, &mut ammo),
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut blue_key
+            ),
             0
         );
         pickups[2].x = 0.0;
         assert_eq!(
-            collect_pickups(&map, &mut pickups, player, &mut health, &mut ammo),
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut blue_key
+            ),
             0
         );
         assert!(pickups[2].active);
@@ -5041,11 +5104,19 @@ mod tests {
             y: 0.0,
             health: 10,
             ammo: 0,
+            blue_key: false,
             active: true,
         }];
         health = 80;
         assert_eq!(
-            collect_pickups(&map, &mut hidden, player, &mut health, &mut ammo),
+            collect_pickups(
+                &map,
+                &mut hidden,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut blue_key
+            ),
             0
         );
         assert_eq!(health, 80);

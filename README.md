@@ -142,10 +142,11 @@ unchanged upstream fragment shader run through SILICON. See the
 [source, license, and adaptation notes](docs/third-party-demo.md).
 
 Phase 70 renders Freedoom E1M1 geometry, textures, all 29 normal-skill enemy
-sprites, nine WAD pickups, and the pistol through SILICON. BSP child bounds
-cull the horizontal view cone, and per-mesh bounds test all six frustum planes.
-The checked-in start view submits 4,046 triangles across 208 draws: 3,968 map
-triangles, 29 enemy billboards, nine pickup billboards, and one weapon billboard.
+sprites, nine health/ammo pickups, the blue keycard, and the pistol through
+SILICON. BSP child bounds cull the horizontal view cone, and per-mesh bounds
+test all six frustum planes.
+The checked-in start view submits 4,048 triangles across 209 draws: 3,968 map
+triangles, 29 enemy billboards, ten pickup billboards, and one weapon billboard.
 View-visible map meshes are grouped by material inside coarse depth bands so
 nearer ranges reach the depth test first. The frame matches the baseline pixels.
 The interactive prototype adds first-person movement, basic collision, player
@@ -161,8 +162,9 @@ special-2 line opens sectors with its tag and leaves them open. The exit reports
 without loading another map. The player can cross a special-88 line or use a
 special-62 line to move its tagged platform down, wait, then return it to its
 starting height. The special-23 use line lowers its three tagged floors to
-their lowest neighboring height once. Locked doors, other crossing-triggered
-specials, and level progression remain unsupported.
+their lowest neighboring height once. The blue keycard can be collected to
+open special-26 blue-locked doors. Other locked-door types, other
+crossing-triggered specials, and level progression remain unsupported.
 Enemies cycle four WAD walk frames,
 play attack and death poses, leave corpses,
 and select among eight camera-relative sprite views; fireballs show WAD impact
