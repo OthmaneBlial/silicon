@@ -48,7 +48,8 @@ exit. Every frame submits the scene again through SILICON; movement stays inside
 a BSP-leaf floor, keeps a 16-unit margin from one-sided or explicitly blocking
 lines, limits steps to 24 units, and requires 56 units of ceiling clearance.
 WAD stim packs, medikits, health bonuses, soul spheres, radiation suits,
-invulnerability and partial-invisibility spheres, clips, ammo boxes, green/blue
+invulnerability and partial-invisibility spheres, light-amplification visors,
+clips, ammo boxes, green/blue
 armor, armor bonuses, and keys render as cutout
 billboards. Pickups require clear sight and a 24-unit range. Health/ammo and
 armor upgrades stay on the map when they cannot improve the player's inventory;
@@ -75,6 +76,13 @@ Doom's fuzzy player-shadow effect. The duration and enemy aim deviation follow
 id Software's [`P_GivePower`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c),
 [`INVISTICS`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/doomdef.h),
 and [`A_FaceTarget`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_enemy.c).
+Map thing 2045 is a light-amplification visor. It starts or refreshes a
+120-second effect; during its final 128 Doom tics, the light alternates every
+eight tics. While lit, SILICON applies a full-bright vertex tint to map
+materials, sprites, projectiles, and the weapon. This approximates Doom's almost-full-bright fixed
+colormap without reproducing its indexed PLAYPAL colormap tables, following
+[`INFRATICS` and `P_GivePower`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/doomdef.h)
+and [`P_PlayerThink`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_user.c).
 The player starts with
 50 pistol rounds. Press `E` within 64 units from the front of a special-1 door
 to raise its back sector at 70 units per second, wait 150 tics (about 4.3
@@ -221,7 +229,8 @@ This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
 gib states, Doom's detailed actor navigation, other sound events, other
 power-up effects beyond health bonuses, soul spheres, radiation suits,
-invulnerability spheres, and partial-invisibility spheres, locked-door action variants, crossing specials other than 2 and 88,
+invulnerability spheres, partial-invisibility spheres, and light-amplification
+visors, locked-door action variants, crossing specials other than 2 and 88,
 other use specials, episode finales, other weapons and their ammunition, and full weapon animation
 beyond the brief idle/fire pose remain unimplemented.
 `F_SKY1` ceilings use the map's episode sky texture, sampled by view angle. The

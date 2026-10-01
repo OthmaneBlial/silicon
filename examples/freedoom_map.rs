@@ -55,6 +55,7 @@ const DOOM_TICS_PER_SECOND: f32 = 35.0;
 const RADIATION_SUIT_TICS: f32 = 60.0 * DOOM_TICS_PER_SECOND;
 const INVULNERABILITY_TICS: f32 = 30.0 * DOOM_TICS_PER_SECOND;
 const INVISIBILITY_TICS: f32 = 60.0 * DOOM_TICS_PER_SECOND;
+const LIGHT_AMPLIFICATION_TICS: f32 = 120.0 * DOOM_TICS_PER_SECOND;
 const SECTOR_SECRET: u16 = 9;
 const SECTOR_NUKAGE_DAMAGE: u16 = 7;
 const SECTOR_LIGHT_FLASH: u16 = 1;
@@ -1597,6 +1598,7 @@ enum PickupEffect {
     RadiationSuit,
     Invulnerability,
     PartialInvisibility,
+    LightAmplification,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1610,6 +1612,7 @@ struct PlayerEffects {
     radiation_suit_tics: f32,
     invulnerability_tics: f32,
     partial_invisibility_tics: f32,
+    light_amplification_tics: f32,
 }
 
 struct WallSection {
@@ -1754,6 +1757,16 @@ fn projectile_vertices(
     )
 }
 
+fn light_amplification_active(tics: f32) -> bool {
+    tics > 128.0 || (tics > 0.0 && (tics.floor() as u32 & 8 != 0))
+}
+
+fn make_fullbright(vertices: &mut [Vertex]) {
+    for vertex in vertices {
+        vertex.color = Vec4::new(1.0, 1.0, 1.0, 1.0);
+    }
+}
+
 fn pickup_definition(kind: u16) -> Option<([u8; 4], PickupEffect)> {
     match kind {
         5 => Some((*b"BKEY", PickupEffect::Key(KEY_BLUE))),
@@ -1814,6 +1827,7 @@ fn pickup_definition(kind: u16) -> Option<([u8; 4], PickupEffect)> {
         2025 => Some((*b"SUIT", PickupEffect::RadiationSuit)),
         2022 => Some((*b"PINV", PickupEffect::Invulnerability)),
         2024 => Some((*b"PINS", PickupEffect::PartialInvisibility)),
+        2045 => Some((*b"PVIS", PickupEffect::LightAmplification)),
         _ => None,
     }
 }
@@ -1888,6 +1902,9 @@ fn collect_pickups(
             PickupEffect::PartialInvisibility => {
                 next_effects.partial_invisibility_tics = INVISIBILITY_TICS;
             }
+            PickupEffect::LightAmplification => {
+                next_effects.light_amplification_tics = LIGHT_AMPLIFICATION_TICS;
+            }
         }
         if next_health == *health
             && next_ammo == *ammo
@@ -1901,6 +1918,7 @@ fn collect_pickups(
                     | PickupEffect::RadiationSuit
                     | PickupEffect::Invulnerability
                     | PickupEffect::PartialInvisibility
+                    | PickupEffect::LightAmplification
             )
             && !consume_at_max
         {
@@ -3823,6 +3841,7 @@ impl PreparedScene {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw(
         &self,
         player: Player,
@@ -3830,8 +3849,10 @@ impl PreparedScene {
         projectiles: &[Projectile],
         pickups: &[Pickup],
         weapon_firing: bool,
+        effects: &PlayerEffects,
         renderer: &mut Renderer,
     ) -> api::Result<(api::Submission, usize)> {
+        let light_amplification = light_amplification_active(effects.light_amplification_tics);
         let sector = bsp_sector_at(&self.map, player.x, player.y).ok_or_else(|| {
             invalid(format!(
                 "player is outside every {} BSP leaf",
@@ -3879,6 +3900,11 @@ impl PreparedScene {
                     .entry((depth, draw.wall, draw.masked, draw.name))
                     .or_insert_with(|| (Arc::clone(&draw.texture), Vec::new()));
                 batch.1.extend_from_slice(&draw.vertices);
+            }
+        }
+        if light_amplification {
+            for (_, vertices) in batches.values_mut() {
+                make_fullbright(vertices);
             }
         }
         let static_draws = batches.len();
@@ -3942,8 +3968,11 @@ impl PreparedScene {
                     })
             };
             let sprite = &frames[frame][actor_view_rotation(actor.angle, view_to_actor)];
-            let vertices =
+            let mut vertices =
                 sprite_vertices(actor.x, actor.y, sprite, player.angle, sector, sector.floor);
+            if light_amplification {
+                make_fullbright(&mut vertices);
+            }
             if vertices.is_empty() {
                 continue;
             }
@@ -3964,7 +3993,7 @@ impl PreparedScene {
             let Some(sprite) = self.pickup_sprites.get(&pickup.sprite) else {
                 continue;
             };
-            let vertices = sprite_vertices(
+            let mut vertices = sprite_vertices(
                 pickup.x,
                 pickup.y,
                 sprite,
@@ -3972,6 +4001,9 @@ impl PreparedScene {
                 sector,
                 sector.floor,
             );
+            if light_amplification {
+                make_fullbright(&mut vertices);
+            }
             let count = u32::try_from(vertices.len()).map_err(|_| {
                 invalid(format!(
                     "{} pickup vertex count exceeds SILICON draw range",
@@ -3994,7 +4026,10 @@ impl PreparedScene {
             } else {
                 &self.projectile_sprite
             };
-            let vertices = projectile_vertices(projectile, sprite, player.angle, sector);
+            let mut vertices = projectile_vertices(projectile, sprite, player.angle, sector);
+            if light_amplification {
+                make_fullbright(&mut vertices);
+            }
             let count = u32::try_from(vertices.len()).map_err(|_| {
                 invalid(format!(
                     "{} projectile vertex count exceeds SILICON draw range",
@@ -4010,7 +4045,10 @@ impl PreparedScene {
         } else {
             &self.weapon_idle
         };
-        let vertices = weapon_vertices(player, weapon, sector);
+        let mut vertices = weapon_vertices(player, weapon, sector);
+        if light_amplification {
+            make_fullbright(&mut vertices);
+        }
         let count = u32::try_from(vertices.len()).map_err(|_| {
             invalid(format!(
                 "{} weapon vertex count exceeds SILICON draw range",
@@ -4067,12 +4105,14 @@ fn frame_triangles(
 fn render(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
     let scene = PreparedScene::load(path, map_name)?;
     let mut renderer = Renderer::new(960, 720)?;
+    let effects = PlayerEffects::default();
     let (submission, static_draws) = scene.draw(
         scene.start,
         &scene.actors,
         &[],
         &scene.pickups,
         false,
+        &effects,
         &mut renderer,
     )?;
     save_frame(&renderer, output)?;
@@ -4225,6 +4265,8 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 (effects.invulnerability_tics - delta * DOOM_TICS_PER_SECOND).max(0.0);
             effects.partial_invisibility_tics =
                 (effects.partial_invisibility_tics - delta * DOOM_TICS_PER_SECOND).max(0.0);
+            effects.light_amplification_tics =
+                (effects.light_amplification_tics - delta * DOOM_TICS_PER_SECOND).max(0.0);
         }
         let doors_changed = update_doors(&mut scene.map, &mut doors, player, &actors, delta);
         let platforms_changed = update_platforms(&mut scene.map, &mut platforms, delta);
@@ -4375,6 +4417,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             &projectiles,
             &pickups,
             weapon_flash > 0.0,
+            &effects,
             &mut renderer,
         )?;
         renderer.framebuffer.present_into(&mut pixels)?;
@@ -4391,13 +4434,14 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks).len();
         window.set_title(&format!(
-            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | invis {:.0}s | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | invis {:.0}s | visor {:.0}s | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.map_name,
             armor.points,
             armor.class,
             effects.radiation_suit_tics / DOOM_TICS_PER_SECOND,
             effects.invulnerability_tics / DOOM_TICS_PER_SECOND,
             effects.partial_invisibility_tics / DOOM_TICS_PER_SECOND,
+            effects.light_amplification_tics / DOOM_TICS_PER_SECOND,
             keys & KEY_RED != 0,
             keys & KEY_YELLOW != 0,
             keys & KEY_BLUE != 0,
@@ -7065,6 +7109,10 @@ mod tests {
             pickup_definition(2024),
             Some((*b"PINS", PickupEffect::PartialInvisibility))
         );
+        assert_eq!(
+            pickup_definition(2045),
+            Some((*b"PVIS", PickupEffect::LightAmplification))
+        );
         let mut map = Map {
             vertices: vec![Vertex2 { x: 12.0, y: -32.0 }, Vertex2 { x: 12.0, y: 32.0 }],
             sectors: vec![],
@@ -7547,6 +7595,70 @@ mod tests {
             &mut aim_rng,
         );
         assert_eq!(health, 92);
+    }
+
+    #[test]
+    fn light_amplification_pickup_refreshes_and_fullbright_fades_by_doom_tics() {
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut health = 100;
+        let mut ammo = 50;
+        let mut keys = 0;
+        let mut armor = Armor::default();
+        let mut effects = PlayerEffects::default();
+        let mut pickups = [pickup(2045, 0.0, 0.0)];
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+                &mut effects,
+            ),
+            1
+        );
+        assert_eq!(effects.light_amplification_tics, LIGHT_AMPLIFICATION_TICS);
+        assert!(light_amplification_active(129.0));
+        assert!(light_amplification_active(120.0));
+        assert!(!light_amplification_active(112.0));
+        assert!(!light_amplification_active(0.0));
+
+        effects.light_amplification_tics = 1.0;
+        pickups[0].active = true;
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+                &mut effects,
+            ),
+            1
+        );
+        assert_eq!(effects.light_amplification_tics, LIGHT_AMPLIFICATION_TICS);
+
+        let mut vertices = [Vertex::new(Vec3::ZERO, Color::BLACK)];
+        make_fullbright(&mut vertices);
+        assert_eq!(vertices[0].color, Vec4::new(1.0, 1.0, 1.0, 1.0));
     }
 
     #[test]
