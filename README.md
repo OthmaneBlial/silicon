@@ -149,10 +149,12 @@ triangles, 29 enemy billboards, nine pickup billboards, and one weapon billboard
 View-visible map meshes are grouped by material inside coarse depth bands so
 nearer ranges reach the depth test first. The frame matches the baseline pixels.
 The interactive prototype adds first-person movement, basic collision, player
-hitscan, health and ammo pickups, pursuing melee enemies, line-of-sight hitscan
-for humans and shotgunners, and imp fireballs. Moving enemies cycle four WAD walk frames, play
-attack and death poses, leave corpses, and select among eight camera-relative
-sprite views; fireballs show WAD impact frames. It remains
+hitscan, health and ammo pickups, Doom-timed enemy idle and chance-based pain
+poses, sight-based wake-up with a 100-tic target timeout, pursuing melee enemies,
+line-of-sight hitscan for humans and shotgunners, and imp fireballs. Moving
+enemies cycle four WAD walk frames, play attack and death poses, leave corpses,
+and select among eight camera-relative sprite views; fireballs show WAD impact
+frames. It remains
 a limited E1M1 gameplay slice, not a complete Doom game;
 BSP wall occlusion, per-column portal clipping, and broader game rules remain. The [WAD source,
 controls, screenshots, license, and limits](docs/freedoom.md) are documented.

@@ -41,8 +41,8 @@ camera-relative views using Doom's state durations; killed enemies remain as
 their final corpse frame. Paired Freedoom patches are horizontally flipped
 where Doom does so. Cutout billboards use a SILICON fragment shader. Space
 fires a 20-damage hitscan with a 0.35-second cooldown; pistol ammo caps at 200.
-Enemies chase within 640 map units and deal 8 melee damage within 48 units, at
-most once every 0.85 seconds. Former humans fire 3-damage hitscan attacks and
+Awake enemies deal 8 melee damage within 48 units, at most once every 0.85
+seconds. Former humans fire 3-damage hitscan attacks and
 shotgunners fire 6-damage hitscan attacks within 512 units, at most once every
 1.4 seconds and only with clear sight past blocking lines. Damage and projectile
 launch happen as soon as the cooldown expires; the pose plays afterward, with
@@ -61,7 +61,13 @@ line between the shooter and player's floor-based body midpoints. On wall or
 player impact it plays BAL1C0–BAL1E0 for six Doom tics each. The WAD
 pistol's PISGA0 patch is the idle camera-aligned billboard; firing briefly uses
 its PISGC0 patch for 0.16 seconds. Both weapon poses use SILICON's cutout shader
-and draw pipeline.
+and draw pipeline. Enemies cycle their A/B ten-tic stand states while unaware.
+They wake within 640 map units on clear sight or when hit; sight refreshes a
+100-tic target timeout, during which they pursue through lost sight. All enemy
+attacks require clear sight. They move toward the player's current position but
+do not pathfind around blocked corridors. This keeps the state timing
+recognizable without implementing Doom's sound propagation or full
+target-selection rules.
 
 Freedoom 0.13.0 E1M1 has 29 normal-skill enemy placements. The sample parses
 the WAD node partition tree to locate each thing's subsector and sector and to
@@ -86,9 +92,9 @@ that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
-idle/gib states, keys, exits, other weapons and
-their ammunition, full weapon animation beyond the brief idle/fire pose, and
-sound remain unimplemented.
+gib states, sound propagation, pathfinding, keys, exits, other weapons and their
+ammunition, and full weapon animation beyond the brief idle/fire pose remain
+unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in
 [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was rendered from
 the unmodified release WAD. The WAD itself is not included. The release archive
@@ -104,7 +110,8 @@ and [`assets/licenses/FREEDOOM-CREDITS.txt`](../assets/licenses/FREEDOOM-CREDITS
 The upstream project and contributors do not endorse SILICON. See the
 [Freedoom 0.13.0 release](https://github.com/freedoom/freedoom/releases/tag/v0.13.0),
 [license source](https://raw.githubusercontent.com/freedoom/freedoom/v0.13.0/COPYING.adoc),
-[id Software's item and ammo handling](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c),
+[id Software's item, ammo, damage and target-threshold handling](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c),
+[100-tic target threshold](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_local.h),
 and id Software's [WAD](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/w_wad.h),
 [map and BSP record](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/doomdata.h),
 [BSP point traversal](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/r_main.c),

@@ -19,6 +19,9 @@ const MAP_LUMPS: [&str; 11] = [
 const MAX_WAD_BYTES: u64 = 128 * 1024 * 1024;
 const DEPTH_BUCKET_SIZE: f32 = 2048.0;
 const ACTOR_HEIGHT: f32 = 56.0;
+const ACTOR_WAKE_RANGE: f32 = 640.0;
+const ACTOR_TARGET_THRESHOLD: f32 = 100.0 / 35.0;
+const ACTOR_IDLE_CYCLE: f32 = 20.0 / 35.0;
 
 #[derive(Clone, Copy)]
 struct Lump {
@@ -743,6 +746,10 @@ fn actor_walk_frame(sprite: [u8; 4], animation_time: f32) -> usize {
     (animation_time.rem_euclid(cycle_seconds) * 35.0 / frame_tics).floor() as usize
 }
 
+fn actor_idle_frame(animation_time: f32) -> usize {
+    (animation_time.rem_euclid(ACTOR_IDLE_CYCLE) * 35.0 / 10.0).floor() as usize
+}
+
 fn actor_view_rotation(actor_angle: f32, viewer_to_actor_angle: f32) -> usize {
     ((viewer_to_actor_angle - actor_angle + 202.5).rem_euclid(360.0) / 45.0).floor() as usize
 }
@@ -1024,6 +1031,7 @@ struct Actor {
     x: f32,
     y: f32,
     health: i32,
+    target_time_remaining: f32,
     attack_cooldown: f32,
     attack_animation_remaining: f32,
     pain_animation_remaining: f32,
@@ -1773,6 +1781,7 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, pain_rng: &mut u
             actors[index].death_animation_time = Some(0.0);
             true
         } else {
+            actors[index].target_time_remaining = ACTOR_TARGET_THRESHOLD;
             if actor_pain_triggered(actors[index].sprite, gameplay_random_byte(pain_rng)) {
                 actors[index].pain_animation_remaining = actor_pain_duration(actors[index].sprite);
             }
@@ -1799,6 +1808,8 @@ fn update_actors(
             }
             continue;
         }
+        let was_awake = actor.target_time_remaining > 0.0;
+        actor.target_time_remaining = (actor.target_time_remaining - delta).max(0.0);
         actor.attack_animation_remaining = (actor.attack_animation_remaining - delta).max(0.0);
         actor.pain_animation_remaining = (actor.pain_animation_remaining - delta).max(0.0);
         if actor.pain_animation_remaining > 0.0 {
@@ -1812,10 +1823,29 @@ fn update_actors(
         let dx = player.x - actor.x;
         let dy = player.y - actor.y;
         let distance = (dx * dx + dy * dy).sqrt();
-        if distance < 640.0 {
+        let can_see_player = distance <= ACTOR_WAKE_RANGE
+            && has_line_of_sight(
+                map,
+                Vertex2 {
+                    x: actor.x,
+                    y: actor.y,
+                },
+                Vertex2 {
+                    x: player.x,
+                    y: player.y,
+                },
+            );
+        if can_see_player {
+            actor.target_time_remaining = ACTOR_TARGET_THRESHOLD;
+        }
+        let awake = actor.target_time_remaining > 0.0;
+        if !was_awake && awake {
+            actor.animation_time = 0.0;
+        }
+        if awake {
             actor.angle = dy.atan2(dx).to_degrees().rem_euclid(360.0);
         }
-        if distance < 48.0 {
+        if distance < 48.0 && can_see_player {
             if actor.attack_cooldown == 0.0 {
                 *health -= 8;
                 actor.attack_cooldown = 0.85;
@@ -1823,37 +1853,14 @@ fn update_actors(
             }
         } else if (actor.sprite == *b"POSS" || actor.sprite == *b"SPOS")
             && distance <= 512.0
-            && has_line_of_sight(
-                map,
-                Vertex2 {
-                    x: actor.x,
-                    y: actor.y,
-                },
-                Vertex2 {
-                    x: player.x,
-                    y: player.y,
-                },
-            )
+            && can_see_player
         {
             if actor.attack_cooldown == 0.0 {
                 *health -= if actor.sprite == *b"SPOS" { 6 } else { 3 };
                 actor.attack_cooldown = 1.4;
                 actor.attack_animation_remaining = actor_attack_duration(actor.sprite);
             }
-        } else if actor.sprite == *b"TROO"
-            && distance <= 512.0
-            && has_line_of_sight(
-                map,
-                Vertex2 {
-                    x: actor.x,
-                    y: actor.y,
-                },
-                Vertex2 {
-                    x: player.x,
-                    y: player.y,
-                },
-            )
-        {
+        } else if actor.sprite == *b"TROO" && distance <= 512.0 && can_see_player {
             if actor.attack_cooldown == 0.0 {
                 let z = floor_at(map, actor.x, actor.y) + ACTOR_HEIGHT * 0.5;
                 let dz = floor_at(map, player.x, player.y) + ACTOR_HEIGHT * 0.5 - z;
@@ -1871,7 +1878,7 @@ fn update_actors(
                 actor.attack_cooldown = 2.0;
                 actor.attack_animation_remaining = actor_attack_duration(actor.sprite);
             }
-        } else if distance < 640.0 {
+        } else if awake {
             let mut enemy = Player {
                 x: actor.x,
                 y: actor.y,
@@ -1894,8 +1901,10 @@ fn update_actors(
         if (actor.x, actor.y) != previous_position {
             let cycle_seconds = actor_walk_frame_tics(actor.sprite) * 4.0 / 35.0;
             actor.animation_time = (actor.animation_time + delta) % cycle_seconds;
-        } else {
+        } else if awake {
             actor.animation_time = 0.0;
+        } else {
+            actor.animation_time = (actor.animation_time + delta) % ACTOR_IDLE_CYCLE;
         }
     }
 }
@@ -2038,6 +2047,7 @@ impl PreparedScene {
                     x: x as f32,
                     y: y as f32,
                     health,
+                    target_time_remaining: 0.0,
                     attack_cooldown: 0.0,
                     attack_animation_remaining: 0.0,
                     pain_animation_remaining: 0.0,
@@ -2237,7 +2247,13 @@ impl PreparedScene {
             } else {
                 actor_pain_frame(actor.sprite, actor.pain_animation_remaining)
                     .or_else(|| actor_attack_frame(actor.sprite, actor.attack_animation_remaining))
-                    .unwrap_or_else(|| actor_walk_frame(actor.sprite, actor.animation_time))
+                    .unwrap_or_else(|| {
+                        if actor.target_time_remaining > 0.0 {
+                            actor_walk_frame(actor.sprite, actor.animation_time)
+                        } else {
+                            actor_idle_frame(actor.animation_time)
+                        }
+                    })
             };
             let sprite = &frames[frame][actor_view_rotation(actor.angle, view_to_actor)];
             let vertices =
@@ -2557,6 +2573,108 @@ mod tests {
                 assert_eq!(actor_walk_frame(sprite, elapsed), expected);
             }
         }
+    }
+
+    #[test]
+    fn enemy_idle_frames_follow_the_ten_tic_stand_states() {
+        assert_eq!(actor_idle_frame(0.0), 0);
+        assert_eq!(actor_idle_frame(9.0 / 35.0), 0);
+        assert_eq!(actor_idle_frame(10.0 / 35.0 + 0.001), 1);
+        assert_eq!(actor_idle_frame(20.0 / 35.0), 0);
+    }
+
+    #[test]
+    fn enemies_idle_behind_walls_and_keep_targets_for_one_hundred_tics() {
+        let map = Map {
+            vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![[0, 1, 1, u16::MAX, u16::MAX]],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let mut actors = [Actor {
+            sprite: *b"TROO",
+            x: 100.0,
+            y: 0.0,
+            health: 60,
+            target_time_remaining: 0.0,
+            attack_cooldown: 0.0,
+            attack_animation_remaining: 0.0,
+            pain_animation_remaining: 0.0,
+            death_animation_time: None,
+            animation_time: 0.0,
+            angle: 90.0,
+        }];
+        let mut projectiles = Vec::new();
+        let mut health = 100;
+        let mut player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            10.0 / 35.0,
+        );
+        assert_eq!(actors[0].x, 100.0);
+        assert_eq!(actors[0].target_time_remaining, 0.0);
+        assert_eq!(actor_idle_frame(actors[0].animation_time), 1);
+        assert_eq!(actors[0].angle, 90.0);
+
+        player.x = 160.0;
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.05,
+        );
+        assert_eq!(actors[0].target_time_remaining, ACTOR_TARGET_THRESHOLD);
+        assert_eq!(actors[0].animation_time, 0.0);
+        assert_eq!(actors[0].angle, 0.0);
+
+        player.x = 0.0;
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.1,
+        );
+        assert!((actors[0].target_time_remaining - (ACTOR_TARGET_THRESHOLD - 0.1)).abs() < 0.0001);
+        assert_eq!(actors[0].angle, 180.0);
+
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            ACTOR_TARGET_THRESHOLD,
+        );
+        assert_eq!(actors[0].target_time_remaining, 0.0);
+
+        actors[0].x = 60.0;
+        player.x = 40.0;
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.05,
+        );
+        assert_eq!(health, 100);
     }
 
     #[test]
@@ -2988,6 +3106,7 @@ mod tests {
             x: 100.0,
             y: 0.0,
             health: 20,
+            target_time_remaining: 0.0,
             attack_cooldown: 0.0,
             attack_animation_remaining: 0.0,
             pain_animation_remaining: 0.0,
@@ -3015,6 +3134,7 @@ mod tests {
         wounded[0].health = 60;
         assert!(!fire_weapon(&map, &mut wounded, player, &mut pain_rng));
         assert_eq!(wounded[0].health, 40);
+        assert_eq!(wounded[0].target_time_remaining, ACTOR_TARGET_THRESHOLD);
         assert_eq!(
             wounded[0].pain_animation_remaining,
             actor_pain_duration(*b"TROO")
@@ -3153,6 +3273,7 @@ mod tests {
             x: 100.0,
             y: 0.0,
             health: 60,
+            target_time_remaining: 0.0,
             attack_cooldown: 0.0,
             attack_animation_remaining: 0.0,
             pain_animation_remaining: 0.0,
@@ -3244,6 +3365,7 @@ mod tests {
             x: 100.0,
             y: 0.0,
             health: 20,
+            target_time_remaining: 0.0,
             attack_cooldown: 0.0,
             attack_animation_remaining: 0.0,
             pain_animation_remaining: 0.0,
@@ -3351,6 +3473,7 @@ mod tests {
             x: 100.0,
             y: 0.0,
             health: 60,
+            target_time_remaining: 0.0,
             attack_cooldown: 0.0,
             attack_animation_remaining: 0.0,
             pain_animation_remaining: 0.0,
