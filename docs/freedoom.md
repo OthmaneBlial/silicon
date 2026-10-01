@@ -42,9 +42,10 @@ draws and 804 of 1,104 horizontal leaves. The sky texture fills the previously
 clear opening near the right edge. Visual completeness beyond E1M2 remains in
 progress. The first command writes
 `output/freedoom_map.png`. The interactive view uses
-WASD to move and strafe, arrow keys to turn, Shift to run, Space to fire, `E`
-to open ordinary doors, operate manual lifts, or use the exit, and Escape to
-exit. Every frame submits the scene again through SILICON; movement stays inside
+WASD to move and strafe, arrow keys to turn, Shift to run, Space to fire, `Q`
+to punch, `E` to open ordinary doors, operate manual lifts, or use the exit,
+and Escape to exit. Every frame submits the scene again through SILICON;
+movement stays inside
 a BSP-leaf floor, keeps a 16-unit margin from one-sided or explicitly blocking
 lines, limits steps to 24 units, and requires 56 units of ceiling clearance.
 WAD stim packs, medikits, health bonuses, soul spheres, radiation suits,
@@ -155,6 +156,12 @@ camera-relative views using Doom's state durations; killed enemies remain as
 their final corpse frame. Paired Freedoom patches are horizontally flipped
 where Doom does so. Cutout billboards use a SILICON fragment shader. Space
 fires a 20-damage hitscan with a 0.35-second cooldown; pistol ammo caps at 200.
+Press `Q` for a fist punch with a separate 0.35-second cooldown, no ammo cost,
+and Doom's randomized 2–20 damage. It hits the nearest living enemy whose
+16-unit radius intersects the forward trace within 64 units, unless a blocking
+line comes first. The WAD's PUNGC0 patch shows the punch. Its range and damage
+follow id Software's [`A_Punch`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c)
+and [`MELEERANGE`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_local.h).
 Every fired shot alerts living enemies through open two-sided sectors, even
 when it misses, crossing at most one sound-blocking linedef. This models Doom's
 pistol noise alert and recursive sector sound flood, not every sound event.
@@ -231,8 +238,9 @@ gib states, Doom's detailed actor navigation, other sound events, other
 power-up effects beyond health bonuses, soul spheres, radiation suits,
 invulnerability spheres, partial-invisibility spheres, and light-amplification
 visors, locked-door action variants, crossing specials other than 2 and 88,
-other use specials, episode finales, other weapons and their ammunition, and full weapon animation
-beyond the brief idle/fire pose remain unimplemented.
+other use specials, episode finales, weapon switching, weapons beyond the pistol
+and fist and their ammunition, and full multi-frame weapon animations remain
+unimplemented.
 `F_SKY1` ceilings use the map's episode sky texture, sampled by view angle. The
 checked-in [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was
 rendered from the unmodified release WAD. The WAD itself is not included. The release archive

@@ -21,6 +21,7 @@ const DEPTH_BUCKET_SIZE: f32 = 2048.0;
 const ACTOR_HEIGHT: f32 = 56.0;
 const ACTOR_STEP_HEIGHT: f32 = 24.0;
 const ACTOR_RADIUS: f32 = 16.0;
+const PLAYER_MELEE_RANGE: f32 = 64.0;
 const ACTOR_WAKE_RANGE: f32 = 640.0;
 const ACTOR_TARGET_THRESHOLD: f32 = 100.0 / 35.0;
 const ACTOR_IDLE_CYCLE: f32 = 20.0 / 35.0;
@@ -1530,6 +1531,7 @@ struct PreparedScene {
     pickup_sprites: BTreeMap<[u8; 4], SpriteTexture>,
     weapon_idle: SpriteTexture,
     weapon_fire: SpriteTexture,
+    fist_fire: SpriteTexture,
     projectile_sprite: SpriteTexture,
     projectile_explosion: [SpriteTexture; 3],
     actors: Vec<Actor>,
@@ -3447,21 +3449,59 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, pain_rng: &mut u
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(index, _)| index);
     if let Some(index) = target {
-        actors[index].health -= 20;
-        if actors[index].health <= 0 {
-            actors[index].pain_animation_remaining = 0.0;
-            actors[index].death_animation_time = Some(0.0);
-            true
-        } else {
-            actors[index].target_time_remaining = ACTOR_TARGET_THRESHOLD;
-            if actor_pain_triggered(actors[index].sprite, gameplay_random_byte(pain_rng)) {
-                actors[index].pain_animation_remaining = actor_pain_duration(actors[index].sprite);
-            }
-            false
-        }
+        damage_actor(&mut actors[index], 20, pain_rng)
     } else {
         false
     }
+}
+
+fn damage_actor(actor: &mut Actor, damage: i32, pain_rng: &mut u32) -> bool {
+    actor.health -= damage;
+    if actor.health <= 0 {
+        actor.pain_animation_remaining = 0.0;
+        actor.death_animation_time = Some(0.0);
+        true
+    } else {
+        actor.target_time_remaining = ACTOR_TARGET_THRESHOLD;
+        if actor_pain_triggered(actor.sprite, gameplay_random_byte(pain_rng)) {
+            actor.pain_animation_remaining = actor_pain_duration(actor.sprite);
+        }
+        false
+    }
+}
+
+fn punch_weapon(map: &Map, actors: &mut [Actor], player: Player, rng: &mut u32) -> bool {
+    let origin = Vertex2 {
+        x: player.x,
+        y: player.y,
+    };
+    alert_actors_on_noise(map, actors, origin);
+    let radians = player.angle.to_radians();
+    let direction = Vertex2 {
+        x: radians.cos(),
+        y: radians.sin(),
+    };
+    let nearest_wall = nearest_blocking_wall(map, origin, direction);
+    let target = actors
+        .iter()
+        .enumerate()
+        .filter(|(_, actor)| actor.health > 0)
+        .filter_map(|(index, actor)| {
+            let relative = Vertex2 {
+                x: actor.x - player.x,
+                y: actor.y - player.y,
+            };
+            let along = relative.x * direction.x + relative.y * direction.y;
+            let across = cross2(relative, direction).abs();
+            let reach = (ACTOR_RADIUS * ACTOR_RADIUS - across * across).sqrt();
+            let impact = along - reach;
+            ((0.0..=PLAYER_MELEE_RANGE).contains(&impact) && nearest_wall >= impact)
+                .then_some((index, impact))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(index, _)| index);
+    let damage = i32::from(gameplay_random_byte(rng) % 10 + 1) * 2;
+    target.is_some_and(|index| damage_actor(&mut actors[index], damage, rng))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3745,6 +3785,7 @@ impl PreparedScene {
         )?;
         let weapon_idle = sprite_patch_texture(&data, *b"PISGA0\0\0")?;
         let weapon_fire = sprite_patch_texture(&data, *b"PISGC0\0\0")?;
+        let fist_fire = sprite_patch_texture(&data, *b"PUNGC0\0\0")?;
         let projectile_sprite = sprite_patch_texture(&data, *b"BAL1A0\0\0")?;
         let projectile_explosion = [
             sprite_patch_texture(&data, *b"BAL1C0\0\0")?,
@@ -3820,6 +3861,7 @@ impl PreparedScene {
             pickup_sprites,
             weapon_idle,
             weapon_fire,
+            fist_fire,
             projectile_sprite,
             projectile_explosion,
             actors,
@@ -3849,6 +3891,7 @@ impl PreparedScene {
         projectiles: &[Projectile],
         pickups: &[Pickup],
         weapon_firing: bool,
+        fist_firing: bool,
         effects: &PlayerEffects,
         renderer: &mut Renderer,
     ) -> api::Result<(api::Submission, usize)> {
@@ -4040,7 +4083,9 @@ impl PreparedScene {
             commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
             commands.draw(0, count);
         }
-        let weapon = if weapon_firing {
+        let weapon = if fist_firing {
+            &self.fist_fire
+        } else if weapon_firing {
             &self.weapon_fire
         } else {
             &self.weapon_idle
@@ -4111,6 +4156,7 @@ fn render(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
         &scene.actors,
         &[],
         &scene.pickups,
+        false,
         false,
         &effects,
         &mut renderer,
@@ -4218,6 +4264,8 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     let mut activated_sectors = 0;
     let mut shot_cooldown = 0.0f32;
     let mut weapon_flash = 0.0f32;
+    let mut punch_cooldown = 0.0f32;
+    let mut punch_flash = 0.0f32;
     let mut exited = false;
     let mut secret_exit = false;
     let mut gameplay_rng = 0x5349_4c49u32;
@@ -4251,6 +4299,8 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             nukage_damage_tics = 0.0;
             shot_cooldown = 0.0;
             weapon_flash = 0.0;
+            punch_cooldown = 0.0;
+            punch_flash = 0.0;
             levels_completed += 1;
             exited = false;
             secret_exit = false;
@@ -4356,6 +4406,8 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 );
                 shot_cooldown = (shot_cooldown - delta).max(0.0);
                 weapon_flash = (weapon_flash - delta).max(0.0);
+                punch_cooldown = (punch_cooldown - delta).max(0.0);
+                punch_flash = (punch_flash - delta).max(0.0);
                 if window.is_key_pressed(Key::Space, KeyRepeat::No)
                     && shot_cooldown == 0.0
                     && ammo > 0
@@ -4364,6 +4416,16 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     shot_cooldown = 0.35;
                     weapon_flash = 0.16;
                     kills += usize::from(fire_weapon(
+                        &scene.map,
+                        &mut actors,
+                        player,
+                        &mut gameplay_rng,
+                    ));
+                }
+                if window.is_key_pressed(Key::Q, KeyRepeat::No) && punch_cooldown == 0.0 {
+                    punch_cooldown = 0.35;
+                    punch_flash = 0.16;
+                    kills += usize::from(punch_weapon(
                         &scene.map,
                         &mut actors,
                         player,
@@ -4417,6 +4479,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             &projectiles,
             &pickups,
             weapon_flash > 0.0,
+            punch_flash > 0.0,
             &effects,
             &mut renderer,
         )?;
@@ -4434,7 +4497,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks).len();
         window.set_title(&format!(
-            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | invis {:.0}s | visor {:.0}s | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, Q punch, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | invis {:.0}s | visor {:.0}s | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.map_name,
             armor.points,
             armor.class,
@@ -6578,6 +6641,70 @@ mod tests {
         };
         assert!(!fire_weapon(&map, &mut actors, player, &mut pain_rng));
         assert_eq!(actors[0].health, 20);
+    }
+
+    #[test]
+    fn fist_punches_use_melee_range_random_damage_and_blocking_lines() {
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let empty_map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let mut actors = [Actor {
+            sprite: *b"TROO",
+            x: 80.0,
+            y: 0.0,
+            health: 200,
+            target_time_remaining: 0.0,
+            attack_cooldown: 0.0,
+            attack_animation_remaining: 0.0,
+            pain_animation_remaining: 0.0,
+            death_animation_time: None,
+            animation_time: 0.0,
+            angle: 0.0,
+        }];
+        let mut rng = 1;
+        assert!(!punch_weapon(&empty_map, &mut actors, player, &mut rng));
+        let damage = 200 - actors[0].health;
+        assert!((2..=20).contains(&damage));
+        assert_eq!(damage % 2, 0);
+        assert_eq!(actors[0].target_time_remaining, ACTOR_TARGET_THRESHOLD);
+
+        actors[0].x = 81.0;
+        actors[0].health = 200;
+        assert!(!punch_weapon(&empty_map, &mut actors, player, &mut rng));
+        assert_eq!(actors[0].health, 200);
+
+        actors[0].x = 40.0;
+        actors[0].y = 17.0;
+        assert!(!punch_weapon(&empty_map, &mut actors, player, &mut rng));
+        assert_eq!(actors[0].health, 200);
+
+        actors[0].y = 0.0;
+        actors[0].health = 1;
+        let mut rng = 1;
+        assert!(punch_weapon(&empty_map, &mut actors, player, &mut rng));
+        assert_eq!(actors[0].death_animation_time, Some(0.0));
+
+        actors[0].health = 200;
+        actors[0].x = 80.0;
+        let blocked_map = Map {
+            vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
+            lines: vec![[0, 1, 1, u16::MAX, u16::MAX, 0, 0]],
+            ..empty_map
+        };
+        assert!(!punch_weapon(&blocked_map, &mut actors, player, &mut rng));
+        assert_eq!(actors[0].health, 200);
     }
 
     #[test]
