@@ -2,8 +2,8 @@
 
 use libfuzzer_sys::fuzz_target;
 use silicon_core::{
-    Color, Pipeline, Renderer, Sampler, Texture, TextureFormat, Vec2, Vec3, Vec4, Vertex,
-    VertexOutput,
+    Color, Pipeline, Renderer, Sampler, Texture, Texture3D, TextureArray, TextureFormat, Vec2,
+    Vec3, Vec4, Vertex, VertexOutput,
 };
 
 fuzz_target!(|bytes: &[u8]| {
@@ -44,4 +44,41 @@ fuzz_target!(|bytes: &[u8]| {
     let dy = Vec2::new(f32::from_bits(word(56)), f32::from_bits(word(60)));
     let anisotropy = bytes.first().copied().unwrap_or(4) % 32;
     let _ = texture.sample_anisotropic(uv, dx, dy, Sampler::default(), anisotropy);
+
+    let second_layer: [u8; 16] =
+        std::array::from_fn(|i| bytes.get(i + 16).copied().unwrap_or_default());
+    let layers = TextureArray::new(vec![
+        texture.clone(),
+        Texture::new(2, 2, TextureFormat::Rgba8, &second_layer).unwrap(),
+    ])
+    .unwrap();
+    let _ = layers.sample(
+        uv,
+        f32::from_bits(word(64)),
+        layers.lod(dx, dy),
+        Sampler::default(),
+    );
+
+    let volume_bytes: [u8; 32] =
+        std::array::from_fn(|i| bytes.get(i + 72).copied().unwrap_or_default());
+    let mut volume = Texture3D::new(2, 2, 2, TextureFormat::Rgba8, &volume_bytes).unwrap();
+    volume.generate_mips();
+    let coordinate = Vec3::new(
+        f32::from_bits(word(104)),
+        f32::from_bits(word(108)),
+        f32::from_bits(word(112)),
+    );
+    let volume_lod = volume.lod(
+        Vec3::new(
+            f32::from_bits(word(116)),
+            f32::from_bits(word(120)),
+            f32::from_bits(word(124)),
+        ),
+        Vec3::new(
+            f32::from_bits(word(128)),
+            f32::from_bits(word(132)),
+            f32::from_bits(word(136)),
+        ),
+    );
+    let _ = volume.sample(coordinate, volume_lod, Sampler::default());
 });

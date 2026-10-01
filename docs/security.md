@@ -21,8 +21,8 @@ sandbox for hostile shader workloads.
 
 The `fuzz/` package provides cargo-fuzz targets for SPIR-V parse/lower, capture
 JSON validation and replay (only at dimensions up to 64x64), and bounded
-triangle setup plus texture/anisotropic sampling. Seed runs are useful checks,
-not exhaustive fuzz coverage; no hostile-workload sandbox or process-wide
+triangle setup plus 2D, array, 3D and anisotropic texture sampling. Seed runs
+are useful checks, not exhaustive fuzz coverage; no hostile-workload sandbox or process-wide
 allocation budget is promised.
 
 `PipelineCache` is caller-owned, stores at most 16 exact shader-pair/pipeline
