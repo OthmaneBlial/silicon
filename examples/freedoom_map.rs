@@ -3368,7 +3368,6 @@ impl PreparedScene {
             &self.flat_textures,
             &self.wall_textures,
         )?;
-        self.visibility_fallbacks = visibility_fallback_bounds(&self.map, &self.draws);
         Ok(())
     }
 
