@@ -1003,6 +1003,173 @@ fn convex_hull(mut points: Vec<Vertex2>) -> Vec<Vertex2> {
     hull
 }
 
+fn clip_bsp_polygon(polygon: &[Vertex2], node: Node, side: usize) -> Vec<Vertex2> {
+    let distance = |point: Vertex2| {
+        node.dx as f64 * (point.y as f64 - node.y as f64)
+            - node.dy as f64 * (point.x as f64 - node.x as f64)
+    };
+    let inside = |distance: f64| {
+        if side == 0 {
+            distance <= 0.0
+        } else {
+            distance >= 0.0
+        }
+    };
+    let mut clipped = Vec::with_capacity(polygon.len() + 1);
+    let Some(&last) = polygon.last() else {
+        return clipped;
+    };
+    let mut previous = last;
+    let mut previous_distance = distance(previous);
+    let mut previous_inside = inside(previous_distance);
+    for &current in polygon {
+        let current_distance = distance(current);
+        let current_inside = inside(current_distance);
+        if previous_inside != current_inside {
+            let t = previous_distance / (previous_distance - current_distance);
+            clipped.push(Vertex2 {
+                x: (previous.x as f64 + (current.x as f64 - previous.x as f64) * t) as f32,
+                y: (previous.y as f64 + (current.y as f64 - previous.y as f64) * t) as f32,
+            });
+        }
+        if current_inside {
+            clipped.push(current);
+        }
+        previous = current;
+        previous_distance = current_distance;
+        previous_inside = current_inside;
+    }
+    clipped
+}
+
+fn bsp_subsector_polygons(map: &Map) -> Vec<Vec<Vertex2>> {
+    let mut polygons = vec![Vec::new(); map.subsectors.len()];
+    if map.nodes.is_empty() || map.vertices.is_empty() {
+        return polygons;
+    }
+    let bounds = map.vertices.iter().fold(
+        Bounds2 {
+            min_x: f32::INFINITY,
+            min_y: f32::INFINITY,
+            max_x: f32::NEG_INFINITY,
+            max_y: f32::NEG_INFINITY,
+        },
+        |mut bounds, point| {
+            bounds.min_x = bounds.min_x.min(point.x);
+            bounds.min_y = bounds.min_y.min(point.y);
+            bounds.max_x = bounds.max_x.max(point.x);
+            bounds.max_y = bounds.max_y.max(point.y);
+            bounds
+        },
+    );
+    if bounds.min_x >= bounds.max_x || bounds.min_y >= bounds.max_y {
+        return polygons;
+    }
+    let rectangle = [
+        Vertex2 {
+            x: bounds.min_x,
+            y: bounds.min_y,
+        },
+        Vertex2 {
+            x: bounds.max_x,
+            y: bounds.min_y,
+        },
+        Vertex2 {
+            x: bounds.max_x,
+            y: bounds.max_y,
+        },
+        Vertex2 {
+            x: bounds.min_x,
+            y: bounds.max_y,
+        },
+    ];
+    let mut visited_nodes = vec![false; map.nodes.len()];
+    let mut visited_leaves = vec![false; map.subsectors.len()];
+    let mut pending = vec![(map.nodes.len() - 1, rectangle.to_vec())];
+    while let Some((child, polygon)) = pending.pop() {
+        if child & 0x8000 != 0 {
+            let leaf = child & 0x7fff;
+            if leaf < polygons.len() && !std::mem::replace(&mut visited_leaves[leaf], true) {
+                polygons[leaf] = polygon;
+            }
+            continue;
+        }
+        let Some(seen) = visited_nodes.get_mut(child) else {
+            continue;
+        };
+        if std::mem::replace(seen, true) {
+            continue;
+        }
+        let node = map.nodes[child];
+        for side in [1, 0] {
+            let polygon = clip_bsp_polygon(&polygon, node, side);
+            if polygon.len() >= 3 {
+                pending.push((node.children[side] as usize, polygon));
+            }
+        }
+    }
+    polygons
+}
+
+fn sector_contains_point(map: &Map, sector: u16, point: Vertex2) -> bool {
+    let mut inside = false;
+    for line in &map.lines {
+        let front = map.sides.get(line[3] as usize).map(|side| side.sector) == Some(sector);
+        let back = map.sides.get(line[4] as usize).map(|side| side.sector) == Some(sector);
+        if front == back {
+            continue;
+        }
+        let (Some(&a), Some(&b)) = (
+            map.vertices.get(line[0] as usize),
+            map.vertices.get(line[1] as usize),
+        ) else {
+            continue;
+        };
+        if (a.y > point.y) != (b.y > point.y) {
+            let crossing_x = a.x + (point.y - a.y) * (b.x - a.x) / (b.y - a.y);
+            if point.x < crossing_x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+fn bsp_polygon_belongs_to_sector(map: &Map, polygon: &[Vertex2], sector: u16) -> bool {
+    if polygon.len() < 3 {
+        return false;
+    }
+    let center = polygon
+        .iter()
+        .fold(Vertex2 { x: 0.0, y: 0.0 }, |sum, point| Vertex2 {
+            x: sum.x + point.x / polygon.len() as f32,
+            y: sum.y + point.y / polygon.len() as f32,
+        });
+    if !sector_contains_point(map, sector, center) {
+        return false;
+    }
+    for i in 0..polygon.len() {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % polygon.len()];
+        for point in [
+            a,
+            Vertex2 {
+                x: (a.x + b.x) * 0.5,
+                y: (a.y + b.y) * 0.5,
+            },
+        ] {
+            let sample = Vertex2 {
+                x: center.x + (point.x - center.x) * 0.99,
+                y: center.y + (point.y - center.y) * 0.99,
+            };
+            if !sector_contains_point(map, sector, sample) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 #[derive(Default)]
 struct Geometry {
     flats: BTreeMap<[u8; 8], Vec<Vertex>>,
@@ -1352,19 +1519,26 @@ fn geometry(
     map: &Map,
     textures: &BTreeMap<[u8; 8], Arc<Texture>>,
 ) -> Result<Vec<Geometry>, io::Error> {
+    let bsp_polygons = bsp_subsector_polygons(map);
     let mut all = Vec::with_capacity(map.subsectors.len());
-    for leaf in &map.subsectors {
+    for (leaf_index, leaf) in map.subsectors.iter().enumerate() {
         let mut out = Geometry::default();
         let segs = &map.segs[leaf[1] as usize..leaf[1] as usize + leaf[0] as usize];
         if let Some(first) = segs.first() {
             let front_side = map.lines[first[2] as usize][3 + first[3] as usize];
             let sector_index = map.sides[front_side as usize].sector;
             let sector = map.sectors[sector_index as usize];
-            let polygon = convex_hull(
+            let mut polygon = convex_hull(
                 segs.iter()
                     .flat_map(|seg| [map.vertices[seg[0] as usize], map.vertices[seg[1] as usize]])
                     .collect(),
             );
+            if polygon.len() < 3 {
+                let cell = &bsp_polygons[leaf_index];
+                if bsp_polygon_belongs_to_sector(map, cell, sector_index) {
+                    polygon.clone_from(cell);
+                }
+            }
             if polygon.len() >= 3 {
                 let root = world(polygon[0], sector.floor);
                 let light = 0.38 + sector.light as f32 / 255.0 * 0.62;
@@ -1714,10 +1888,15 @@ fn depth_bucket(bounds: Bounds3, player: Player) -> u32 {
 
 fn visible_subsector_order(map: &Map, player: Player) -> Vec<usize> {
     if map.nodes.is_empty() {
-        return (map.subsectors.len() == 1)
-            .then_some(0)
-            .into_iter()
-            .collect();
+        return subsector_at(
+            map,
+            Vertex2 {
+                x: player.x,
+                y: player.y,
+            },
+        )
+        .into_iter()
+        .collect();
     }
     let mut visible = Vec::new();
     let mut visited = vec![false; map.nodes.len()];
@@ -1751,6 +1930,16 @@ fn visible_subsector_order(map: &Map, player: Player) -> Vec<usize> {
         for side in [1 - near, near] {
             pending.push((node.children[side] as usize, Some(node.child_bounds[side])));
         }
+    }
+    if let Some(leaf) = subsector_at(
+        map,
+        Vertex2 {
+            x: player.x,
+            y: player.y,
+        },
+    ) && !std::mem::replace(&mut visited_leaves[leaf], true)
+    {
+        visible.push(leaf);
     }
     visible
 }
@@ -3849,6 +4038,77 @@ mod tests {
     }
 
     #[test]
+    fn degenerate_subsector_segs_get_floor_geometry_from_the_bsp_cell() {
+        let map = Map {
+            vertices: vec![
+                Vertex2 { x: 0.0, y: 0.0 },
+                Vertex2 { x: 10.0, y: 0.0 },
+                Vertex2 { x: 10.0, y: 10.0 },
+                Vertex2 { x: 0.0, y: 10.0 },
+            ],
+            sectors: vec![Sector {
+                floor: 0.0,
+                ceiling: 128.0,
+                special: 0,
+                light: 255,
+                tag: 0,
+                floor_flat: *b"FLOOR0_1",
+                ceiling_flat: *b"CEIL0_1\0",
+            }],
+            sides: vec![
+                SideDef {
+                    x_offset: 0,
+                    y_offset: 0,
+                    upper: [0; 8],
+                    lower: [0; 8],
+                    middle: [0; 8],
+                    sector: 0,
+                };
+                4
+            ],
+            lines: vec![
+                [0, 1, 0, 0, u16::MAX, 0, 0],
+                [1, 2, 0, 1, u16::MAX, 0, 0],
+                [2, 3, 0, 2, u16::MAX, 0, 0],
+                [3, 0, 0, 3, u16::MAX, 0, 0],
+            ],
+            segs: vec![[0, 1, 0, 0, 0]],
+            subsectors: vec![[1, 0]],
+            nodes: vec![Node {
+                x: 0,
+                y: 5,
+                dx: 1,
+                dy: 0,
+                child_bounds: [Bounds2::default(); 2],
+                children: [0x8000, 0x8000],
+            }],
+            things: vec![],
+        };
+        let cell = bsp_subsector_polygons(&map);
+        assert!(bsp_polygon_belongs_to_sector(&map, &cell[0], 0));
+        assert!(!bsp_polygon_belongs_to_sector(
+            &map,
+            &[
+                Vertex2 { x: 0.0, y: 12.0 },
+                Vertex2 { x: 10.0, y: 12.0 },
+                Vertex2 { x: 10.0, y: 20.0 },
+                Vertex2 { x: 0.0, y: 20.0 },
+            ],
+            0,
+        ));
+        let pixels = [255; 4];
+        let texture = Arc::new(Texture::new(1, 1, TextureFormat::Rgba8, &pixels).unwrap());
+        let textures = BTreeMap::from([
+            (*b"FLOOR0_1", Arc::clone(&texture)),
+            (*b"CEIL0_1\0", texture),
+        ]);
+
+        let geometry = geometry(&map, &textures).unwrap();
+        assert_eq!(geometry[0].flats[b"FLOOR0_1"].len(), 6);
+        assert_eq!(geometry[0].flats[b"CEIL0_1\0"].len(), 6);
+    }
+
+    #[test]
     fn flat_pixels_use_the_wad_palette() {
         let mut palette = vec![0; 256 * 3];
         palette[3..6].copy_from_slice(&[19, 87, 203]);
@@ -4939,13 +5199,13 @@ mod tests {
             things: vec![],
         };
         let player = Player {
-            x: 0.0,
+            x: 1.0,
             y: 0.0,
             angle: 0.0,
         };
-        assert_eq!(visible_subsector_order(&map, player), vec![1]);
-        map.nodes[0].child_bounds[0] = bounds(400.0, -20.0, 600.0, 20.0);
         assert_eq!(visible_subsector_order(&map, player), vec![1, 0]);
+        map.nodes[0].child_bounds[0] = bounds(400.0, -20.0, 600.0, 20.0);
+        assert_eq!(visible_subsector_order(&map, player), vec![0, 1]);
         map.nodes[0].children = [0, 0];
         map.nodes[0].child_bounds = [bounds(-10.0, -10.0, 10.0, 10.0); 2];
         assert!(visible_subsector_order(&map, player).is_empty());

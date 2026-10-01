@@ -7,6 +7,8 @@ and lower wall tiers from the WAD's classic map lumps. It palette-decodes the
 `TEXTURE1`/`TEXTURE2`, `PNAMES`, and classic patch columns, using `PLAYPAL` for
 both. Two-sided middle textures keep unpainted patch pixels transparent and
 render as depth-tested cutouts through the existing SIR discard shader.
+Leaves whose seg endpoints collapse to a line recover a floor cell from the
+BSP planes, guarded by a sector-boundary check.
 Sidedef offsets and the upper/lower or masked-middle pegging flags set wall
 UVs. Sector light levels tint the sampled pixels. Geometry, textures,
 billboards, transform uniforms, and GLSL SPIR-V shaders are submitted to
@@ -148,17 +150,18 @@ for the original sector sound flood and pistol alert call.
 Freedoom 0.13.0 E1M1 has 29 normal-skill enemy placements. The sample parses
 the WAD node partition tree to locate each thing's subsector and sector and to
 cull map subsectors whose node bounds lie wholly outside the horizontal view
-cone and near/far interval. Traversal visits child nodes near-to-far; each
-static material mesh also uses its vertex bounds to reject geometry outside any
+cone and near/far interval. Traversal visits child nodes near-to-far and always
+retains the player's leaf if invalid child bounds would cull it. Each static
+material mesh also uses its vertex bounds to reject geometry outside any
 of the six camera-frustum planes, then surviving geometry is batched by
 texture and cutout mode within coarse 2,048-unit view-depth bands, so nearby
 bands reach the depth test first. This can reject hidden fragments before the
 fragment shader runs, while preserving the framebuffer; it does not implement
 Doom's BSP wall occlusion or per-column portal clipping. At the checked-in
-960×720 start view, 567 of 682 subsectors remain in the horizontal BSP view and
-SILICON submits 4,048 triangles across 209 draws, including the newly rendered
+960×720 start view, 568 of 682 subsectors remain in the horizontal BSP view and
+SILICON submits 4,352 triangles across 209 draws, including the newly rendered
 masked middle textures. Five release renders on Apple M2 measured median process
-CPU time of 0.46 s. The earlier depth-band comparison measured 0.62 s against
+CPU time of 0.67 s. The earlier depth-band comparison measured 0.62 s against
 0.69 s at its predecessor. This fixed-pose measurement is not an engine-wide
 benchmark. Earlier opaque-only counts were
 3,896 triangles and 164 draws for this view. The screenshot shows the player
