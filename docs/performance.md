@@ -83,7 +83,7 @@ individual frames ranged from 236.83 to 888.61 ms. Keep this as a shader-work
 sample: the shared-host timing spread does not support a speed comparison with
 the earlier PBR records.
 
-## Freedoom BSP frustum work sample
+## Freedoom BSP frustum work sample (opaque-only geometry)
 
 The [raw Freedoom record](../benchmarks/freedoom-bsp-2026-10-01.json)
 alternates six complete 960×720 E1M1 process runs per build on the verified
@@ -98,6 +98,15 @@ compares the horizontal-BSP build with per-mesh frustum bounds using the same
 alternating process-run method. It removes another 38 submitted triangles and
 one draw (3,934→3,896; 165→164) with byte-identical pixels. Whole-process medians
 were 372.65 ms and 372.10 ms; that 0.15% change does not establish a speedup.
+
+These frustum records predate the masked-middle pass and use the older
+opaque-only E1M1 image. The [masked-wall follow-up](../benchmarks/freedoom-masked-walls-2026-10-01.json)
+alternates six process runs per build against the same verified release WAD.
+It adds 150 triangles and eight draws at the start view (3,896→4,046;
+164→172) and produces the checked-in cutout-grate screenshot. Whole-process
+medians were 599.52 ms before and 661.63 ms after, including WAD parsing,
+resource setup, rendering and PNG output. Both groups varied widely on this
+shared host, so the timing does not establish a speedup or regression.
 
 ## 0.5 control-flow checkpoint
 

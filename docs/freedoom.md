@@ -3,12 +3,14 @@
 The Phase 70 sample reads `E1M1` from an external Freedoom Phase 1 IWAD. It
 builds BSP-leaf floor and ceiling polygons, one-sided walls, and two-sided upper
 and lower wall tiers from the WAD's classic map lumps. It palette-decodes the
-64×64 floor and ceiling flats and composes opaque wall textures from
+64×64 floor and ceiling flats and composes wall textures from
 `TEXTURE1`/`TEXTURE2`, `PNAMES`, and classic patch columns, using `PLAYPAL` for
-both. Sector light levels tint the sampled pixels. Sidedef offsets and the
-linedef upper/lower pegging flags set wall UVs. Geometry, textures, billboards,
-transform uniforms, and GLSL SPIR-V shaders are submitted to SILICON's CPU
-renderer; no game framebuffer or other renderer is copied.
+both. Two-sided middle textures keep unpainted patch pixels transparent and
+render as depth-tested cutouts through the existing SIR discard shader.
+Sidedef offsets and the upper/lower or masked-middle pegging flags set wall
+UVs. Sector light levels tint the sampled pixels. Geometry, textures,
+billboards, transform uniforms, and GLSL SPIR-V shaders are submitted to
+SILICON's CPU renderer; no game framebuffer or other renderer is copied.
 
 Download [Freedoom 0.13.0](https://github.com/freedoom/freedoom/releases/tag/v0.13.0)
 at upstream commit
@@ -60,20 +62,20 @@ the WAD node partition tree to locate each thing's subsector and sector and to
 cull map subsectors whose node bounds lie wholly outside the horizontal view
 cone and near/far interval. Traversal visits child nodes near-to-far; each
 static material mesh also uses its vertex bounds to reject geometry outside any
-of the six camera-frustum planes, then surviving geometry is batched by texture.
-This does not implement Doom's wall occlusion or portal clipping. At the
-checked-in 960×720 start view, 567 of 682 subsectors remain in the horizontal
-BSP view and SILICON submits 3,896 triangles across 164 draws, down from 4,890
-triangles and 180 draws with no culling. The output pixels are byte-identical
-to the checked-in image. It shows the player start,
+of the six camera-frustum planes, then surviving geometry is batched by
+texture and cutout mode. This does not implement Doom's BSP wall occlusion or
+per-column portal clipping. At the checked-in 960×720 start view, 567 of 682
+subsectors remain in the horizontal BSP view and SILICON submits 4,046
+triangles across 172 draws, including the newly rendered masked middle
+textures. Earlier opaque-only counts were 3,896 triangles and 164 draws for
+this view. The screenshot shows the player start,
 pistol, and a medikit; enemies are outside that camera view. A temporary WAD
 with only its player start moved was used to capture an enemy sprite in view;
 that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
-game rules. Frustum bounds reject only map geometry outside the view; masked
-two-sided middle textures, enemy idle/pain/gib states, projectile vertical
-motion, keys, exits, other weapons and
+game rules. Frustum bounds reject only map geometry outside the view; enemy
+idle/pain/gib states, projectile vertical motion, keys, exits, other weapons and
 their ammunition, full weapon animation beyond the brief idle/fire pose, and
 sound remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in

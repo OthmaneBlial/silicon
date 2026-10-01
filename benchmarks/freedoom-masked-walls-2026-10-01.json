@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-01",
+  "scene": "Freedoom 0.13.0 E1M1, 960x720 start view",
+  "baseline_commit": "ecfcb6fd6f7052e1152a7524607159fa908b84bb",
+  "candidate_source_base": "ecfcb6fd6f7052e1152a7524607159fa908b84bb plus masked two-sided middle textures and opaque map alpha",
+  "baseline_binary_sha256": "0374cef09c8e2a433146cf0750faed0bfe27b3f02cd1115e1d93141cc1aa4187",
+  "candidate_binary_sha256": "b8866310ecc736a16610e81ff96a50653a688aa12d937c3def9701661c6c4751",
+  "freedoom_archive": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
+  "freedoom_archive_sha256": "3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59",
+  "freedoom1_wad_sha256": "7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d",
+  "platform": {
+    "os": "macOS 26.6",
+    "cpu": "Apple M2",
+    "architecture": "arm64",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)"
+  },
+  "process_wall_time_ms": {
+    "order": [
+      "before",
+      "after",
+      "after",
+      "before",
+      "before",
+      "after",
+      "after",
+      "before",
+      "before",
+      "after",
+      "after",
+      "before"
+    ],
+    "before": [
+      1015.56,
+      495.94,
+      501.83,
+      561.20,
+      637.84,
+      1132.54
+    ],
+    "after": [
+      698.72,
+      605.93,
+      624.53,
+      606.80,
+      1811.69,
+      1489.99
+    ],
+    "median_before": 599.52,
+    "median_after": 661.63
+  },
+  "renderer_work": {
+    "before": {
+      "triangles": 3896,
+      "draws": 164,
+      "horizontal_visible_subsectors": 567,
+      "total_subsectors": 682
+    },
+    "after": {
+      "triangles": 4046,
+      "draws": 172,
+      "horizontal_visible_subsectors": 567,
+      "total_subsectors": 682
+    }
+  },
+  "png_sha256": {
+    "before": "8fe92c7fa66adf8f5a59b08523a7713c4e6a1e15696f1d5fc6c76a84e8ae1496",
+    "after": "e1314668cb08e0f4392739d7a5a4fc409e1f0f88bd92a1aaa566dd1990102f4b"
+  },
+  "interpretation": "The added cutouts restore masked wall pixels, adding 150 triangles and eight draws for this start view. Process time includes WAD parsing, resource creation, rendering and PNG output. Shared-host timing varied widely, so the medians do not establish a speedup or regression."
+}

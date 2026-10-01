@@ -630,7 +630,7 @@ fn wall_textures(data: &[u8], map: &Map) -> api::Result<BTreeMap<[u8; 8], Arc<Te
             Vec::with_capacity(definition.width as usize * definition.height as usize * 4);
         for _ in 0..definition.width as usize * definition.height as usize {
             rgba.extend_from_slice(first_color);
-            rgba.push(255);
+            rgba.push(0);
         }
         for placement in &definition.patches {
             let patch_name = patch_names
@@ -929,6 +929,7 @@ fn convex_hull(mut points: Vec<Vertex2>) -> Vec<Vertex2> {
 struct Geometry {
     flats: BTreeMap<[u8; 8], Vec<Vertex>>,
     walls: BTreeMap<[u8; 8], Vec<Vertex>>,
+    masked: BTreeMap<[u8; 8], Vec<Vertex>>,
 }
 
 #[derive(Clone, Copy)]
@@ -949,6 +950,7 @@ struct Controls {
 struct Draw {
     name: [u8; 8],
     wall: bool,
+    masked: bool,
     texture: Arc<Texture>,
     vertices: Vec<Vertex>,
     bounds: Option<Bounds3>,
@@ -1382,7 +1384,28 @@ fn geometry(
                     },
                 );
             }
-            // Masked middle textures and their transparency are not implemented in this pass.
+            if let Some(texture) = textures.get(&front_sidedef.middle) {
+                let texture_height = texture.levels[0].height as f32;
+                let (low, high, anchor) = if line[2] & 16 != 0 {
+                    let low = front.floor.max(back.floor);
+                    (low, low + texture_height, low + texture_height)
+                } else {
+                    let high = front.ceiling.min(back.ceiling);
+                    (high - texture_height, high, high)
+                };
+                push_wall_quad(
+                    &mut out.masked,
+                    texture,
+                    WallSection {
+                        name: front_sidedef.middle,
+                        side: front_sidedef,
+                        seg: *seg,
+                        endpoints: [a, b],
+                        heights: [low, high, anchor],
+                        sector: front,
+                    },
+                );
+            }
         }
         all.push(out);
     }
@@ -1888,7 +1911,7 @@ impl PreparedScene {
         let vertex_shader =
             device.create_shader(include_bytes!("../assets/shaders/textured.vert.spv"))?;
         let fragment_shader =
-            device.create_shader(include_bytes!("../assets/shaders/textured.frag.spv"))?;
+            device.create_shader(include_bytes!("../assets/shaders/freedoom_map.frag.spv"))?;
         let pipeline =
             device.create_pipeline(&vertex_shader, &fragment_shader, Pipeline::default())?;
         let sprite_fragment =
@@ -1977,6 +2000,7 @@ impl PreparedScene {
                 leaf_draws.push(Draw {
                     name,
                     wall: false,
+                    masked: false,
                     texture,
                     vertices,
                     bounds,
@@ -1996,6 +2020,27 @@ impl PreparedScene {
                 leaf_draws.push(Draw {
                     name,
                     wall: true,
+                    masked: false,
+                    texture,
+                    vertices,
+                    bounds,
+                });
+            }
+            for (name, vertices) in leaf.masked {
+                let texture = wall_textures
+                    .get(&name)
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "masked wall texture {} was not decoded",
+                            String::from_utf8_lossy(&name)
+                        ))
+                    })?
+                    .clone();
+                let bounds = geometry_bounds(&vertices);
+                leaf_draws.push(Draw {
+                    name,
+                    wall: true,
+                    masked: true,
                     texture,
                     vertices,
                     bounds,
@@ -2072,12 +2117,17 @@ impl PreparedScene {
                     continue;
                 }
                 let batch = batches
-                    .entry((draw.wall, draw.name))
+                    .entry((draw.wall, draw.masked, draw.name))
                     .or_insert_with(|| (Arc::clone(&draw.texture), Vec::new()));
                 batch.1.extend_from_slice(&draw.vertices);
             }
         }
-        for (_, (texture, vertices)) in batches {
+        for ((_, masked, _), (texture, vertices)) in batches {
+            commands.bind_pipeline(if masked {
+                self.sprite_pipeline.clone()
+            } else {
+                self.pipeline.clone()
+            });
             let count = u32::try_from(vertices.len())
                 .map_err(|_| invalid("visible E1M1 geometry exceeds SILICON draw range"))?;
             commands.bind_texture(0, texture, self.sampler);
@@ -2195,7 +2245,7 @@ fn frame_triangles(scene: &PreparedScene, player: Player, draws: u64) -> api::Re
                 .bounds
                 .is_some_and(|bounds| bounds3_in_view(bounds, player, eye_height))
             {
-                static_draws.insert((draw.wall, draw.name), ());
+                static_draws.insert((draw.wall, draw.masked, draw.name), ());
             }
         }
     }
@@ -2550,6 +2600,67 @@ mod tests {
         assert_eq!(texture.patches[0].x, 4);
         assert_eq!(texture.patches[0].y, -2);
         assert_eq!(texture.patches[0].index, 7);
+    }
+
+    #[test]
+    fn two_sided_middle_textures_follow_peg_flags_and_offsets() {
+        let sector = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+        };
+        let side = |sector| SideDef {
+            x_offset: 5,
+            y_offset: 3,
+            upper: *b"-\0\0\0\0\0\0\0",
+            lower: *b"-\0\0\0\0\0\0\0",
+            middle: *b"MASK\0\0\0\0",
+            sector,
+        };
+        let mut map = Map {
+            vertices: vec![Vertex2 { x: 96.0, y: 0.0 }, Vertex2 { x: 96.0, y: 64.0 }],
+            sectors: vec![
+                sector,
+                Sector {
+                    floor: 16.0,
+                    ceiling: 112.0,
+                    ..sector
+                },
+            ],
+            sides: vec![side(0), side(1)],
+            lines: vec![[0, 1, 4, 0, 1]],
+            segs: vec![[0, 1, 0, 0, 7], [0, 1, 0, 1, 7]],
+            subsectors: vec![[1, 0], [1, 1]],
+            nodes: vec![],
+            things: vec![],
+        };
+        let pixels = vec![255; 16 * 32 * 4];
+        let texture = Arc::new(Texture::new(16, 32, TextureFormat::Rgba8, &pixels).unwrap());
+        let textures = BTreeMap::from([(*b"MASK\0\0\0\0", texture)]);
+        let y_bounds = |vertices: &[Vertex]| {
+            vertices
+                .iter()
+                .map(|v| v.position.y)
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), y| {
+                    (low.min(y), high.max(y))
+                })
+        };
+
+        let top_pegged = geometry(&map, &textures).unwrap();
+        let vertices = &top_pegged[0].masked[b"MASK\0\0\0\0"];
+        assert_eq!(vertices.len(), 6);
+        assert_eq!(y_bounds(vertices), (80.0, 112.0));
+        assert_eq!(vertices[0].uv.x, 0.75);
+        assert_eq!(vertices[1].uv.x, 4.75);
+        assert_eq!(vertices[0].uv.y, 35.0 / 32.0);
+        assert_eq!(vertices[2].uv.y, 3.0 / 32.0);
+
+        map.lines[0][2] |= 16;
+        let bottom_pegged = geometry(&map, &textures).unwrap();
+        let vertices = &bottom_pegged[0].masked[b"MASK\0\0\0\0"];
+        assert_eq!(y_bounds(vertices), (16.0, 48.0));
     }
 
     #[test]
