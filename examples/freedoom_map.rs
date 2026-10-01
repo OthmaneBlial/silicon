@@ -44,6 +44,10 @@ const FLOOR_SPEED: f32 = 35.0;
 const DOOM_TICS_PER_SECOND: f32 = 35.0;
 const SECTOR_SECRET: u16 = 9;
 const SECTOR_NUKAGE_DAMAGE: u16 = 7;
+const SECTOR_LIGHT_FLASH: u16 = 1;
+const SECTOR_LIGHT_STROBE_SLOW: u16 = 12;
+const STROBE_BRIGHT_TICS: f32 = 5.0;
+const STROBE_SLOW_DARK_TICS: f32 = 35.0;
 const NUKAGE_DAMAGE_TICS: f32 = 32.0;
 const NUKAGE_DAMAGE: i32 = 5;
 
@@ -1029,6 +1033,15 @@ struct Platform {
     return_to_high: bool,
 }
 
+struct SectorLight {
+    sector: usize,
+    min: u8,
+    max: u8,
+    tics: f32,
+    bright: bool,
+    random: bool,
+}
+
 #[derive(Clone, Copy)]
 struct Controls {
     forward: f32,
@@ -1788,6 +1801,94 @@ fn update_floor_damage(
         *elapsed_tics -= NUKAGE_DAMAGE_TICS;
         *health = (*health - NUKAGE_DAMAGE).max(0);
     }
+}
+
+fn lowest_surrounding_light(map: &Map, sector: usize) -> u8 {
+    let mut lowest = map.sectors[sector].light;
+    for line in &map.lines {
+        let front = map
+            .sides
+            .get(line[3] as usize)
+            .map(|side| side.sector as usize);
+        let back = map
+            .sides
+            .get(line[4] as usize)
+            .map(|side| side.sector as usize);
+        let neighbor = if front == Some(sector) {
+            back
+        } else if back == Some(sector) {
+            front
+        } else {
+            None
+        };
+        if let Some(neighbor) = neighbor.and_then(|index| map.sectors.get(index)) {
+            lowest = lowest.min(neighbor.light);
+        }
+    }
+    lowest
+}
+
+fn spawn_sector_lights(map: &mut Map, rng: &mut u32) -> Vec<SectorLight> {
+    let mut lights = Vec::new();
+    for sector_index in 0..map.sectors.len() {
+        let sector = map.sectors[sector_index];
+        let (random, min) = match sector.special {
+            SECTOR_LIGHT_FLASH => (true, lowest_surrounding_light(map, sector_index)),
+            SECTOR_LIGHT_STROBE_SLOW => {
+                let min = lowest_surrounding_light(map, sector_index);
+                (false, if min == sector.light { 0 } else { min })
+            }
+            _ => continue,
+        };
+        lights.push(SectorLight {
+            sector: sector_index,
+            min,
+            max: sector.light,
+            tics: if random {
+                f32::from(gameplay_random_byte(rng) & 64) + 1.0
+            } else {
+                1.0
+            },
+            bright: true,
+            random,
+        });
+        map.sectors[sector_index].special = 0;
+    }
+    lights
+}
+
+fn update_sector_lights(
+    map: &mut Map,
+    lights: &mut [SectorLight],
+    rng: &mut u32,
+    delta: f32,
+) -> bool {
+    let mut changed = false;
+    for light in lights {
+        light.tics -= delta * DOOM_TICS_PER_SECOND;
+        while light.tics <= 0.0 {
+            let sector = &mut map.sectors[light.sector];
+            if light.bright {
+                sector.light = light.min;
+                light.bright = false;
+                light.tics += if light.random {
+                    f32::from(gameplay_random_byte(rng) & 7) + 1.0
+                } else {
+                    STROBE_SLOW_DARK_TICS
+                };
+            } else {
+                sector.light = light.max;
+                light.bright = true;
+                light.tics += if light.random {
+                    f32::from(gameplay_random_byte(rng) & 64) + 1.0
+                } else {
+                    STROBE_BRIGHT_TICS
+                };
+            }
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn portal_is_walkable(map: &Map, line: [u16; 7], from: u16, to: u16) -> bool {
@@ -3116,6 +3217,8 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     let mut health = 100;
     let mut ammo = 50;
     let mut blue_key = false;
+    let mut light_rng = 0x4c49_4748u32;
+    let mut sector_lights = spawn_sector_lights(&mut scene.map, &mut light_rng);
     let mut nukage_damage_tics = 0.0;
     let total_secrets = scene
         .map
@@ -3139,7 +3242,9 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         last = now;
         let doors_changed = update_doors(&mut scene.map, &mut doors, player, &actors, delta);
         let platforms_changed = update_platforms(&mut scene.map, &mut platforms, delta);
-        if doors_changed || platforms_changed {
+        let lights_changed =
+            update_sector_lights(&mut scene.map, &mut sector_lights, &mut light_rng, delta);
+        if doors_changed || platforms_changed || lights_changed {
             scene.rebuild_draws()?;
         }
         if health > 0 && !exited {
@@ -3845,6 +3950,92 @@ mod tests {
         assert!(discover_secret(map, player));
         assert_eq!(map.sectors[0].special, 0);
         assert!(!discover_secret(map, player));
+    }
+
+    #[test]
+    fn sector_blinks_and_slow_strobes_change_light_on_doom_tics() {
+        let sector = |special, light| Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            special,
+            light,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+            tag: 0,
+        };
+        let side = |sector| SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper: [0; 8],
+            lower: [0; 8],
+            middle: [0; 8],
+            sector,
+        };
+        let mut map = Map {
+            vertices: vec![Vertex2 { x: 0.0, y: 0.0 }, Vertex2 { x: 32.0, y: 0.0 }],
+            sectors: vec![
+                sector(SECTOR_LIGHT_FLASH, 180),
+                sector(SECTOR_LIGHT_STROBE_SLOW, 220),
+                sector(0, 80),
+            ],
+            sides: vec![side(0), side(2), side(1), side(2)],
+            lines: vec![
+                [0, 1, LINE_TWO_SIDED, 0, 1, 0, 0],
+                [0, 1, LINE_TWO_SIDED, 2, 3, 0, 0],
+            ],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let mut rng = 0x4c49_4748;
+        let mut lights = spawn_sector_lights(&mut map, &mut rng);
+
+        assert_eq!(map.sectors[0].special, 0);
+        assert_eq!(map.sectors[1].special, 0);
+        assert_eq!(lights[0].min, 80);
+        assert!((1.0..=65.0).contains(&lights[0].tics));
+        assert_eq!(lights[1].min, 80);
+        assert_eq!(lights[1].tics, 1.0);
+
+        let blink_wait = lights[0].tics;
+        assert!(update_sector_lights(
+            &mut map,
+            &mut lights[..1],
+            &mut rng,
+            (blink_wait + 0.01) / DOOM_TICS_PER_SECOND,
+        ));
+        assert_eq!(map.sectors[0].light, 80);
+        let dark_wait = lights[0].tics;
+        update_sector_lights(
+            &mut map,
+            &mut lights[..1],
+            &mut rng,
+            (dark_wait + 0.01) / DOOM_TICS_PER_SECOND,
+        );
+        assert_eq!(map.sectors[0].light, 180);
+
+        update_sector_lights(
+            &mut map,
+            &mut lights[1..],
+            &mut rng,
+            1.01 / DOOM_TICS_PER_SECOND,
+        );
+        assert_eq!(map.sectors[1].light, 80);
+        update_sector_lights(
+            &mut map,
+            &mut lights[1..],
+            &mut rng,
+            (STROBE_SLOW_DARK_TICS + 0.01) / DOOM_TICS_PER_SECOND,
+        );
+        assert_eq!(map.sectors[1].light, 220);
+        update_sector_lights(
+            &mut map,
+            &mut lights[1..],
+            &mut rng,
+            (STROBE_BRIGHT_TICS + 0.01) / DOOM_TICS_PER_SECOND,
+        );
+        assert_eq!(map.sectors[1].light, 80);
     }
 
     #[test]

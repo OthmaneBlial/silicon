@@ -78,6 +78,12 @@ the original engine's
 The WAD also has three sector-special-7 nukage sectors. They deal 5 HP every
 32 game tics spent on the floor, following the original `P_PlayerInSpecialSector`
 damage rule without suit mitigation.
+Three sector-special-1 lights blink with randomized bright and dark intervals;
+six sector-special-12 lights strobe together, alternating one bright tic, 35
+dark tics, and five bright tics. Both use adjacent-sector minimum light levels
+and rebuild the scene through SILICON when their levels change, following
+id Software's [`T_LightFlash`, `T_StrobeFlash`, and spawn actions](https://raw.githubusercontent.com/id-Software/DOOM/master/linuxdoom-1.10/p_lights.c).
+Blink timing uses the sample's seeded RNG rather than Doom's shared random table.
 
 The combat slice loads four normal-skill enemy types from WAD things and their
 classic `A1`–`D1` walk and `E1`–`G1` attack sprite patches: former humans (20
