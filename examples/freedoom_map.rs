@@ -78,6 +78,12 @@ struct Bounds2 {
 }
 
 #[derive(Clone, Copy)]
+struct Bounds3 {
+    min: Vec3,
+    max: Vec3,
+}
+
+#[derive(Clone, Copy)]
 struct Node {
     x: i16,
     y: i16,
@@ -851,6 +857,24 @@ fn world(point: Vertex2, height: f32) -> Vec3 {
     Vec3::new(point.x, height, -point.y)
 }
 
+fn geometry_bounds(vertices: &[Vertex]) -> Option<Bounds3> {
+    let mut positions = vertices.iter().map(|vertex| vertex.position);
+    let first = positions.next()?;
+    let mut bounds = Bounds3 {
+        min: first,
+        max: first,
+    };
+    for point in positions {
+        bounds.min.x = bounds.min.x.min(point.x);
+        bounds.min.y = bounds.min.y.min(point.y);
+        bounds.min.z = bounds.min.z.min(point.z);
+        bounds.max.x = bounds.max.x.max(point.x);
+        bounds.max.y = bounds.max.y.max(point.y);
+        bounds.max.z = bounds.max.z.max(point.z);
+    }
+    Some(bounds)
+}
+
 fn shaded(rgb: [f32; 3], sector: Sector) -> Vec4 {
     let light = 0.38 + sector.light as f32 / 255.0 * 0.62;
     Vec4::new(rgb[0] * light, rgb[1] * light, rgb[2] * light, 1.0)
@@ -927,6 +951,7 @@ struct Draw {
     wall: bool,
     texture: Arc<Texture>,
     vertices: Vec<Vertex>,
+    bounds: Option<Bounds3>,
 }
 
 struct PreparedScene {
@@ -1426,6 +1451,38 @@ fn bounds_in_view(bounds: Bounds2, player: Player) -> bool {
     minimum.into_iter().all(|distance| distance <= 0.0)
 }
 
+fn bounds3_in_view(bounds: Bounds3, player: Player, eye_height: f32) -> bool {
+    let (sin, cos) = player.angle.to_radians().sin_cos();
+    let tan_half_horizontal = (1.22_f32 * 0.5).tan() * (4.0 / 3.0);
+    let tan_half_vertical = (1.22_f32 * 0.5).tan();
+    let mut minimum = [f32::INFINITY; 6];
+    for x in [bounds.min.x, bounds.max.x] {
+        for y in [bounds.min.y, bounds.max.y] {
+            for z in [bounds.min.z, bounds.max.z] {
+                let dx = x - player.x;
+                let dy = -z - player.y;
+                let forward = dx * cos + dy * sin;
+                let right = dx * sin - dy * cos;
+                let vertical = y - eye_height;
+                for (index, plane) in [
+                    1.0 - forward,
+                    forward - 8192.0,
+                    right - forward * tan_half_horizontal,
+                    -right - forward * tan_half_horizontal,
+                    vertical - forward * tan_half_vertical,
+                    -vertical - forward * tan_half_vertical,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    minimum[index] = minimum[index].min(plane);
+                }
+            }
+        }
+    }
+    minimum.into_iter().all(|distance| distance <= 0.0)
+}
+
 fn visible_subsector_order(map: &Map, player: Player) -> Vec<usize> {
     if map.nodes.is_empty() {
         return (map.subsectors.len() == 1)
@@ -1916,11 +1973,13 @@ impl PreparedScene {
                         ))
                     })?
                     .clone();
+                let bounds = geometry_bounds(&vertices);
                 leaf_draws.push(Draw {
                     name,
                     wall: false,
                     texture,
                     vertices,
+                    bounds,
                 });
             }
             for (name, vertices) in leaf.walls {
@@ -1933,11 +1992,13 @@ impl PreparedScene {
                         ))
                     })?
                     .clone();
+                let bounds = geometry_bounds(&vertices);
                 leaf_draws.push(Draw {
                     name,
                     wall: true,
                     texture,
                     vertices,
+                    bounds,
                 });
             }
             draws.push(leaf_draws);
@@ -1983,6 +2044,7 @@ impl PreparedScene {
             visible[leaf] = true;
         }
         let eye = Vec3::new(player.x, sector.floor + 41.0, -player.y);
+        let eye_height = sector.floor + 41.0;
         let radians = player.angle.to_radians();
         let forward = Vec3::new(radians.cos(), 0.0, -radians.sin());
         let view = Mat4::look_at(eye, eye + forward, Vec3::new(0.0, 1.0, 0.0));
@@ -2003,6 +2065,12 @@ impl PreparedScene {
                 continue;
             }
             for draw in draws {
+                if !draw
+                    .bounds
+                    .is_some_and(|bounds| bounds3_in_view(bounds, player, eye_height))
+                {
+                    continue;
+                }
                 let batch = batches
                     .entry((draw.wall, draw.name))
                     .or_insert_with(|| (Arc::clone(&draw.texture), Vec::new()));
@@ -2116,16 +2184,28 @@ fn save_frame(renderer: &Renderer, output: &Path) -> api::Result<()> {
 fn frame_triangles(scene: &PreparedScene, player: Player, draws: u64) -> api::Result<usize> {
     let draws =
         usize::try_from(draws).map_err(|_| invalid("SILICON draw count exceeds host range"))?;
+    let sector = bsp_sector_at(&scene.map, player.x, player.y)
+        .ok_or_else(|| invalid("player is outside every E1M1 BSP leaf"))?;
+    let eye_height = sector.floor + 41.0;
     let visible = visible_subsector_order(&scene.map, player);
     let mut static_draws = BTreeMap::new();
     for &leaf in &visible {
         for draw in &scene.draws[leaf] {
-            static_draws.insert((draw.wall, draw.name), ());
+            if draw
+                .bounds
+                .is_some_and(|bounds| bounds3_in_view(bounds, player, eye_height))
+            {
+                static_draws.insert((draw.wall, draw.name), ());
+            }
         }
     }
     let static_triangles = visible
         .iter()
         .flat_map(|&leaf| &scene.draws[leaf])
+        .filter(|draw| {
+            draw.bounds
+                .is_some_and(|bounds| bounds3_in_view(bounds, player, eye_height))
+        })
         .map(|draw| draw.vertices.len() / 3)
         .sum::<usize>();
     Ok(static_triangles + draws.saturating_sub(static_draws.len()) * 2)
@@ -2146,7 +2226,7 @@ fn render(path: &Path, output: &Path) -> api::Result<()> {
     let triangles = frame_triangles(&scene, scene.start, submission.draws)?;
     let visible = visible_subsector_order(&scene.map, scene.start).len();
     println!(
-        "E1M1: {triangles} triangles, {} SILICON draw(s), {visible}/{} visible BSP subsectors, player start ({}, {}, {}°)",
+        "E1M1: {triangles} triangles, {} SILICON draw(s), {visible}/{} horizontal BSP leaves, player start ({}, {}, {}°)",
         submission.draws,
         scene.map.subsectors.len(),
         scene.start.x,
@@ -2642,6 +2722,43 @@ mod tests {
                 ),
                 "angle {angle}"
             );
+        }
+    }
+
+    #[test]
+    fn geometry_bounds_reject_vertical_near_and_far_frustum_exits() {
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let around = |x, y, z, half| Bounds3 {
+            min: Vec3::new(x - half, y - half, z - half),
+            max: Vec3::new(x + half, y + half, z + half),
+        };
+        assert!(bounds3_in_view(around(120.0, 41.0, 0.0, 8.0), player, 41.0));
+        assert!(!bounds3_in_view(
+            around(120.0, 150.0, 0.0, 5.0),
+            player,
+            41.0
+        ));
+        assert!(!bounds3_in_view(
+            around(120.0, -70.0, 0.0, 5.0),
+            player,
+            41.0
+        ));
+        assert!(!bounds3_in_view(around(0.0, 41.0, 0.0, 0.1), player, 41.0));
+        assert!(!bounds3_in_view(
+            around(9000.0, 41.0, 0.0, 10.0),
+            player,
+            41.0
+        ));
+        for angle in [90.0_f32, 180.0, 270.0] {
+            let player = Player { angle, ..player };
+            let radians = angle.to_radians();
+            let x = radians.cos() * 120.0;
+            let z = -radians.sin() * 120.0;
+            assert!(bounds3_in_view(around(x, 41.0, z, 8.0), player, 41.0));
         }
     }
 

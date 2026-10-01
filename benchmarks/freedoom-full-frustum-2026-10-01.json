@@ -1,0 +1,67 @@
+{
+  "date": "2026-10-01",
+  "scene": "Freedoom 0.13.0 E1M1, 960x720 start view",
+  "baseline_commit": "cfbddb2ff1fcdb3e18e5d919cd9454db78ef0d60",
+  "candidate_source_base": "cfbddb2ff1fcdb3e18e5d919cd9454db78ef0d60 plus per-mesh six-plane culling",
+  "baseline_binary_sha256": "b284194a64828ce18f2f1ad15838033e1a57c230e54f668aa21ca71e2bd6f95c",
+  "candidate_binary_sha256": "97436c862994ed7576b04773a6e3a0de553c82461088d9aac07487bda9bb5855",
+  "freedoom_archive": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
+  "freedoom_archive_sha256": "3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59",
+  "freedoom1_wad_sha256": "7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d",
+  "platform": {
+    "os": "macOS 26.6",
+    "cpu": "Apple M2",
+    "architecture": "arm64",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)"
+  },
+  "process_wall_time_ms": {
+    "order": [
+      "before",
+      "after",
+      "after",
+      "before",
+      "before",
+      "after",
+      "after",
+      "before",
+      "before",
+      "after",
+      "after",
+      "before"
+    ],
+    "before": [
+      374.27,
+      370.98,
+      372.67,
+      370.53,
+      372.63,
+      372.69
+    ],
+    "after": [
+      371.93,
+      372.83,
+      373.31,
+      369.75,
+      371.62,
+      372.26
+    ],
+    "median_before": 372.65,
+    "median_after": 372.1
+  },
+  "renderer_work": {
+    "before": {
+      "triangles": 3934,
+      "draws": 165,
+      "horizontal_visible_subsectors": 567,
+      "total_subsectors": 682
+    },
+    "after": {
+      "triangles": 3896,
+      "draws": 164,
+      "horizontal_visible_subsectors": 567,
+      "total_subsectors": 682
+    }
+  },
+  "decoded_rgba_sha256": "0c726b7eb8d9df0ed59730347808d7e04db537a916c73ca9f21fe4584b292511",
+  "interpretation": "Per-mesh six-plane frustum bounds remove 38 more submitted triangles and one draw with byte-identical pixels. Whole-process medians differ by 0.15%; these runs do not establish a wall-time speedup."
+}

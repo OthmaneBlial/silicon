@@ -93,6 +93,12 @@ Whole-process medians were 1,461.76 ms before and 1,067.84 ms after, including
 WAD parsing, texture/geometry setup, rendering and PNG output. Run times varied
 widely in both groups, so these samples do not establish a wall-time speedup.
 
+The [incremental six-plane record](../benchmarks/freedoom-full-frustum-2026-10-01.json)
+compares the horizontal-BSP build with per-mesh frustum bounds using the same
+alternating process-run method. It removes another 38 submitted triangles and
+one draw (3,934→3,896; 165→164) with byte-identical pixels. Whole-process medians
+were 372.65 ms and 372.10 ms; that 0.15% change does not establish a speedup.
+
 ## 0.5 control-flow checkpoint
 
 The [pre-optimization alternating record](../benchmarks/apple-m2-control-before-counters-2026-10-01.json)

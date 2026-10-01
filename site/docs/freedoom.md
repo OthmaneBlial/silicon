@@ -58,19 +58,20 @@ and draw pipeline.
 Freedoom 0.13.0 E1M1 has 29 normal-skill enemy placements. The sample parses
 the WAD node partition tree to locate each thing's subsector and sector and to
 cull map subsectors whose node bounds lie wholly outside the horizontal view
-cone and near/far interval. Traversal visits child nodes near-to-far; visible
-static wall and flat geometry is then batched by texture. This uses horizontal
-map bounds only, not vertical frustum planes or Doom's wall occlusion and portal
-clipping. At the checked-in 960×720 start view, 567 of 682
-subsectors are visited and SILICON submits 3,934 triangles across 165 draws,
-down from 4,890 triangles and 180 draws with every leaf submitted. The output
-pixels are byte-identical to the checked-in image. It shows the player start,
+cone and near/far interval. Traversal visits child nodes near-to-far; each
+static material mesh also uses its vertex bounds to reject geometry outside any
+of the six camera-frustum planes, then surviving geometry is batched by texture.
+This does not implement Doom's wall occlusion or portal clipping. At the
+checked-in 960×720 start view, 567 of 682 subsectors remain in the horizontal
+BSP view and SILICON submits 3,896 triangles across 164 draws, down from 4,890
+triangles and 180 draws with no culling. The output pixels are byte-identical
+to the checked-in image. It shows the player start,
 pistol, and a medikit; enemies are outside that camera view. A temporary WAD
 with only its player start moved was used to capture an enemy sprite in view;
 that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
-game rules. BSP bounds only reject map geometry outside the view frustum; masked
+game rules. Frustum bounds reject only map geometry outside the view; masked
 two-sided middle textures, enemy idle/pain/gib states, projectile vertical
 motion, keys, exits, other weapons and
 their ammunition, full weapon animation beyond the brief idle/fire pose, and
