@@ -112,7 +112,8 @@ billboards, nine pickup billboards, and one weapon billboard. The interactive
 prototype adds first-person movement, basic collision, player hitscan, health
 and ammo pickups, pursuing melee enemies, line-of-sight hitscan for humans and
 shotgunners, and imp fireballs. Moving enemies cycle four WAD walk frames, play
-three-frame attack poses, and select among eight camera-relative sprite views. It remains
+attack and death poses, leave corpses, and select among eight camera-relative
+sprite views. It remains
 a limited E1M1 gameplay slice, not a complete Doom game;
 BSP visibility, masked walls, and broader game rules remain. The [WAD source,
 controls, screenshots, license, and limits](docs/freedoom.md) are documented.

@@ -636,9 +636,21 @@ fn monster_sprite(kind: u16) -> Option<([u8; 4], i32)> {
 
 fn sprite_actor_textures(data: &[u8], prefix: [u8; 4]) -> api::Result<Vec<Vec<SpriteTexture>>> {
     let lumps = wad_lumps(data)?;
-    b"ABCDEFG"
-        .iter()
-        .map(|&frame| {
+    let last_frame = match &prefix {
+        b"TROO" => b'M',
+        b"SARG" => b'N',
+        b"POSS" | b"SPOS" => b'L',
+        _ => b'G',
+    };
+    (b'A'..=last_frame)
+        .map(|frame| {
+            let mut name = [0; 8];
+            name[..4].copy_from_slice(&prefix);
+            name[4] = frame;
+            name[5] = b'0';
+            if lumps.iter().any(|lump| lump.name == name) {
+                return Ok(vec![sprite_patch_texture(data, name)?; 8]);
+            }
             (1..=8)
                 .map(|rotation| {
                     let (mut name, mut flip) = sprite_view_name(prefix, frame, rotation);
@@ -727,6 +739,33 @@ fn actor_attack_frame(sprite: [u8; 4], remaining: f32) -> Option<usize> {
         }
     }
     None
+}
+
+fn actor_death_profile(sprite: [u8; 4]) -> Option<(&'static [usize], &'static [f32])> {
+    match &sprite {
+        b"TROO" => Some((&[8, 9, 10, 11, 12], &[8.0, 8.0, 6.0, 6.0])),
+        b"SARG" => Some((&[8, 9, 10, 11, 12, 13], &[8.0, 8.0, 4.0, 4.0, 4.0])),
+        b"POSS" | b"SPOS" => Some((&[7, 8, 9, 10, 11], &[5.0, 5.0, 5.0, 5.0])),
+        _ => None,
+    }
+}
+
+fn actor_death_duration(sprite: [u8; 4]) -> f32 {
+    actor_death_profile(sprite)
+        .map(|(_, tics)| tics.iter().sum::<f32>() / 35.0)
+        .unwrap_or_default()
+}
+
+fn actor_death_frame(sprite: [u8; 4], elapsed: f32) -> Option<usize> {
+    let (frames, durations) = actor_death_profile(sprite)?;
+    let mut elapsed_tics = elapsed * 35.0;
+    for (index, &duration) in durations.iter().enumerate() {
+        if elapsed_tics < duration {
+            return Some(frames[index]);
+        }
+        elapsed_tics -= duration;
+    }
+    frames.last().copied()
 }
 
 fn sprite_patch_texture(data: &[u8], name: [u8; 8]) -> api::Result<SpriteTexture> {
@@ -863,6 +902,7 @@ struct PreparedScene {
     triangles: usize,
 }
 
+#[derive(Clone)]
 struct SpriteTexture {
     texture: Arc<Texture>,
     width: f32,
@@ -879,6 +919,7 @@ struct Actor {
     health: i32,
     attack_cooldown: f32,
     attack_animation_remaining: f32,
+    death_animation_time: Option<f32>,
     animation_time: f32,
     angle: f32,
 }
@@ -1467,7 +1508,12 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player) -> bool {
         .map(|(index, _)| index);
     if let Some(index) = target {
         actors[index].health -= 20;
-        actors[index].health <= 0
+        if actors[index].health <= 0 {
+            actors[index].death_animation_time = Some(0.0);
+            true
+        } else {
+            false
+        }
     } else {
         false
     }
@@ -1481,7 +1527,14 @@ fn update_actors(
     health: &mut i32,
     delta: f32,
 ) {
-    for actor in actors.iter_mut().filter(|actor| actor.health > 0) {
+    for actor in actors.iter_mut() {
+        if actor.health <= 0 {
+            if let Some(time) = actor.death_animation_time {
+                actor.death_animation_time =
+                    Some((time + delta).min(actor_death_duration(actor.sprite)));
+            }
+            continue;
+        }
         let previous_position = (actor.x, actor.y);
         actor.attack_cooldown = (actor.attack_cooldown - delta).max(0.0);
         let dx = player.x - actor.x;
@@ -1679,6 +1732,7 @@ impl PreparedScene {
                     health,
                     attack_cooldown: 0.0,
                     attack_animation_remaining: 0.0,
+                    death_animation_time: None,
                     animation_time: 0.0,
                     angle: thing_angle as f32,
                 });
@@ -1793,7 +1847,10 @@ impl PreparedScene {
         }
         commands.bind_pipeline(self.sprite_pipeline.clone());
         commands.bind_uniform_buffer(uniform_buffer.clone());
-        for actor in actors.iter().filter(|actor| actor.health > 0) {
+        for actor in actors
+            .iter()
+            .filter(|actor| actor.health > 0 || actor.death_animation_time.is_some())
+        {
             let Some(sector) = bsp_sector_at(&self.map, actor.x, actor.y) else {
                 continue;
             };
@@ -1801,8 +1858,13 @@ impl PreparedScene {
                 continue;
             };
             let view_to_actor = (actor.y - player.y).atan2(actor.x - player.x).to_degrees();
-            let frame = actor_attack_frame(actor.sprite, actor.attack_animation_remaining)
-                .unwrap_or_else(|| actor_walk_frame(actor.sprite, actor.animation_time));
+            let frame = if actor.health <= 0 {
+                actor_death_frame(actor.sprite, actor.death_animation_time.unwrap_or_default())
+                    .unwrap_or(0)
+            } else {
+                actor_attack_frame(actor.sprite, actor.attack_animation_remaining)
+                    .unwrap_or_else(|| actor_walk_frame(actor.sprite, actor.animation_time))
+            };
             let sprite = &frames[frame][actor_view_rotation(actor.angle, view_to_actor)];
             let vertices =
                 sprite_vertices(actor.x, actor.y, sprite, player.angle, sector, sector.floor);
@@ -2100,6 +2162,31 @@ mod tests {
     }
 
     #[test]
+    fn enemy_death_states_advance_and_hold_the_final_corpse_frame() {
+        let profiles: [([u8; 4], &[usize], &[f32]); 4] = [
+            (*b"TROO", &[8, 9, 10, 11, 12], &[8.0, 8.0, 6.0, 6.0]),
+            (
+                *b"SARG",
+                &[8, 9, 10, 11, 12, 13],
+                &[8.0, 8.0, 4.0, 4.0, 4.0],
+            ),
+            (*b"POSS", &[7, 8, 9, 10, 11], &[5.0, 5.0, 5.0, 5.0]),
+            (*b"SPOS", &[7, 8, 9, 10, 11], &[5.0, 5.0, 5.0, 5.0]),
+        ];
+        for (sprite, frames, durations) in profiles {
+            let mut elapsed = 0.0;
+            for (&frame, &duration) in frames.iter().zip(durations) {
+                assert_eq!(actor_death_frame(sprite, elapsed / 35.0), Some(frame));
+                elapsed += duration;
+            }
+            let corpse = frames.last().copied();
+            assert_eq!(actor_death_frame(sprite, elapsed / 35.0), corpse);
+            assert_eq!(actor_death_frame(sprite, 100.0), corpse);
+            assert_eq!(actor_death_duration(sprite), elapsed / 35.0);
+        }
+    }
+
+    #[test]
     fn mirrored_sprite_views_reverse_billboard_texture_coordinates() {
         let sector = Sector {
             floor: 0.0,
@@ -2281,6 +2368,7 @@ mod tests {
             health: 20,
             attack_cooldown: 0.0,
             attack_animation_remaining: 0.0,
+            death_animation_time: None,
             animation_time: 0.0,
             angle: 0.0,
         }];
@@ -2301,8 +2389,21 @@ mod tests {
         };
         assert!(fire_weapon(&map, &mut actors, player));
         assert_eq!(actors[0].health, 0);
+        assert_eq!(actors[0].death_animation_time, Some(0.0));
+        let mut projectiles = Vec::new();
+        let mut health = 100;
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.1,
+        );
+        assert_eq!(actors[0].death_animation_time, Some(0.1));
 
         actors[0].health = 20;
+        actors[0].death_animation_time = None;
         let map = Map {
             vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
             lines: vec![[0, 1, 1, u16::MAX, u16::MAX]],
@@ -2354,6 +2455,7 @@ mod tests {
             health: 60,
             attack_cooldown: 0.0,
             attack_animation_remaining: 0.0,
+            death_animation_time: None,
             animation_time: 0.0,
             angle: 0.0,
         }];
@@ -2443,6 +2545,7 @@ mod tests {
             health: 20,
             attack_cooldown: 0.0,
             attack_animation_remaining: 0.0,
+            death_animation_time: None,
             animation_time: 0.0,
             angle: 0.0,
         }];
@@ -2515,6 +2618,7 @@ mod tests {
             health: 60,
             attack_cooldown: 0.0,
             attack_animation_remaining: 0.0,
+            death_animation_time: None,
             animation_time: 0.0,
             angle: 0.0,
         }];
