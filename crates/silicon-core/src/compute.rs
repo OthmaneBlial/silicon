@@ -121,7 +121,11 @@ impl Device {
         if input_count > MAX_INPUT_BUFFERS {
             return Err("compute SPIR-V supports at most 12 input storage buffers".into());
         }
-        let mut pipeline = self.create_compute_pipeline(compiled.program, compiled.local_size)?;
+        let mut pipeline = self.create_compute_pipeline_with_shared_memory(
+            compiled.program,
+            compiled.local_size,
+            compiled.shared_memory_vec4s,
+        )?;
         pipeline.storage_input_count = Some(input_count);
         pipeline.storage_only = true;
         Ok(pipeline)
@@ -1087,6 +1091,74 @@ mod tests {
                 .zip(input.as_slice())
                 .all(|(actual, source)| *actual == Vec4::new(1.0, 1.0, 1.0, 1.0) - *source)
         );
+    }
+
+    #[test]
+    fn dispatches_glsl_spirv_shared_workgroup_broadcast() {
+        const ELEMENTS: usize = 128;
+        const LOCAL_SIZE: usize = 64;
+        let device = Device::new();
+        let pipeline = device
+            .create_compute_pipeline_from_spirv(include_bytes!(
+                "../../../assets/shaders/compute_shared.comp.spv"
+            ))
+            .unwrap();
+        assert_eq!(pipeline.local_size(), [LOCAL_SIZE as u32, 1, 1]);
+        assert_eq!(pipeline.shared_memory_vec4s(), LOCAL_SIZE);
+
+        let input = device
+            .create_storage_buffer(
+                (0..ELEMENTS)
+                    .map(|i| Vec4::new(i as f32, i as f32 * 0.5, 1.0 - i as f32, 1.0))
+                    .collect(),
+            )
+            .unwrap();
+        let mut output = device
+            .create_storage_buffer(vec![Vec4::ZERO; ELEMENTS])
+            .unwrap();
+        let mut simd_output = device
+            .create_storage_buffer(vec![Vec4::ZERO; ELEMENTS])
+            .unwrap();
+        let scalar_stats = device
+            .dispatch_compute(&pipeline, [2, 1, 1], &[&input], &mut output)
+            .unwrap();
+        let simd_stats = device
+            .dispatch_compute_simd(&pipeline, [2, 1, 1], &[&input], &mut simd_output)
+            .unwrap();
+
+        assert_eq!(scalar_stats.invocations, ELEMENTS as u64);
+        assert_eq!(scalar_stats.workgroups, 2);
+        assert_eq!(simd_stats.invocations, ELEMENTS as u64);
+        assert_eq!(simd_output.as_slice(), output.as_slice());
+        for (index, &actual) in output.as_slice().iter().enumerate() {
+            assert_eq!(actual, input.as_slice()[index / LOCAL_SIZE * LOCAL_SIZE]);
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_glsl_spirv_workgroup_barrier_semantics() {
+        let mut bytes = include_bytes!("../../../assets/shaders/compute_shared.comp.spv").to_vec();
+        let module = silicon_shader::spirv::Module::parse(&bytes).unwrap();
+        let barrier = module
+            .instructions()
+            .iter()
+            .find(|op| op.opcode == 224)
+            .unwrap();
+        let semantics_id = barrier.operands[2];
+        let semantics = module
+            .instructions()
+            .iter()
+            .find(|op| op.opcode == 43 && op.operands[1] == semantics_id)
+            .unwrap();
+        let literal = (semantics.word + 3) * 4;
+        bytes[literal..literal + 4].copy_from_slice(&256u32.to_le_bytes());
+
+        let error = Device::new()
+            .create_compute_pipeline_from_spirv(&bytes)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("control barriers support Workgroup execution/memory scope"));
     }
 
     #[test]

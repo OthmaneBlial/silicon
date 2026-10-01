@@ -1,0 +1,21 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Input {
+    vec4 values[];
+} input_data;
+
+layout(set = 0, binding = 1, std430) writeonly buffer Output {
+    vec4 values[];
+} output_data;
+
+shared vec4 scratch[64];
+
+void main() {
+    uint local_index = gl_LocalInvocationID.x;
+    uint global_index = gl_GlobalInvocationID.x;
+    scratch[local_index] = input_data.values[global_index];
+    barrier();
+    output_data.values[global_index] = scratch[0];
+}

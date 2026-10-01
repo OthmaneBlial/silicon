@@ -32,6 +32,8 @@ pub struct Compiled {
     pub outputs: BTreeMap<u8, u8>,
     /// Workgroup dimensions declared by a compute entry point.
     pub local_size: [u32; 3],
+    /// One statically sized vec4 workgroup array, or zero when unused.
+    pub shared_memory_vec4s: usize,
     /// Number of read-only vec4 storage bindings, numbered from zero.
     pub storage_input_count: u8,
 }
@@ -54,6 +56,7 @@ pub fn name(op: u16) -> &'static str {
         23 => "OpTypeVector",
         24 => "OpTypeMatrix",
         25 => "OpTypeImage",
+        28 => "OpTypeArray",
         29 => "OpTypeRuntimeArray",
         27 => "OpTypeSampledImage",
         30 => "OpTypeStruct",
@@ -103,6 +106,7 @@ pub fn name(op: u16) -> &'static str {
         186 => "OpFOrdGreaterThan",
         188 => "OpFOrdLessThanEqual",
         190 => "OpFOrdGreaterThanEqual",
+        224 => "OpControlBarrier",
         245 => "OpPhi",
         247 => "OpSelectionMerge",
         248 => "OpLabel",
@@ -151,7 +155,8 @@ impl Op {
             19 | 20 | 17 | 248 | 249 => (1, 1),
             14 | 22 | 41 | 42 | 247 => (2, 2),
             16 => (2, 5),
-            21 | 23 | 24 | 32 | 43 | 61 | 83 | 112 | 127 | 168 | 250 => (3, 3),
+            21 | 23 | 24 | 28 | 32 | 43 | 61 | 83 | 112 | 127 | 168 | 250 => (3, 3),
+            224 => (3, 3),
             29 => (2, 2),
             59 => (3, 4),
             65 => (4, 5),
@@ -215,6 +220,7 @@ impl Op {
             16 | 71 | 72 => (None, vec![a[0]]),
             19 | 20 | 21 | 22 | 248 => (Some(a[0]), vec![]),
             23 | 24 | 27 | 29 | 33 => (Some(a[0]), vec![a[1]]),
+            28 => (Some(a[0]), vec![a[1], a[2]]),
             25 => (Some(a[0]), vec![a[1]]),
             30 => (Some(a[0]), a[1..].to_vec()),
             32 => (Some(a[0]), vec![a[2]]),
@@ -238,6 +244,7 @@ impl Op {
                 r.extend_from_slice(&a[2..]);
                 (Some(a[1]), r)
             }
+            224 => (None, a.clone()),
             61 | 81 | 83 | 112 | 127 | 168 => (Some(a[1]), vec![a[0], a[2]]),
             62 => (None, a.clone()),
             79
@@ -369,6 +376,7 @@ enum Ty {
     Sampled(u32),
     Struct(Vec<u32>),
     RuntimeArray(u32),
+    Array(u32, u32),
     Pointer(u32, u32),
     Function(u32),
 }
@@ -425,6 +433,7 @@ struct Compiler<'a> {
     written: BTreeSet<u8>,
     storage_inputs: BTreeSet<u8>,
     storage_output: Option<u8>,
+    shared_memory_vec4s: usize,
 }
 impl<'a> Compiler<'a> {
     fn new(module: &'a Module) -> Result<Self> {
@@ -568,6 +577,7 @@ impl<'a> Compiler<'a> {
             written: BTreeSet::new(),
             storage_inputs: BTreeSet::new(),
             storage_output: None,
+            shared_memory_vec4s: 0,
         })
     }
     fn ty(&self, id: u32) -> Result<Ty> {
@@ -634,6 +644,18 @@ impl<'a> Compiler<'a> {
         self.next += 1;
         self.ops.push(f(r));
         Ok(r)
+    }
+    fn shared_index(&mut self, dynamic_index: Option<u8>, path: &[usize]) -> Result<u8> {
+        if let Some(index) = dynamic_index {
+            return Ok(index);
+        }
+        let value = *path
+            .first()
+            .ok_or("workgroup access requires one array index")? as f32;
+        self.emit(|dst| Sir::Const {
+            dst,
+            value: Vec4::new(value, value, value, value),
+        })
     }
     fn decoration(&self, id: u32, member: Option<usize>) -> Decoration {
         self.decorations
@@ -706,6 +728,14 @@ impl<'a> Compiler<'a> {
         }
         if [1, 3].contains(&storage) && (d.binding.is_some() || d.set.is_some()) {
             return Err("interface variables cannot carry descriptor decorations".into());
+        }
+        if storage == 4
+            && (d.location.is_some()
+                || d.binding.is_some()
+                || d.set.is_some()
+                || d.builtin.is_some())
+        {
+            return Err("workgroup arrays cannot carry interface or descriptor decorations".into());
         }
         let t = self.ty(base)?;
         if a.len() == 4 && storage != 7 {
@@ -878,6 +908,18 @@ impl<'a> Compiler<'a> {
                     }
                 }
             }
+            4 => {
+                let Ty::Array(element, length) = t else {
+                    return Err("workgroup storage supports one fixed vec4 array".into());
+                };
+                if self.stage != Stage::Compute
+                    || self.ty(element)? != Ty::Vector(4)
+                    || self.shared_memory_vec4s != 0
+                {
+                    return Err("compute supports one fixed vec4 workgroup array".into());
+                }
+                self.shared_memory_vec4s = length as usize;
+            }
             7 => {
                 self.value_lanes(base)?;
                 if d != Decoration::default() {
@@ -1009,6 +1051,22 @@ impl<'a> Compiler<'a> {
                 };
                 self.types.insert(a[0], Ty::Sampled(dimension));
             }
+            28 => {
+                if self.ty(a[1])? != Ty::Vector(4) {
+                    return Err("workgroup arrays support only vec4 elements".into());
+                }
+                let length = self.value(a[2])?;
+                if self.ty(length.ty)? != Ty::UInt {
+                    return Err("workgroup array length must be a uint32 constant".into());
+                }
+                let Value::Int(length) = length.value else {
+                    return Err("workgroup array length must be a uint32 constant".into());
+                };
+                if !(1..=4096).contains(&length) {
+                    return Err("workgroup vec4 arrays require 1 through 4096 elements".into());
+                }
+                self.types.insert(a[0], Ty::Array(a[1], length));
+            }
             29 => {
                 if self.ty(a[1])? != Ty::Vector(4) {
                     return Err("runtime arrays support only vec4 elements".into());
@@ -1030,7 +1088,7 @@ impl<'a> Compiler<'a> {
             }
             32 => {
                 self.ty(a[2])?;
-                if ![0, 1, 2, 3, 7].contains(&a[1]) {
+                if ![0, 1, 2, 3, 4, 7].contains(&a[1]) {
                     return Err("unsupported pointer storage class".into());
                 }
                 self.types.insert(a[0], Ty::Pointer(a[1], a[2]));
@@ -1108,6 +1166,32 @@ impl<'a> Compiler<'a> {
                 );
             }
             59 => self.variable(a)?,
+            224 => {
+                if self.stage != Stage::Compute || self.shared_memory_vec4s == 0 {
+                    return Err("control barriers require compute workgroup memory".into());
+                }
+                let mut operands = [0; 3];
+                for (slot, &id) in a.iter().enumerate() {
+                    let value = self.value(id)?;
+                    if self.ty(value.ty)? != Ty::UInt {
+                        return Err(
+                            "control barrier scopes and semantics must be uint32 constants".into(),
+                        );
+                    }
+                    let Value::Int(value) = value.value else {
+                        return Err(
+                            "control barrier scopes and semantics must be uint32 constants".into(),
+                        );
+                    };
+                    operands[slot] = value;
+                }
+                if operands != [2, 2, 264] {
+                    return Err(
+                        "control barriers support Workgroup execution/memory scope with AcquireRelease WorkgroupMemory semantics".into(),
+                    );
+                }
+                self.ops.push(Sir::WorkgroupBarrier);
+            }
             65 => {
                 let (root, mut path, mut dynamic_index, storage, mut base) = self.pointer(a[2])?;
                 let Ty::Pointer(result_storage, target) = self.ty(a[0])? else {
@@ -1134,6 +1218,27 @@ impl<'a> Compiler<'a> {
                                 return Err("runtime-array index requires an int32 value".into());
                             }
                             dynamic_index = Some(index);
+                            element
+                        }
+                        Ty::Array(element, length)
+                            if storage == 4
+                                && path.is_empty()
+                                && dynamic_index.is_none()
+                                && self.ty(target)? == self.ty(element)? =>
+                        {
+                            if !matches!(self.ty(index_value.ty)?, Ty::Int | Ty::UInt) {
+                                return Err("workgroup array index requires an int32 value".into());
+                            }
+                            match index_value.value {
+                                Value::Int(index) if index < length => path.push(index as usize),
+                                Value::Int(_) => {
+                                    return Err("workgroup array constant index is out of bounds".into());
+                                }
+                                Value::Reg(index, _) => dynamic_index = Some(index),
+                                _ => {
+                                    return Err("workgroup array index must be an int32 value".into());
+                                }
+                            }
                             element
                         }
                         Ty::Vector(n)
@@ -1231,6 +1336,15 @@ impl<'a> Compiler<'a> {
                             "compute shaders cannot load a write-only storage output".into()
                         );
                     }
+                    4 if self.stage == Stage::Compute
+                        && self.shared_memory_vec4s != 0
+                        && self.ty(base)? == Ty::Vector(4)
+                        && (dynamic_index.is_some() || path.len() == 1) =>
+                    {
+                        let index = self.shared_index(dynamic_index, &path)?;
+                        let r = self.emit(|dst| Sir::SharedLoad { dst, index })?;
+                        Value::Reg(r, false)
+                    }
                     2 if path.first() == Some(&0) => {
                         let uniform = d.binding.ok_or("uniform lacks binding")? as u8 * 4;
                         if self.ty(base)? == Ty::Matrix && path.len() == 1 {
@@ -1309,6 +1423,14 @@ impl<'a> Compiler<'a> {
                         let slot = self.slot(root, path.first().copied())?;
                         self.ops.push(Sir::Output { slot, src: r });
                         self.written.insert(slot);
+                    }
+                    4 if self.stage == Stage::Compute
+                        && self.shared_memory_vec4s != 0
+                        && self.ty(base)? == Ty::Vector(4)
+                        && (dynamic_index.is_some() || path.len() == 1) =>
+                    {
+                        let index = self.shared_index(dynamic_index, &path)?;
+                        self.ops.push(Sir::SharedStore { index, src: r });
                     }
                     7 if path.is_empty() => {
                         self.locals.insert(
@@ -2049,6 +2171,7 @@ impl<'a> Compiler<'a> {
             outputs: self.outputs,
             local_size: self.local_size.unwrap_or([1, 1, 1]),
             storage_input_count,
+            shared_memory_vec4s: self.shared_memory_vec4s,
         })
     }
 }
