@@ -204,10 +204,11 @@ can veer off target; melee remains accurate. The sample uses one ray per
 hitscan attack and omits Doom's fuzzy shadow rendering. The special-23 use line
 lowers its three tagged
 floors to their lowest neighboring height once. Matching red, yellow, or blue cards and
-skulls open special-28, special-27, and special-26 doors; use-only specials
-32/33/34 open and leave their matching blue/red/yellow keyed doors open, and
-special 31 does the same without a key. Other locked-door types and other
-crossing-triggered specials remain unsupported.
+skulls open special-28, special-27, and special-26 doors; crossing special 38
+also lowers tagged floors once. Use-only specials 32/33/34 open and leave their
+matching blue/red/yellow keyed doors open, and special 31 does the same without
+a key. Other locked-door types and crossing-triggered specials beyond 2, 10,
+38, and 88 remain unsupported.
 E1M1's four special-9 sectors add to a once-per-sector secret counter in the
 window title. Its three special-7 nukage sectors deal 5 HP every 32 game tics
 spent on them. A collected radiation suit prevents that damage for 60 seconds

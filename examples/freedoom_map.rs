@@ -38,6 +38,7 @@ const LINE_RED_LOCKED_DOOR: u16 = 28;
 const LINE_BLAZING_DOOR_RAISE: u16 = 117;
 const LINE_WALK_OPEN_DOOR: u16 = 2;
 const LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM: u16 = 10;
+const LINE_WALK_LOWER_FLOOR_TO_LOWEST: u16 = 38;
 const LINE_USE_DOWN_WAIT_UP_PLATFORM: u16 = 62;
 const LINE_USE_LOWER_FLOOR_TO_LOWEST: u16 = 23;
 const LINE_PLAT_DOWN_WAIT_UP: u16 = 88;
@@ -2998,6 +2999,7 @@ fn move_player(map: &Map, player: &mut Player, controls: Controls, delta: f32) -
                     line[5],
                     LINE_WALK_OPEN_DOOR
                         | LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM
+                        | LINE_WALK_LOWER_FLOOR_TO_LOWEST
                         | LINE_PLAT_DOWN_WAIT_UP
                 ) && crossed_line(map, origin, destination, line))
                 .then_some(index)
@@ -3203,7 +3205,11 @@ fn lower_to_lowest_floors(map: &mut Map, line_index: usize, active: &[Platform])
     let Some(line) = map.lines.get(line_index).copied() else {
         return Vec::new();
     };
-    if line[5] != LINE_USE_LOWER_FLOOR_TO_LOWEST || line[6] == 0 {
+    if !matches!(
+        line[5],
+        LINE_USE_LOWER_FLOOR_TO_LOWEST | LINE_WALK_LOWER_FLOOR_TO_LOWEST
+    ) || line[6] == 0
+    {
         return Vec::new();
     }
     let started = map
@@ -3223,7 +3229,7 @@ fn lower_to_lowest_floors(map: &mut Map, line_index: usize, active: &[Platform])
             Some(floor)
         })
         .collect::<Vec<_>>();
-    if !started.is_empty() {
+    if !started.is_empty() || line[5] == LINE_WALK_LOWER_FLOOR_TO_LOWEST {
         map.lines[line_index][5] = 0;
     }
     started
@@ -4520,6 +4526,11 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     }
                     LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM | LINE_PLAT_DOWN_WAIT_UP => {
                         let started = activate_walk_platform(&mut scene.map, line, &platforms);
+                        activated_sectors += started.len();
+                        platforms.extend(started);
+                    }
+                    LINE_WALK_LOWER_FLOOR_TO_LOWEST => {
+                        let started = lower_to_lowest_floors(&mut scene.map, line, &platforms);
                         activated_sectors += started.len();
                         platforms.extend(started);
                     }
@@ -6045,6 +6056,10 @@ mod tests {
         player.x = 0.0;
         assert_eq!(move_player(&map, &mut player, controls, 0.05), vec![0]);
 
+        map.lines[0][5] = LINE_WALK_LOWER_FLOOR_TO_LOWEST;
+        player.x = 0.0;
+        assert_eq!(move_player(&map, &mut player, controls, 0.05), vec![0]);
+
         map.lines[0][2] = 0;
         map.lines[0][4] = u16::MAX;
         player.x = 0.0;
@@ -6242,6 +6257,18 @@ mod tests {
         assert_eq!(map.sectors[1].floor, 0.0);
         assert_eq!(map.sectors[2].floor, 0.0);
         assert!(floors.is_empty());
+
+        map.sectors[1].floor = 64.0;
+        map.sectors[2].floor = 32.0;
+        map.lines[0][5] = LINE_WALK_LOWER_FLOOR_TO_LOWEST;
+        let walk_floors = lower_to_lowest_floors(&mut map, 0, &[]);
+        assert_eq!(walk_floors.len(), 2);
+        assert!(
+            walk_floors
+                .iter()
+                .all(|floor| floor.speed == FLOOR_SPEED && !floor.return_to_high)
+        );
+        assert_eq!(map.lines[0][5], 0);
     }
 
     #[test]

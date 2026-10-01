@@ -124,6 +124,9 @@ tag-3 line targets sectors 76, 126, and 129; their floor heights lower from
 id Software's
 [`P_UseSpecialLine` and `lowerFloorToLowest` action](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c)
 and [`EV_DoFloor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_floor.c).
+Crossing a special-38 line applies the same lower-to-lowest floor motion once,
+then clears the line. It is player-triggered, following id Software's
+[`P_CrossSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_spec.c).
 Collect a matching keycard or skull to open special-26 blue, special-27 yellow,
 or special-28 red doors. The prototype recognizes all six card/skull map-thing
 types and renders their WAD sprites; cards and skulls grant the same color key.
