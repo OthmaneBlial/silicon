@@ -146,6 +146,10 @@ Press `E` at a front-facing special-29 line to raise each tagged door, wait,
 then close it. The one-shot trigger clears after a door starts moving, matching
 the original `P_UseSpecialLine` action in
 [`p_switch.c`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c).
+Special 103 instead opens each tagged sector and leaves the doors open; its
+one-shot line clears only after a tagged door starts, as in the original
+[`P_UseSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c)
+and [`EV_DoDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c).
 Other locked-door action variants, enemy-triggered platform actions besides
 specials 10 and 88, and other line specials remain unsupported.
 

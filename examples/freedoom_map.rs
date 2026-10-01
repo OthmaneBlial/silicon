@@ -42,6 +42,7 @@ const LINE_WALK_RAISE_DOOR: u16 = 4;
 const LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM: u16 = 10;
 const LINE_WALK_LOWER_FLOOR_TO_LOWEST: u16 = 38;
 const LINE_USE_DOWN_WAIT_UP_PLATFORM: u16 = 62;
+const LINE_USE_OPEN_DOOR_ONCE: u16 = 103;
 const LINE_USE_LOWER_FLOOR_TO_LOWEST: u16 = 23;
 const LINE_PLAT_DOWN_WAIT_UP: u16 = 88;
 const LINE_EXIT_USE: u16 = 11;
@@ -3155,7 +3156,7 @@ fn activate_tagged_doors(map: &mut Map, line_index: usize, active: &[Door]) -> V
     };
     if !matches!(
         line[5],
-        LINE_WALK_OPEN_DOOR | LINE_WALK_RAISE_DOOR | LINE_DOOR_RAISE_ONCE
+        LINE_WALK_OPEN_DOOR | LINE_WALK_RAISE_DOOR | LINE_DOOR_RAISE_ONCE | LINE_USE_OPEN_DOOR_ONCE
     ) {
         return Vec::new();
     }
@@ -3177,7 +3178,7 @@ fn activate_tagged_doors(map: &mut Map, line_index: usize, active: &[Door]) -> V
             }
         })
         .collect();
-    if line[5] != LINE_DOOR_RAISE_ONCE || !started.is_empty() {
+    if !matches!(line[5], LINE_DOOR_RAISE_ONCE | LINE_USE_OPEN_DOOR_ONCE) || !started.is_empty() {
         map.lines[line_index][5] = 0;
     }
     started
@@ -4557,7 +4558,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 if matches!(special, LINE_EXIT_USE | LINE_SECRET_EXIT_USE) {
                     secret_exit = special == LINE_SECRET_EXIT_USE;
                     exited = true;
-                } else if special == LINE_DOOR_RAISE_ONCE {
+                } else if matches!(special, LINE_DOOR_RAISE_ONCE | LINE_USE_OPEN_DOOR_ONCE) {
                     let started = activate_tagged_doors(&mut scene.map, line, &doors);
                     activated_sectors += started.len();
                     doors.extend(started);
@@ -5827,6 +5828,8 @@ mod tests {
             y: 0.0,
             angle: 0.0,
         };
+        map.lines[1][5] = LINE_USE_OPEN_DOOR_ONCE;
+        assert_eq!(use_line(&map, player), Some((1, LINE_USE_OPEN_DOOR_ONCE)));
         map.lines[1][5] = LINE_DOOR_RAISE_ONCE;
         assert_eq!(use_line(&map, player), Some((1, LINE_DOOR_RAISE_ONCE)));
         map.lines[1][5] = LINE_EXIT_USE;
@@ -6224,6 +6227,37 @@ mod tests {
         ));
         assert_eq!(map.sectors[1].ceiling, 0.0);
         assert!(doors.is_empty());
+
+        map.lines[0][5] = LINE_USE_OPEN_DOOR_ONCE;
+        doors = activate_tagged_doors(&mut map, 0, &[]);
+        assert_eq!(map.lines[0][5], 0);
+        assert_eq!(doors.len(), 1);
+        assert!(!doors[0].auto_close);
+        assert!(update_doors(
+            &mut map,
+            &mut doors,
+            Player {
+                x: 200.0,
+                y: 0.0,
+                angle: 0.0,
+            },
+            &[],
+            4.0,
+        ));
+        assert_eq!(map.sectors[1].ceiling, 124.0);
+        assert!(doors.is_empty());
+        assert!(!update_doors(
+            &mut map,
+            &mut doors,
+            Player {
+                x: 200.0,
+                y: 0.0,
+                angle: 0.0,
+            },
+            &[],
+            DOOR_WAIT + 2.0,
+        ));
+        assert_eq!(map.sectors[1].ceiling, 124.0);
     }
 
     #[test]
