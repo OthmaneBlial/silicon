@@ -30,6 +30,51 @@ fn invalid_command_stream_never_changes_target() {
     assert!(Device.submit(&cmd, &mut r).is_err());
     assert_eq!(r.framebuffer.bytes(), before);
 }
+
+#[test]
+fn compute_storage_instructions_are_rejected_before_graphics_clear() {
+    use shader::Instruction::*;
+    use std::sync::Arc;
+
+    let vertex =
+        shader::Program::new(vec![Input { dst: 0, slot: 0 }, Output { slot: 0, src: 0 }]).unwrap();
+    let fragment = shader::Program::new(vec![
+        Const {
+            dst: 0,
+            value: Vec4::ZERO,
+        },
+        Input { dst: 1, slot: 0 },
+        StorageStore { index: 0, src: 1 },
+        Output { slot: 0, src: 1 },
+    ])
+    .unwrap();
+    let pipeline = Arc::new(ShaderPipeline {
+        state: Pipeline::default(),
+        vertex,
+        fragment,
+    });
+    let vertices = Device
+        .create_vertex_buffer(vec![
+            Vertex::new(math::Vec3::new(-1.0, -1.0, 0.5), Color::WHITE),
+            Vertex::new(math::Vec3::new(1.0, -1.0, 0.5), Color::WHITE),
+            Vertex::new(math::Vec3::new(-1.0, 1.0, 0.5), Color::WHITE),
+        ])
+        .unwrap();
+    let mut commands = Device.commands();
+    commands.begin_render_pass(Color::BLACK);
+    commands.bind_pipeline(pipeline);
+    commands.bind_vertex_buffer(vertices);
+    commands.draw(0, 3);
+    commands.end_render_pass();
+
+    let mut renderer = Renderer::new(8, 8).unwrap();
+    renderer.clear(Color::WHITE);
+    let before = renderer.framebuffer.bytes().to_vec();
+    assert!(commands.validate().is_err());
+    assert!(Device.submit(&commands, &mut renderer).is_err());
+    assert_eq!(renderer.framebuffer.bytes(), before);
+}
+
 #[test]
 fn selected_pixel_traces_executed_sir() {
     let c = demo::shader_cube(96, 64, 0.).unwrap();

@@ -17,8 +17,10 @@ The same `Device` also exposes an experimental SIR compute map kernel through
 `dispatch_compute_simd`. The `*_with_layouts` methods apply checked offset/stride
 layouts to each input and the output. Dispatch runs one SIR program per 3D
 invocation; SIMD uses four-lane SIR execution and a scalar tail. Shader-selected
-indexes, command buffers, shared memory, barriers, atomics and compute-stage
-SPIR-V are unsupported. See the [compute contract](compute.md),
+SIR compute programs also support bounded shader-selected storage loads and
+single-writer output stores. Command-buffer integration, shared memory,
+barriers, atomics and compute-stage SPIR-V are unsupported. See the
+[compute contract](compute.md),
 [vector-add example](../examples/compute_vector_add.rs), and
 [benchmark example](../examples/compute_bench.rs).
 

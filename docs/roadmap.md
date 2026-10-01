@@ -26,7 +26,7 @@ long-term. This repository ships working stages and labels the remaining work.
 | Anisotropic texture filtering | Derivative-aware 1×–16× sampling, minor-axis mip selection, focused unit test and side-by-side steep-angle scene |
 | GPU profiler | Command, vertex, primitive setup, coverage/depth, shader, and blend/write timing with render counters; headless presentation is marked unmeasured |
 | Stencil / transparency integration | Circular stencil portal constrains a textured cube and translucent overlay; scalar and SIMD four-band color/depth/stencil match |
-| Compute (phases 45–47, first slices) | Scalar and four-lane SIMD SIR map dispatch expose 3D global/local/workgroup IDs, read up to 12 vec4 buffers and write one vec4 per invocation; checked offset/stride layouts address interleaved records; vector-add and mat4-vector benchmarks compare Rust CPU loops with measured SIR paths; no shader-selected indexes, synchronization or compute SPIR-V |
+| Compute (phases 45–47, first slices) | Scalar and four-lane SIMD SIR dispatch expose 3D global/local/workgroup IDs, read up to 12 vec4 buffers by map or shader-selected index, and stage indexed output writes; checked offset/stride layouts address interleaved records, duplicate selected destinations are rejected, and vector-add/mat4-vector benchmarks compare Rust CPU loops with measured SIR paths; no synchronization or compute SPIR-V |
 | Image regression tests | Approved SIR cube PNG, exact backend comparisons and <=1 channel-step tolerance; failures save `output/shader_cube.diff.png` |
 | Fuzzing | cargo-fuzz targets cover SPIR-V parsing/lowering, capture/resource validation and bounded replay, plus triangle setup and texture sampling; see `docs/security.md` |
 | Safety review | Explicit input/resource bounds and targeted malformed-input tests; this is not a hostile-workload sandbox or process-wide memory budget |
@@ -39,17 +39,16 @@ long-term. This repository ships working stages and labels the remaining work.
 | Third-party demo (phase 69) | Khronos Vulkan-Samples `hello_triangle` at a pinned upstream commit; adapted vertex layout, upstream SPIR-V fragment shader, CPU framebuffer output and a color-interpolation integration test |
 | DOOM (phase 70, in progress) | Reads Freedoom 0.13.0 E1M1 and submits textured map geometry, two-sided masked middle textures, 29 cutout enemy billboards, nine pickup billboards, and a pistol through SILICON. BSP child bounds cull the horizontal view cone and per-mesh bounds test all six frustum planes; material batches draw front-to-back in coarse depth bands. The checked-in start view submits 4,046 triangles in 208 draws across 567 of 682 horizontal BSP leaves. The interactive prototype adds movement, basic collision, health and ammo pickups, player hitscan, pursuing melee enemies, line-of-sight hitscan attacks for former humans and shotgunners, imp fireball projectiles with three-frame impacts, four-frame enemy walk cycles, three-frame attack poses, death sequences and persistent corpses, and eight camera-relative sprite views. BSP wall occlusion, per-column portal clipping, enemy idle/pain/gib states, vertical projectile motion, and full Doom rules remain. See [Freedoom checkpoint](freedoom.md) |
 
-The compute path is a bounded map kernel with fixed offset/stride storage
-layouts. Shader-selected storage indexes and broader SIR control flow are more
-useful next steps than a JIT, which remains an advanced experiment until more
-interpreter evidence exists.
+The compute path has bounded map dispatch, checked structured layouts and
+shader-selected single-writer storage access. Broader SIR control flow and
+workgroup synchronization remain useful next steps before a JIT, which stays an
+advanced experiment until more interpreter evidence exists.
 Cube maps use cross-face bilinear filtering; implicit SPIR-V sampling is limited
 to an unmodified fragment input direction, and anisotropic SPIR-V sampling
 remains future work.
 
 Future research: multiple targets, full tile binning, loops and broader control flow,
-shader-selected storage addressing, shared memory, barriers, atomics and compute-stage
-SPIR-V, transformed implicit sampling,
+shared memory, barriers, atomics and compute-stage SPIR-V, transformed implicit sampling,
 anisotropic SPIR-V sampling, JIT, DOOM BSP wall occlusion and per-column portal
 clipping, advanced enemy states and full gameplay rules, and
 possibly a software ray-tracing unit.

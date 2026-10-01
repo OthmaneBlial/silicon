@@ -1,5 +1,5 @@
 //! Masked SIR execution: each component register holds four independent fragments.
-use crate::{Execution, Instruction, Program, Result, Trace, lanes::Lanes};
+use crate::{Execution, Instruction, Program, Result, Trace, lanes::Lanes, storage_index};
 use silicon_math::Vec4;
 type Register = [Lanes; 4];
 fn splat(v: Vec4) -> Register {
@@ -47,6 +47,35 @@ impl Program {
         implicit_lods: [&[f32]; 4],
         active: u8,
         mut sample: S,
+        tracing: [bool; 4],
+    ) -> Result<[Execution; 4]> {
+        self.execute4_with_storage(
+            inputs,
+            uniforms,
+            implicit_lods,
+            active,
+            &mut sample,
+            |_, _, _| Err("SIR storage operation used outside compute".into()),
+            |_, _, _| Err("SIR storage operation used outside compute".into()),
+            tracing,
+        )
+    }
+
+    /// Execute a packet with checked compute storage callbacks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute4_with_storage<
+        S: FnMut(usize, usize, Vec4) -> Result<Vec4>,
+        L: FnMut(usize, usize, usize) -> Result<Vec4>,
+        W: FnMut(usize, usize, Vec4) -> Result<()>,
+    >(
+        &self,
+        inputs: [&[Vec4]; 4],
+        uniforms: &[Vec4],
+        implicit_lods: [&[f32]; 4],
+        active: u8,
+        mut sample: S,
+        mut load_storage: L,
+        mut store_storage: W,
         tracing: [bool; 4],
     ) -> Result<[Execution; 4]> {
         if active & !15 != 0 {
@@ -183,6 +212,34 @@ impl Program {
                             Lanes(std::array::from_fn(|i| values[i].to_array()[component]))
                         }),
                     )
+                }
+                StorageLoad { dst, buffer, index } => {
+                    let mut values = [Vec4::ZERO; 4];
+                    for (i, value) in values.iter_mut().enumerate() {
+                        if enabled(i) {
+                            let index = storage_index(lane(regs[index as usize], i), pc)
+                                .map_err(|e| format!("{e}, lane {i}"))?;
+                            *value = load_storage(i, buffer as usize, index)
+                                .map_err(|e| format!("SIR instruction {pc}, lane {i}: {e}"))?;
+                        }
+                    }
+                    (
+                        Some(dst),
+                        std::array::from_fn(|c| {
+                            Lanes(std::array::from_fn(|i| values[i].to_array()[c]))
+                        }),
+                    )
+                }
+                StorageStore { index, src } => {
+                    for i in 0..4 {
+                        if enabled(i) {
+                            let index = storage_index(lane(regs[index as usize], i), pc)
+                                .map_err(|e| format!("{e}, lane {i}"))?;
+                            store_storage(i, index, lane(regs[src as usize], i))
+                                .map_err(|e| format!("SIR instruction {pc}, lane {i}: {e}"))?;
+                        }
+                    }
+                    (None, regs[src as usize])
                 }
                 Uniform { dst, slot } => (Some(dst), splat(get(slot)?)),
                 Const { dst, value } => (Some(dst), splat(value)),

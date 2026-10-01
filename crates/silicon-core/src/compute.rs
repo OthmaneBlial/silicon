@@ -4,6 +4,7 @@ use silicon_shader::{Instruction, Program};
 const MAX_WORKGROUP_SIZE: usize = 1024;
 const MAX_DISPATCH_INVOCATIONS: usize = 1_048_576;
 const MAX_STORAGE_VECTORS: usize = 1_048_576;
+const MAX_STORAGE_WRITES: usize = MAX_DISPATCH_INVOCATIONS;
 const MAX_INPUT_BUFFERS: usize = 12;
 const SIMT_WIDTH: usize = 4;
 
@@ -178,8 +179,8 @@ impl Device {
             return Ok(ComputeStats::default());
         };
 
-        let input_count = 4 + inputs.len();
         let mut results = vec![Vec4::ZERO; shape.invocations];
+        let mut stores = StagedWrites::new(output.len());
         let mut stats = ComputeStats {
             workgroups: shape.group_count as u64,
             invocations: shape.invocations as u64,
@@ -206,9 +207,9 @@ impl Device {
                                     workgroups,
                                     inputs,
                                     input_layouts,
-                                    input_count,
                                     [global, [lx, ly, lz], [wx, wy, wz]],
                                     linear,
+                                    &mut stores,
                                 )?;
                                 results[linear] = value;
                                 stats.instructions += instructions;
@@ -218,7 +219,7 @@ impl Device {
                 }
             }
         }
-        write_results(output, output_layout, &results);
+        commit_results(output, output_layout, &results, stores)?;
         Ok(stats)
     }
 
@@ -265,6 +266,7 @@ impl Device {
         };
         let input_count = 4 + inputs.len();
         let mut results = vec![Vec4::ZERO; shape.invocations];
+        let mut stores = StagedWrites::new(output.len());
         let mut stats = ComputeStats {
             workgroups: shape.group_count as u64,
             invocations: shape.invocations as u64,
@@ -291,12 +293,24 @@ impl Device {
                 &lane_inputs[2][..input_count],
                 &lane_inputs[3][..input_count],
             ];
-            let executions = pipeline.program.execute4(
+            let executions = pipeline.program.execute4_with_storage(
                 input_lanes,
                 &[],
                 [&[], &[], &[], &[]],
                 0b1111,
                 |_, _, _| Err("compute programs do not sample textures".into()),
+                |_, buffer, index| {
+                    inputs
+                        .get(buffer)
+                        .and_then(|buffer| buffer.values.get(index))
+                        .copied()
+                        .ok_or_else(|| {
+                            format!(
+                                "storage load from input buffer {buffer} at vec4 {index} is out of bounds"
+                            )
+                        })
+                },
+                |_, index, value| stores.stage(index, value),
                 [false; SIMT_WIDTH],
             )?;
             for (lane, execution) in executions.into_iter().enumerate() {
@@ -313,14 +327,14 @@ impl Device {
                 workgroups,
                 inputs,
                 input_layouts,
-                input_count,
                 [global, local, group],
                 linear,
+                &mut stores,
             )?;
             *result = value;
             stats.instructions += instructions;
         }
-        write_results(output, output_layout, &results);
+        commit_results(output, output_layout, &results, stores)?;
         Ok(stats)
     }
 }
@@ -360,6 +374,14 @@ fn dispatch_shape(
         .any(|op| matches!(op, Instruction::Input { slot, .. } if *slot as usize >= input_count))
     {
         return Err("compute program reads an unbound input slot".into());
+    }
+    if pipeline
+        .program
+        .instructions()
+        .iter()
+        .any(|op| matches!(op, Instruction::StorageLoad { buffer, .. } if *buffer as usize >= inputs.len()))
+    {
+        return Err("compute program reads an unbound storage buffer".into());
     }
     let group_count = workgroups
         .into_iter()
@@ -407,7 +429,50 @@ fn validate_storage_range(layout: &StorageLayout, count: usize, len: usize) -> R
     Ok(last)
 }
 
-fn write_results(output: &mut StorageBuffer, layout: StorageLayout, results: &[Vec4]) {
+struct StagedWrites {
+    output_len: usize,
+    values: Vec<(usize, Vec4)>,
+}
+
+impl StagedWrites {
+    fn new(output_len: usize) -> Self {
+        Self {
+            output_len,
+            values: Vec::new(),
+        }
+    }
+
+    fn stage(&mut self, index: usize, value: Vec4) -> std::result::Result<(), String> {
+        if index >= self.output_len {
+            return Err(format!(
+                "storage store to vec4 {index} is out of bounds for output length {}",
+                self.output_len
+            ));
+        }
+        if self.values.len() >= MAX_STORAGE_WRITES {
+            return Err(format!(
+                "compute dispatch exceeds {MAX_STORAGE_WRITES} staged storage writes"
+            ));
+        }
+        self.values.push((index, value));
+        Ok(())
+    }
+}
+
+fn commit_results(
+    output: &mut StorageBuffer,
+    layout: StorageLayout,
+    results: &[Vec4],
+    mut stores: StagedWrites,
+) -> Result<()> {
+    stores.values.sort_unstable_by_key(|(index, _)| *index);
+    if let Some(pair) = stores.values.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+        return Err(format!(
+            "compute storage writes contain duplicate destination vec4 {}; atomics are unsupported",
+            pair[0].0
+        )
+        .into());
+    }
     if layout.stride == 1 {
         let end = layout.offset + results.len();
         output.values[layout.offset..end].copy_from_slice(results);
@@ -416,6 +481,11 @@ fn write_results(output: &mut StorageBuffer, layout: StorageLayout, results: &[V
             output.values[layout.index(invocation)] = value;
         }
     }
+    // Explicit shader-selected stores follow map output writes and may overwrite them.
+    for (index, value) in stores.values {
+        output.values[index] = value;
+    }
+    Ok(())
 }
 
 fn invocation_ids(linear: usize, global_size: [u32; 3], local_size: [u32; 3]) -> [[u32; 3]; 3] {
@@ -436,11 +506,12 @@ fn scalar_invocation(
     workgroups: [u32; 3],
     inputs: &[&StorageBuffer],
     input_layouts: &[StorageLayout],
-    input_count: usize,
     ids: [[u32; 3]; 3],
     linear: usize,
+    stores: &mut StagedWrites,
 ) -> Result<(Vec4, u64)> {
     let mut shader_inputs = [Vec4::ZERO; 16];
+    let input_count = 4 + inputs.len();
     let [global, local, group] = ids;
     shader_inputs[0] = id(global);
     shader_inputs[1] = id(local);
@@ -449,10 +520,23 @@ fn scalar_invocation(
     for (slot, (buffer, layout)) in inputs.iter().zip(input_layouts).enumerate() {
         shader_inputs[4 + slot] = buffer.values[layout.index(linear)];
     }
-    let execution = pipeline.program.execute(
+    let execution = pipeline.program.execute_with_lod_and_storage(
         &shader_inputs[..input_count],
         &[],
+        &[],
         |_, _| Err("compute programs do not sample textures".into()),
+        |buffer, index| {
+            inputs
+                .get(buffer)
+                .and_then(|buffer| buffer.values.get(index))
+                .copied()
+                .ok_or_else(|| {
+                    format!(
+                        "storage load from input buffer {buffer} at vec4 {index} is out of bounds"
+                    )
+                })
+        },
+        |index, value| stores.stage(index, value),
         false,
     )?;
     Ok((execution.outputs[0], execution.instructions as u64))
@@ -515,6 +599,182 @@ mod tests {
         for i in 0..32 {
             assert_eq!(output.as_slice()[i], a.as_slice()[i] + b.as_slice()[i]);
         }
+    }
+
+    #[test]
+    fn shader_selected_storage_reads_and_writes_match_scalar_and_simd() {
+        use Instruction::*;
+        let device = Device::new();
+        let program = Program::new(vec![
+            Input { dst: 0, slot: 0 },
+            Const {
+                dst: 1,
+                value: Vec4::new(4.0, 0.0, 0.0, 0.0),
+            },
+            Sub { dst: 2, a: 1, b: 0 },
+            StorageLoad {
+                dst: 3,
+                buffer: 0,
+                index: 2,
+            },
+            Output { slot: 0, src: 3 },
+            Const {
+                dst: 4,
+                value: Vec4::new(5.0, 0.0, 0.0, 0.0),
+            },
+            Add { dst: 5, a: 0, b: 4 },
+            StorageStore { index: 5, src: 3 },
+        ])
+        .unwrap();
+        let pipeline = device.create_compute_pipeline(program, [1, 1, 1]).unwrap();
+        let input = device
+            .create_storage_buffer(
+                (0..5)
+                    .map(|i| Vec4::new(i as f32, i as f32, i as f32, i as f32))
+                    .collect(),
+            )
+            .unwrap();
+        let mut scalar = device.create_storage_buffer(vec![Vec4::ZERO; 10]).unwrap();
+        let mut simd = device.create_storage_buffer(vec![Vec4::ZERO; 10]).unwrap();
+
+        device
+            .dispatch_compute(&pipeline, [5, 1, 1], &[&input], &mut scalar)
+            .unwrap();
+        device
+            .dispatch_compute_simd(&pipeline, [5, 1, 1], &[&input], &mut simd)
+            .unwrap();
+
+        let expected: Vec<_> = (0..5)
+            .rev()
+            .map(|i| Vec4::new(i as f32, i as f32, i as f32, i as f32))
+            .collect();
+        assert_eq!(scalar.as_slice(), simd.as_slice());
+        assert_eq!(&scalar.as_slice()[..5], expected);
+        assert_eq!(&scalar.as_slice()[5..], expected);
+    }
+
+    #[test]
+    fn shader_selected_storage_errors_are_bounded_and_atomic() {
+        use Instruction::*;
+        let device = Device::new();
+        let sentinel = Vec4::new(-7.0, -7.0, -7.0, -7.0);
+        let out_of_bounds_load = Program::new(vec![
+            Input { dst: 0, slot: 0 },
+            StorageLoad {
+                dst: 1,
+                buffer: 0,
+                index: 0,
+            },
+            Output { slot: 0, src: 1 },
+        ])
+        .unwrap();
+        let pipeline = device
+            .create_compute_pipeline(out_of_bounds_load, [1, 1, 1])
+            .unwrap();
+        let input = device.create_storage_buffer(vec![Vec4::ZERO; 3]).unwrap();
+        let mut scalar = device.create_storage_buffer(vec![sentinel; 4]).unwrap();
+        let mut simd = device.create_storage_buffer(vec![sentinel; 4]).unwrap();
+        assert!(
+            device
+                .dispatch_compute(&pipeline, [1, 1, 1], &[], &mut scalar)
+                .is_err()
+        );
+        assert!(
+            device
+                .dispatch_compute(&pipeline, [4, 1, 1], &[&input], &mut scalar)
+                .is_err()
+        );
+        assert!(
+            device
+                .dispatch_compute_simd(&pipeline, [4, 1, 1], &[&input], &mut simd)
+                .is_err()
+        );
+        assert_eq!(scalar.as_slice(), &[sentinel; 4]);
+        assert_eq!(simd.as_slice(), &[sentinel; 4]);
+
+        let invalid_index = Program::new(vec![
+            Const {
+                dst: 0,
+                value: Vec4::new(1.5, 0.0, 0.0, 0.0),
+            },
+            StorageLoad {
+                dst: 1,
+                buffer: 0,
+                index: 0,
+            },
+            Output { slot: 0, src: 1 },
+        ])
+        .unwrap();
+        let pipeline = device
+            .create_compute_pipeline(invalid_index, [1, 1, 1])
+            .unwrap();
+        let one_value = device.create_storage_buffer(vec![Vec4::ZERO]).unwrap();
+        assert!(
+            device
+                .dispatch_compute(&pipeline, [4, 1, 1], &[&one_value], &mut scalar)
+                .is_err()
+        );
+        assert!(
+            device
+                .dispatch_compute_simd(&pipeline, [4, 1, 1], &[&one_value], &mut simd)
+                .is_err()
+        );
+        assert_eq!(scalar.as_slice(), &[sentinel; 4]);
+        assert_eq!(simd.as_slice(), &[sentinel; 4]);
+
+        let out_of_bounds_store = Program::new(vec![
+            Input { dst: 0, slot: 0 },
+            Const {
+                dst: 1,
+                value: Vec4::new(4.0, 0.0, 0.0, 0.0),
+            },
+            StorageStore { index: 1, src: 0 },
+            Output { slot: 0, src: 0 },
+        ])
+        .unwrap();
+        let pipeline = device
+            .create_compute_pipeline(out_of_bounds_store, [1, 1, 1])
+            .unwrap();
+        assert!(
+            device
+                .dispatch_compute(&pipeline, [4, 1, 1], &[], &mut scalar)
+                .is_err()
+        );
+        assert!(
+            device
+                .dispatch_compute_simd(&pipeline, [4, 1, 1], &[], &mut simd)
+                .is_err()
+        );
+        assert_eq!(scalar.as_slice(), &[sentinel; 4]);
+        assert_eq!(simd.as_slice(), &[sentinel; 4]);
+
+        let duplicate_store = Program::new(vec![
+            Const {
+                dst: 0,
+                value: Vec4::ZERO,
+            },
+            Input { dst: 1, slot: 0 },
+            StorageStore { index: 0, src: 1 },
+            Output { slot: 0, src: 1 },
+        ])
+        .unwrap();
+        let pipeline = device
+            .create_compute_pipeline(duplicate_store, [1, 1, 1])
+            .unwrap();
+        let mut output = device.create_storage_buffer(vec![sentinel; 4]).unwrap();
+        let mut scalar_output = device.create_storage_buffer(vec![sentinel; 4]).unwrap();
+        assert!(
+            device
+                .dispatch_compute(&pipeline, [4, 1, 1], &[], &mut scalar_output)
+                .is_err()
+        );
+        assert!(
+            device
+                .dispatch_compute_simd(&pipeline, [4, 1, 1], &[], &mut output)
+                .is_err()
+        );
+        assert_eq!(scalar_output.as_slice(), &[sentinel; 4]);
+        assert_eq!(output.as_slice(), &[sentinel; 4]);
     }
 
     #[test]

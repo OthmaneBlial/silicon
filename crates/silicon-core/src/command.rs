@@ -561,6 +561,23 @@ impl CommandBuffer {
                         .vertex
                         .instructions()
                         .iter()
+                        .chain(pipeline.fragment.instructions())
+                        .any(|op| {
+                            matches!(
+                                op,
+                                Instruction::StorageLoad { .. } | Instruction::StorageStore { .. }
+                            )
+                        })
+                    {
+                        return Err(error(
+                            "compute storage instructions are not supported by graphics pipelines",
+                        )
+                        .into());
+                    }
+                    if pipeline
+                        .vertex
+                        .instructions()
+                        .iter()
                         .any(|op| matches!(op, Instruction::Discard))
                     {
                         return Err(error("discard is only allowed in fragment shaders").into());

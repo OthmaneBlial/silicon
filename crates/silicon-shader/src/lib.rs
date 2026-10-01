@@ -208,6 +208,17 @@ pub enum Instruction {
         dst: u8,
         src: u8,
     },
+    /// Load a vec4 from the selected compute input buffer at `index.x`.
+    StorageLoad {
+        dst: u8,
+        buffer: u8,
+        index: u8,
+    },
+    /// Stage a vec4 write to the compute output buffer at `index.x`.
+    StorageStore {
+        index: u8,
+        src: u8,
+    },
 }
 impl Instruction {
     /// Visit sources before the destination, including repeated source operands.
@@ -279,6 +290,15 @@ impl Instruction {
                 dst
             }
             Output { src, .. } => {
+                *src = f(*src, false)?;
+                return Ok(());
+            }
+            StorageLoad { dst, index, .. } => {
+                *index = f(*index, false)?;
+                dst
+            }
+            StorageStore { index, src } => {
+                *index = f(*index, false)?;
                 *src = f(*src, false)?;
                 return Ok(());
             }
@@ -416,6 +436,18 @@ impl Program {
                         return Err(format!("SIR instruction {pc}: input slot exceeds 15"));
                     }
                     Some(dst)
+                }
+                Instruction::StorageLoad { dst, buffer, index } => {
+                    source(index)?;
+                    if buffer >= 16 {
+                        return Err(format!("SIR instruction {pc}: storage buffer exceeds 15"));
+                    }
+                    Some(dst)
+                }
+                Instruction::StorageStore { index, src } => {
+                    source(index)?;
+                    source(src)?;
+                    None
                 }
                 Instruction::Uniform { dst, slot } => {
                     if slot >= 64 {
@@ -582,6 +614,32 @@ impl Program {
         mut sample: S,
         tracing: bool,
     ) -> Result<Execution> {
+        self.execute_with_lod_and_storage(
+            inputs,
+            uniforms,
+            implicit_lods,
+            &mut sample,
+            |_, _| Err("SIR storage operation used outside compute".into()),
+            |_, _| Err("SIR storage operation used outside compute".into()),
+            tracing,
+        )
+    }
+    /// Execute with explicit compute storage access handlers.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_with_lod_and_storage<
+        S: FnMut(usize, Vec4) -> Result<Vec4>,
+        L: FnMut(usize, usize) -> Result<Vec4>,
+        W: FnMut(usize, Vec4) -> Result<()>,
+    >(
+        &self,
+        inputs: &[Vec4],
+        uniforms: &[Vec4],
+        implicit_lods: &[f32],
+        mut sample: S,
+        mut load_storage: L,
+        mut store_storage: W,
+        tracing: bool,
+    ) -> Result<Execution> {
         let mut regs = [Vec4::ZERO; 64];
         let mut result = Execution {
             outputs: [Vec4::ZERO; 8],
@@ -693,6 +751,21 @@ impl Program {
                         .copied()
                         .ok_or_else(|| format!("SIR instruction {pc}: missing input {slot}"))?,
                 ),
+                Instruction::StorageLoad { dst, buffer, index } => {
+                    let index = storage_index(regs[index as usize], pc)?;
+                    (
+                        Some(dst),
+                        load_storage(buffer as usize, index)
+                            .map_err(|e| format!("SIR instruction {pc}: {e}"))?,
+                    )
+                }
+                Instruction::StorageStore { index, src } => {
+                    let index = storage_index(regs[index as usize], pc)?;
+                    let value = regs[src as usize];
+                    store_storage(index, value)
+                        .map_err(|e| format!("SIR instruction {pc}: {e}"))?;
+                    (None, value)
+                }
                 Instruction::Uniform { dst, slot } => (Some(dst), get(slot)?),
                 Instruction::Const { dst, value } => (Some(dst), value),
                 Instruction::Neg { dst, src } => (
@@ -897,6 +970,16 @@ impl Program {
         }
         Ok(result)
     }
+}
+
+fn storage_index(value: Vec4, instruction: usize) -> Result<usize> {
+    let index = value.x;
+    if !index.is_finite() || index < 0.0 || index.fract() != 0.0 {
+        return Err(format!(
+            "SIR instruction {instruction}: storage index must be a finite non-negative integer in x"
+        ));
+    }
+    Ok(index as usize)
 }
 /// Float arithmetic across four independent SIR invocations.
 pub fn packet_backend_name() -> &'static str {

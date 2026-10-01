@@ -13,9 +13,18 @@ SIMD4 counterpart accept one `StorageLayout` per input plus an output layout.
 For invocation `i`, each layout addresses vec4 element `offset + i * stride`;
 this supports interleaved records while retaining one same-position element per
 invocation. Dispatch checks stride arithmetic and every addressed range before
-running, then commits the staged output only after all invocations succeed.
-The shader cannot choose a storage index; general indexed loads and stores
-remain future work.
+running.
+
+SIR `StorageLoad { dst, buffer, index }` reads an absolute vec4 index from one
+bound input buffer, and `StorageStore { index, src }` stages an absolute vec4
+write to the output buffer. The index comes from `index.x` and must be a finite,
+non-negative integer. Shader-selected loads check the chosen buffer and address
+at execution time; layout-based `Input` reads still use their checked
+offset/stride. Stores are checked against the output length, capped at 1,048,576
+per dispatch, and committed only after all invocations succeed. Duplicate
+shader-selected destinations fail the dispatch before commit; explicit stores
+run after map output writes and can overwrite them. This provides deterministic
+single-writer scatter without atomics.
 
 Run the vector-add proof:
 
@@ -50,7 +59,7 @@ finite vec4 values. Dispatch results are staged and copied to the output only
 after every invocation succeeds, so a failed shader leaves output unchanged.
 
 This is an initial data-parallel SIR path, not general compute compatibility.
-Programs cannot bind uniforms or textures, perform shader-selected storage
-addressing, write multiple outputs, synchronize workgroups, use shared memory or atomics, or
-load compute-stage SPIR-V. Dispatch is synchronous; command-buffer capture/replay
-and C API support are not included yet.
+Programs cannot bind uniforms or textures, write multiple map outputs,
+synchronize workgroups, use shared memory or atomics, or load compute-stage
+SPIR-V. Dispatch is synchronous; command-buffer capture/replay and C API support
+are not included yet.

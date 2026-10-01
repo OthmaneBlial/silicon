@@ -42,6 +42,8 @@ explicit LOD; `SampleImplicit` gets LOD from a separate per-texture invocation
 array, so derivative metadata does not contaminate SPIR-V vector arithmetic.
 `SampleCube` uses xyz direction and w explicit LOD; `SampleCubeImplicit` gets its
 LOD from the same per-texture array.
+`StorageLoad` and `StorageStore` are compute-only: they select checked vec4
+addresses through the indexed storage callbacks. See the [compute contract](compute.md).
 `Discard` ends the fragment invocation without color, depth or stencil-pass writes.
 Vertex pipelines reject it before submission changes the framebuffer. Native Rust
 shaders may also return `None` to discard.
