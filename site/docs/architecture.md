@@ -45,10 +45,11 @@ An experimental compute path reuses SIR for bounded data-parallel map kernels.
 `Device::dispatch_compute` supplies 3D invocation IDs, reads same-position vec4
 storage inputs and stages one vec4 output per invocation. Optional checked
 offset/stride layouts address interleaved records. SIR can also load selected
-vec4 indexes and stage single-writer stores into the output. The scalar
-reference and four-lane SIMD path are synchronous and outside the graphics
-command stream; shared memory, barriers, atomics and compute SPIR-V remain
-unsupported. See the [compute contract](compute.md).
+vec4 indexes and stage single-writer stores into the output. Workgroups can use
+zeroed shared vec4 memory and explicit barriers; the scalar scheduler checks
+barrier convergence and shared-memory races. These synchronous paths are outside
+the graphics command stream; cross-workgroup synchronization, atomics and
+compute SPIR-V remain unsupported. See the [compute contract](compute.md).
 
 Resources use typed, reference-counted owned buffers. Commands keep their data
 alive independently of the creating code. Mapping exposes a read-only slice.

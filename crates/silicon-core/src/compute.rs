@@ -5,6 +5,7 @@ const MAX_WORKGROUP_SIZE: usize = 1024;
 const MAX_DISPATCH_INVOCATIONS: usize = 1_048_576;
 const MAX_STORAGE_VECTORS: usize = 1_048_576;
 const MAX_STORAGE_WRITES: usize = MAX_DISPATCH_INVOCATIONS;
+const MAX_SHARED_VECTORS: usize = 4096;
 const MAX_INPUT_BUFFERS: usize = 12;
 const SIMT_WIDTH: usize = 4;
 
@@ -70,11 +71,16 @@ impl StorageBuffer {
 pub struct ComputePipeline {
     program: Program,
     local_size: [u32; 3],
+    shared_memory_vec4s: usize,
 }
 
 impl ComputePipeline {
     pub fn local_size(&self) -> [u32; 3] {
         self.local_size
+    }
+
+    pub fn shared_memory_vec4s(&self) -> usize {
+        self.shared_memory_vec4s
     }
 }
 
@@ -98,12 +104,37 @@ impl Device {
         program: Program,
         local_size: [u32; 3],
     ) -> Result<ComputePipeline> {
+        self.create_compute_pipeline_with_shared_memory(program, local_size, 0)
+    }
+
+    /// Create a pipeline with zero-initialized per-workgroup vec4 memory.
+    pub fn create_compute_pipeline_with_shared_memory(
+        &self,
+        program: Program,
+        local_size: [u32; 3],
+        shared_memory_vec4s: usize,
+    ) -> Result<ComputePipeline> {
+        if shared_memory_vec4s > MAX_SHARED_VECTORS {
+            return Err("compute workgroup shared memory exceeds 4096 vec4 values".into());
+        }
         let invocations = local_size
             .into_iter()
             .try_fold(1usize, |n, axis| n.checked_mul(axis as usize))
             .ok_or("compute workgroup size overflows")?;
         if local_size.contains(&0) || invocations > MAX_WORKGROUP_SIZE {
             return Err("compute workgroup requires 1..1024 local invocations".into());
+        }
+        if shared_memory_vec4s == 0
+            && program.instructions().iter().any(|op| {
+                matches!(
+                    op,
+                    Instruction::SharedLoad { .. } | Instruction::SharedStore { .. }
+                )
+            })
+        {
+            return Err(
+                "compute shared-memory instructions require a nonzero shared-memory binding".into(),
+            );
         }
         for op in program.instructions() {
             match op {
@@ -131,6 +162,7 @@ impl Device {
         Ok(ComputePipeline {
             program,
             local_size,
+            shared_memory_vec4s,
         })
     }
 
@@ -178,6 +210,18 @@ impl Device {
         else {
             return Ok(ComputeStats::default());
         };
+
+        if uses_workgroup_executor(&pipeline.program) {
+            return dispatch_workgroups_scalar(
+                pipeline,
+                workgroups,
+                inputs,
+                input_layouts,
+                output,
+                output_layout,
+                shape,
+            );
+        }
 
         let mut results = vec![Vec4::ZERO; shape.invocations];
         let mut stores = StagedWrites::new(output.len());
@@ -253,6 +297,16 @@ impl Device {
         output: &mut StorageBuffer,
         output_layout: StorageLayout,
     ) -> Result<ComputeStats> {
+        if uses_workgroup_executor(&pipeline.program) {
+            return self.dispatch_compute_with_layouts(
+                pipeline,
+                workgroups,
+                inputs,
+                input_layouts,
+                output,
+                output_layout,
+            );
+        }
         let Some(shape) = dispatch_shape(
             pipeline,
             workgroups,
@@ -343,6 +397,101 @@ struct DispatchShape {
     group_count: usize,
     invocations: usize,
     global_size: [u32; 3],
+}
+
+fn uses_workgroup_executor(program: &Program) -> bool {
+    program.instructions().iter().any(|op| {
+        matches!(
+            op,
+            Instruction::SharedLoad { .. }
+                | Instruction::SharedStore { .. }
+                | Instruction::WorkgroupBarrier
+        )
+    })
+}
+
+fn dispatch_workgroups_scalar(
+    pipeline: &ComputePipeline,
+    workgroups: [u32; 3],
+    inputs: &[&StorageBuffer],
+    input_layouts: &[StorageLayout],
+    output: &mut StorageBuffer,
+    output_layout: StorageLayout,
+    shape: DispatchShape,
+) -> Result<ComputeStats> {
+    let input_count = 4 + inputs.len();
+    let local_count = pipeline.local_size.iter().map(|&v| v as usize).product();
+    let mut results = vec![Vec4::ZERO; shape.invocations];
+    let mut stores = StagedWrites::new(output.len());
+    let mut stats = ComputeStats {
+        workgroups: shape.group_count as u64,
+        invocations: shape.invocations as u64,
+        ..ComputeStats::default()
+    };
+    let [size_x, size_y, _] = shape.global_size;
+
+    for wz in 0..workgroups[2] {
+        for wy in 0..workgroups[1] {
+            for wx in 0..workgroups[0] {
+                let [local_x, local_y, local_z] = pipeline.local_size;
+                let mut local_inputs = Vec::with_capacity(local_count);
+                let mut linears = Vec::with_capacity(local_count);
+                for lz in 0..local_z {
+                    for ly in 0..local_y {
+                        for lx in 0..local_x {
+                            let global = [wx * local_x + lx, wy * local_y + ly, wz * local_z + lz];
+                            let linear = global[0] as usize
+                                + size_x as usize
+                                    * (global[1] as usize + size_y as usize * global[2] as usize);
+                            let mut shader_inputs = [Vec4::ZERO; 16];
+                            shader_inputs[0] = id(global);
+                            shader_inputs[1] = id([lx, ly, lz]);
+                            shader_inputs[2] = id([wx, wy, wz]);
+                            shader_inputs[3] = id(workgroups);
+                            for (slot, (buffer, layout)) in
+                                inputs.iter().zip(input_layouts).enumerate()
+                            {
+                                shader_inputs[4 + slot] = buffer.values[layout.index(linear)];
+                            }
+                            local_inputs.push(shader_inputs);
+                            linears.push(linear);
+                        }
+                    }
+                }
+                let input_views: Vec<_> = local_inputs
+                    .iter()
+                    .map(|values| &values[..input_count])
+                    .collect();
+                let mut shared = vec![Vec4::ZERO; pipeline.shared_memory_vec4s];
+                let executions = pipeline.program.execute_workgroup(
+                    &input_views,
+                    &mut shared,
+                    |local, buffer, index| {
+                        inputs
+                            .get(buffer)
+                            .and_then(|buffer| buffer.values.get(index))
+                            .copied()
+                            .ok_or_else(|| {
+                                format!(
+                                    "local invocation {local}: storage load from input buffer {buffer} at vec4 {index} is out of bounds"
+                                )
+                            })
+                    },
+                    |local, index, value| {
+                        stores
+                            .stage(index, value)
+                            .map_err(|error| format!("local invocation {local}: {error}"))
+                    },
+                )?;
+                for (linear, execution) in linears.into_iter().zip(executions) {
+                    results[linear] = execution.outputs[0];
+                    stats.instructions += execution.instructions as u64;
+                }
+            }
+        }
+    }
+    commit_results(output, output_layout, &results, stores)?;
+    Ok(stats)
 }
 
 fn packed_layouts(count: usize) -> Result<[StorageLayout; MAX_INPUT_BUFFERS]> {
@@ -774,6 +923,158 @@ mod tests {
                 .is_err()
         );
         assert_eq!(scalar_output.as_slice(), &[sentinel; 4]);
+        assert_eq!(output.as_slice(), &[sentinel; 4]);
+    }
+
+    #[test]
+    fn shared_memory_barriers_exchange_values_within_each_workgroup() {
+        use Instruction::*;
+        let device = Device::new();
+        let program = Program::new(vec![
+            Input { dst: 0, slot: 0 },
+            StorageLoad {
+                dst: 1,
+                buffer: 0,
+                index: 0,
+            },
+            Input { dst: 2, slot: 1 },
+            SharedStore { index: 2, src: 1 },
+            WorkgroupBarrier,
+            Const {
+                dst: 3,
+                value: Vec4::new(3.0, 0.0, 0.0, 0.0),
+            },
+            Sub { dst: 4, a: 3, b: 2 },
+            SharedLoad { dst: 5, index: 4 },
+            Output { slot: 0, src: 5 },
+        ])
+        .unwrap();
+        let pipeline = device
+            .create_compute_pipeline_with_shared_memory(program, [4, 1, 1], 4)
+            .unwrap();
+        let input = device
+            .create_storage_buffer(
+                (1..=8)
+                    .map(|i| Vec4::new(i as f32, i as f32, i as f32, i as f32))
+                    .collect(),
+            )
+            .unwrap();
+        let mut scalar = device.create_storage_buffer(vec![Vec4::ZERO; 8]).unwrap();
+        let mut simd = device.create_storage_buffer(vec![Vec4::ZERO; 8]).unwrap();
+        let scalar_stats = device
+            .dispatch_compute(&pipeline, [2, 1, 1], &[&input], &mut scalar)
+            .unwrap();
+        let simd_stats = device
+            .dispatch_compute_simd(&pipeline, [2, 1, 1], &[&input], &mut simd)
+            .unwrap();
+
+        assert_eq!(pipeline.shared_memory_vec4s(), 4);
+        assert_eq!(scalar_stats, simd_stats);
+        assert_eq!(scalar.as_slice(), simd.as_slice());
+        assert_eq!(
+            scalar.as_slice(),
+            &[
+                Vec4::new(4.0, 4.0, 4.0, 4.0),
+                Vec4::new(3.0, 3.0, 3.0, 3.0),
+                Vec4::new(2.0, 2.0, 2.0, 2.0),
+                Vec4::new(1.0, 1.0, 1.0, 1.0),
+                Vec4::new(8.0, 8.0, 8.0, 8.0),
+                Vec4::new(7.0, 7.0, 7.0, 7.0),
+                Vec4::new(6.0, 6.0, 6.0, 6.0),
+                Vec4::new(5.0, 5.0, 5.0, 5.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn workgroup_barrier_divergence_and_shared_races_fail_atomically() {
+        use Instruction::*;
+        let device = Device::new();
+        let sentinel = Vec4::new(-9.0, -9.0, -9.0, -9.0);
+        let divergent = Program::new(vec![
+            Input { dst: 0, slot: 0 },
+            If { condition: 0 },
+            WorkgroupBarrier,
+            Else,
+            EndIf,
+            Output { slot: 0, src: 0 },
+        ])
+        .unwrap();
+        let pipeline = device
+            .create_compute_pipeline(divergent, [4, 1, 1])
+            .unwrap();
+        let mut output = device.create_storage_buffer(vec![sentinel; 4]).unwrap();
+        let error = device
+            .dispatch_compute(&pipeline, [1, 1, 1], &[], &mut output)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("barrier divergence"));
+        assert_eq!(output.as_slice(), &[sentinel; 4]);
+
+        let conflicting_writes = Program::new(vec![
+            Input { dst: 0, slot: 1 },
+            Const {
+                dst: 1,
+                value: Vec4::ZERO,
+            },
+            SharedStore { index: 1, src: 0 },
+            Output { slot: 0, src: 0 },
+        ])
+        .unwrap();
+        assert!(
+            device
+                .create_compute_pipeline(conflicting_writes.clone(), [4, 1, 1])
+                .is_err()
+        );
+        let pipeline = device
+            .create_compute_pipeline_with_shared_memory(conflicting_writes, [4, 1, 1], 1)
+            .unwrap();
+        let error = device
+            .dispatch_compute_simd(&pipeline, [1, 1, 1], &[], &mut output)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("shared-memory race"));
+        assert_eq!(output.as_slice(), &[sentinel; 4]);
+
+        let read_then_write = Program::new(vec![
+            Input { dst: 0, slot: 1 },
+            Const {
+                dst: 1,
+                value: Vec4::ZERO,
+            },
+            SharedLoad { dst: 2, index: 1 },
+            SharedStore { index: 1, src: 0 },
+            Output { slot: 0, src: 2 },
+        ])
+        .unwrap();
+        let pipeline = device
+            .create_compute_pipeline_with_shared_memory(read_then_write, [4, 1, 1], 1)
+            .unwrap();
+        let error = device
+            .dispatch_compute(&pipeline, [1, 1, 1], &[], &mut output)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("shared-memory race"));
+        assert_eq!(output.as_slice(), &[sentinel; 4]);
+
+        let out_of_bounds = Program::new(vec![
+            Input { dst: 0, slot: 1 },
+            Const {
+                dst: 1,
+                value: Vec4::new(1.0, 0.0, 0.0, 0.0),
+            },
+            SharedStore { index: 1, src: 0 },
+            Output { slot: 0, src: 0 },
+        ])
+        .unwrap();
+        let pipeline = device
+            .create_compute_pipeline_with_shared_memory(out_of_bounds, [4, 1, 1], 1)
+            .unwrap();
+        let error = device
+            .dispatch_compute(&pipeline, [1, 1, 1], &[], &mut output)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("shared-memory vec4 1 is out of bounds"));
         assert_eq!(output.as_slice(), &[sentinel; 4]);
     }
 

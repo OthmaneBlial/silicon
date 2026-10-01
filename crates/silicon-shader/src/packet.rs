@@ -241,6 +241,11 @@ impl Program {
                     }
                     (None, regs[src as usize])
                 }
+                SharedLoad { .. } | SharedStore { .. } | WorkgroupBarrier => {
+                    return Err(
+                        "SIR workgroup operations require synchronized scalar execution".into(),
+                    );
+                }
                 Uniform { dst, slot } => (Some(dst), splat(get(slot)?)),
                 Const { dst, value } => (Some(dst), splat(value)),
                 Neg { dst, src } => (Some(dst), std::array::from_fn(|i| -regs[src as usize][i])),

@@ -565,12 +565,16 @@ impl CommandBuffer {
                         .any(|op| {
                             matches!(
                                 op,
-                                Instruction::StorageLoad { .. } | Instruction::StorageStore { .. }
+                                Instruction::StorageLoad { .. }
+                                    | Instruction::StorageStore { .. }
+                                    | Instruction::SharedLoad { .. }
+                                    | Instruction::SharedStore { .. }
+                                    | Instruction::WorkgroupBarrier
                             )
                         })
                     {
                         return Err(error(
-                            "compute storage instructions are not supported by graphics pipelines",
+                            "compute-only instructions are not supported by graphics pipelines",
                         )
                         .into());
                     }

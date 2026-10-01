@@ -26,6 +26,21 @@ shader-selected destinations fail the dispatch before commit; explicit stores
 run after map output writes and can overwrite them. This provides deterministic
 single-writer scatter without atomics.
 
+`create_compute_pipeline_with_shared_memory` reserves up to 4,096 vec4s (64 KiB)
+per workgroup. The memory starts at zero for each group. SIR
+`SharedLoad { dst, index }` and `SharedStore { index, src }` use the same checked
+`index.x` format. `WorkgroupBarrier` pauses each invocation until all local
+invocations reach that same barrier, then resumes them with shared writes
+visible. If invocations take different barrier paths, dispatch returns a
+divergence error instead of waiting indefinitely.
+
+Within one barrier interval, shared accesses by different invocations may read
+the same element, but conflicting cross-invocation read/write or write/write
+accesses return a race error. Same-invocation accesses are ordered. A barrier
+starts a new interval. The scalar workgroup scheduler runs these synchronized
+programs for both dispatch entry points; the SIMD dispatch request uses this
+scalar scheduler for correctness. Other programs retain the SIMD4 path.
+
 Run the vector-add proof:
 
 ```sh
@@ -60,6 +75,6 @@ after every invocation succeeds, so a failed shader leaves output unchanged.
 
 This is an initial data-parallel SIR path, not general compute compatibility.
 Programs cannot bind uniforms or textures, write multiple map outputs,
-synchronize workgroups, use shared memory or atomics, or load compute-stage
-SPIR-V. Dispatch is synchronous; command-buffer capture/replay and C API support
-are not included yet.
+synchronize different workgroups, use atomics, or load compute-stage SPIR-V.
+Dispatch is synchronous; command-buffer capture/replay and C API support are not
+included yet.

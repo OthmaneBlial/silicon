@@ -1,10 +1,12 @@
 //! SIR: a bounded, validated vec4 register machine shared by both shader stages.
 use serde::{Deserialize, Serialize};
 use silicon_math::Vec4;
+use std::collections::HashMap;
 mod lanes;
 mod packet;
 pub mod spirv;
 pub type Result<T> = std::result::Result<T, String>;
+const MAX_WORKGROUP_INVOCATIONS: usize = 1024;
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum Comparison {
     Equal,
@@ -219,6 +221,18 @@ pub enum Instruction {
         index: u8,
         src: u8,
     },
+    /// Load one vec4 from workgroup memory at `index.x`.
+    SharedLoad {
+        dst: u8,
+        index: u8,
+    },
+    /// Store one vec4 to workgroup memory at `index.x`.
+    SharedStore {
+        index: u8,
+        src: u8,
+    },
+    /// Synchronize all invocations in the current workgroup.
+    WorkgroupBarrier,
 }
 impl Instruction {
     /// Visit sources before the destination, including repeated source operands.
@@ -302,6 +316,16 @@ impl Instruction {
                 *src = f(*src, false)?;
                 return Ok(());
             }
+            SharedLoad { dst, index } => {
+                *index = f(*index, false)?;
+                dst
+            }
+            SharedStore { index, src } => {
+                *index = f(*index, false)?;
+                *src = f(*src, false)?;
+                return Ok(());
+            }
+            WorkgroupBarrier => return Ok(()),
         };
         *dst = f(*dst, true)?;
         Ok(())
@@ -336,6 +360,86 @@ pub struct Execution {
     pub samples: usize,
     pub trace: Vec<Trace>,
     pub discarded: bool,
+}
+
+fn empty_execution() -> Execution {
+    Execution {
+        outputs: [Vec4::ZERO; 8],
+        instructions: 0,
+        samples: 0,
+        trace: Vec::new(),
+        discarded: false,
+    }
+}
+
+struct ExecutionState {
+    registers: [Vec4; 64],
+    result: Execution,
+    active: bool,
+    live: bool,
+    choice: bool,
+    selections: Vec<(bool, bool)>,
+    pc: usize,
+}
+
+impl ExecutionState {
+    fn new() -> Self {
+        Self {
+            registers: [Vec4::ZERO; 64],
+            result: empty_execution(),
+            active: true,
+            live: true,
+            choice: false,
+            selections: Vec::new(),
+            pc: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExecutionStatus {
+    Complete,
+    Barrier(usize),
+}
+
+#[derive(Default)]
+struct SharedAccess {
+    writer: Option<usize>,
+    readers: Vec<usize>,
+}
+
+impl SharedAccess {
+    fn read(&mut self, invocation: usize, index: usize) -> Result<()> {
+        if let Some(writer) = self.writer.filter(|&writer| writer != invocation) {
+            return Err(format!(
+                "shared-memory race at vec4 {index}: invocation {invocation} reads invocation {writer}'s write before a barrier"
+            ));
+        }
+        if !self.readers.contains(&invocation) {
+            self.readers.push(invocation);
+        }
+        Ok(())
+    }
+
+    fn write(&mut self, invocation: usize, index: usize) -> Result<()> {
+        if let Some(writer) = self.writer.filter(|&writer| writer != invocation) {
+            return Err(format!(
+                "shared-memory race at vec4 {index}: invocations {writer} and {invocation} write before a barrier"
+            ));
+        }
+        if let Some(reader) = self
+            .readers
+            .iter()
+            .copied()
+            .find(|&reader| reader != invocation)
+        {
+            return Err(format!(
+                "shared-memory race at vec4 {index}: invocation {invocation} writes after invocation {reader} reads before a barrier"
+            ));
+        }
+        self.writer = Some(invocation);
+        Ok(())
+    }
 }
 #[derive(Clone, Copy)]
 struct Definitions {
@@ -449,6 +553,16 @@ impl Program {
                     source(src)?;
                     None
                 }
+                Instruction::SharedLoad { dst, index } => {
+                    source(index)?;
+                    Some(dst)
+                }
+                Instruction::SharedStore { index, src } => {
+                    source(index)?;
+                    source(src)?;
+                    None
+                }
+                Instruction::WorkgroupBarrier => None,
                 Instruction::Uniform { dst, slot } => {
                     if slot >= 64 {
                         return Err("SIR uniform slot exceeds 63".into());
@@ -624,6 +738,69 @@ impl Program {
             tracing,
         )
     }
+    /// Run all local invocations through synchronized shared-memory barriers.
+    pub fn execute_workgroup<L, W>(
+        &self,
+        inputs: &[&[Vec4]],
+        shared: &mut [Vec4],
+        mut load_storage: L,
+        mut store_storage: W,
+    ) -> Result<Vec<Execution>>
+    where
+        L: FnMut(usize, usize, usize) -> Result<Vec4>,
+        W: FnMut(usize, usize, Vec4) -> Result<()>,
+    {
+        if inputs.is_empty() || inputs.len() > MAX_WORKGROUP_INVOCATIONS {
+            return Err("SIR workgroup requires 1..1024 local invocations".into());
+        }
+        let mut states: Vec<_> = (0..inputs.len()).map(|_| ExecutionState::new()).collect();
+        let mut accesses = HashMap::new();
+        loop {
+            let (mut barrier_pc, mut barrier_count, mut complete_count) = (None, 0, 0);
+            for (local_id, state) in states.iter_mut().enumerate() {
+                let mut sample = |_, _| Err("compute programs do not sample textures".into());
+                let mut load = |buffer, index| load_storage(local_id, buffer, index);
+                let mut store = |index, value| store_storage(local_id, index, value);
+                match self.execute_until_barrier(
+                    state,
+                    inputs[local_id],
+                    &[],
+                    &[],
+                    shared,
+                    &mut accesses,
+                    local_id,
+                    &mut sample,
+                    &mut load,
+                    &mut store,
+                    false,
+                )? {
+                    ExecutionStatus::Complete => complete_count += 1,
+                    ExecutionStatus::Barrier(pc) => {
+                        if let Some(expected) = barrier_pc
+                            && expected != pc
+                        {
+                            return Err(format!(
+                                "workgroup barrier divergence: invocations reached instructions {expected} and {pc}"
+                            ));
+                        }
+                        barrier_pc = Some(pc);
+                        barrier_count += 1;
+                    }
+                }
+            }
+            if complete_count == states.len() {
+                return Ok(states.into_iter().map(|state| state.result).collect());
+            }
+            if barrier_count == states.len() {
+                accesses.clear();
+                continue;
+            }
+            return Err(format!(
+                "workgroup barrier divergence: {complete_count} invocations completed and {barrier_count} reached instruction {}",
+                barrier_pc.map_or_else(|| "none".to_string(), |pc| pc.to_string())
+            ));
+        }
+    }
     /// Execute with explicit compute storage access handlers.
     #[allow(clippy::too_many_arguments)]
     pub fn execute_with_lod_and_storage<
@@ -635,22 +812,62 @@ impl Program {
         inputs: &[Vec4],
         uniforms: &[Vec4],
         implicit_lods: &[f32],
+        sample: S,
+        load_storage: L,
+        store_storage: W,
+        tracing: bool,
+    ) -> Result<Execution> {
+        let mut state = ExecutionState::new();
+        let mut shared = [];
+        let mut accesses = HashMap::new();
+        match self.execute_until_barrier(
+            &mut state,
+            inputs,
+            uniforms,
+            implicit_lods,
+            &mut shared,
+            &mut accesses,
+            0,
+            sample,
+            load_storage,
+            store_storage,
+            tracing,
+        )? {
+            ExecutionStatus::Complete => Ok(state.result),
+            ExecutionStatus::Barrier(pc) => Err(format!(
+                "SIR instruction {pc}: workgroup barrier used outside compute workgroup execution"
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_until_barrier<
+        S: FnMut(usize, Vec4) -> Result<Vec4>,
+        L: FnMut(usize, usize) -> Result<Vec4>,
+        W: FnMut(usize, Vec4) -> Result<()>,
+    >(
+        &self,
+        state: &mut ExecutionState,
+        inputs: &[Vec4],
+        uniforms: &[Vec4],
+        implicit_lods: &[f32],
+        shared: &mut [Vec4],
+        accesses: &mut HashMap<usize, SharedAccess>,
+        local_id: usize,
         mut sample: S,
         mut load_storage: L,
         mut store_storage: W,
         tracing: bool,
-    ) -> Result<Execution> {
-        let mut regs = [Vec4::ZERO; 64];
-        let mut result = Execution {
-            outputs: [Vec4::ZERO; 8],
-            instructions: 0,
-            samples: 0,
-            trace: Vec::new(),
-            discarded: false,
-        };
-        let (mut active, mut live, mut choice) = (true, true, false);
-        let mut selections = Vec::new();
-        for (pc, op) in self.ops.iter().enumerate() {
+    ) -> Result<ExecutionStatus> {
+        let mut regs = state.registers;
+        let mut result = std::mem::replace(&mut state.result, empty_execution());
+        let (mut active, mut live, mut choice) = (state.active, state.live, state.choice);
+        let mut selections = std::mem::take(&mut state.selections);
+        let mut next_pc = state.pc;
+        while next_pc < self.ops.len() {
+            let pc = next_pc;
+            next_pc += 1;
+            let op = &self.ops[pc];
             let executing = if matches!(op, Instruction::Else | Instruction::EndIf) {
                 selections.last().is_some_and(|&(parent, _)| parent && live)
             } else {
@@ -766,6 +983,39 @@ impl Program {
                         .map_err(|e| format!("SIR instruction {pc}: {e}"))?;
                     (None, value)
                 }
+                Instruction::SharedLoad { dst, index } => {
+                    let index = vector_index(regs[index as usize], pc, "shared-memory")?;
+                    let value = shared.get(index).copied().ok_or_else(|| {
+                        format!(
+                            "SIR instruction {pc}: shared-memory vec4 {index} is out of bounds for length {}",
+                            shared.len()
+                        )
+                    })?;
+                    accesses
+                        .entry(index)
+                        .or_default()
+                        .read(local_id, index)
+                        .map_err(|e| format!("SIR instruction {pc}: {e}"))?;
+                    (Some(dst), value)
+                }
+                Instruction::SharedStore { index, src } => {
+                    let index = vector_index(regs[index as usize], pc, "shared-memory")?;
+                    if index >= shared.len() {
+                        return Err(format!(
+                            "SIR instruction {pc}: shared-memory vec4 {index} is out of bounds for length {}",
+                            shared.len()
+                        ));
+                    }
+                    accesses
+                        .entry(index)
+                        .or_default()
+                        .write(local_id, index)
+                        .map_err(|e| format!("SIR instruction {pc}: {e}"))?;
+                    let value = regs[src as usize];
+                    shared[index] = value;
+                    (None, value)
+                }
+                Instruction::WorkgroupBarrier => (None, Vec4::ZERO),
                 Instruction::Uniform { dst, slot } => (Some(dst), get(slot)?),
                 Instruction::Const { dst, value } => (Some(dst), value),
                 Instruction::Neg { dst, src } => (
@@ -967,16 +1217,37 @@ impl Program {
                     value,
                 });
             }
+            if matches!(op, Instruction::WorkgroupBarrier) {
+                state.registers = regs;
+                state.result = result;
+                state.active = active;
+                state.live = live;
+                state.choice = choice;
+                state.selections = selections;
+                state.pc = next_pc;
+                return Ok(ExecutionStatus::Barrier(pc));
+            }
         }
-        Ok(result)
+        state.registers = regs;
+        state.result = result;
+        state.active = active;
+        state.live = live;
+        state.choice = choice;
+        state.selections = selections;
+        state.pc = next_pc;
+        Ok(ExecutionStatus::Complete)
     }
 }
 
 fn storage_index(value: Vec4, instruction: usize) -> Result<usize> {
+    vector_index(value, instruction, "storage")
+}
+
+fn vector_index(value: Vec4, instruction: usize, resource: &str) -> Result<usize> {
     let index = value.x;
     if !index.is_finite() || index < 0.0 || index.fract() != 0.0 {
         return Err(format!(
-            "SIR instruction {instruction}: storage index must be a finite non-negative integer in x"
+            "SIR instruction {instruction}: {resource} index must be a finite non-negative integer in x"
         ));
     }
     Ok(index as usize)
