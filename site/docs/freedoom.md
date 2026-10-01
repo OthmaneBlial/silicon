@@ -48,8 +48,9 @@ no attack windup or aim spread. The window title
 reports health, ammo, pickups, kills, draw calls, and triangles. Imps launch a
 straight BAL1A0 fireball within 512 units when they have clear sight;
 it travels at 180 units per second, lasts up to 3 seconds, and deals 8 damage
-on contact, with a 2-second launch cooldown. This is a simple prototype attack,
-without Doom's vertical aiming, explosion frames, or projectile physics. The WAD
+on contact, with a 2-second launch cooldown. On wall or player impact it plays
+BAL1C0–BAL1E0 for six Doom tics each. This prototype omits vertical aiming and
+motion. The WAD
 pistol's PISGA0 patch is the idle camera-aligned billboard; firing briefly uses
 its PISGC0 patch for 0.16 seconds. Both weapon poses use SILICON's cutout shader
 and draw pipeline.
@@ -67,7 +68,7 @@ fixture is not included.
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Every BSP leaf is drawn; view-frustum traversal and BSP visibility
 culling, masked two-sided middle textures, enemy idle/pain/gib states,
-projectile explosion frames and vertical motion, keys, exits, other weapons and
+projectile vertical motion, keys, exits, other weapons and
 their ammunition, full weapon animation beyond the brief idle/fire pose, and
 sound remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in

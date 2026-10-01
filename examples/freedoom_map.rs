@@ -768,6 +768,21 @@ fn actor_death_frame(sprite: [u8; 4], elapsed: f32) -> Option<usize> {
     frames.last().copied()
 }
 
+fn projectile_explosion_frame(elapsed: f32) -> Option<usize> {
+    let mut elapsed_tics = elapsed * 35.0;
+    for (frame, duration) in [6.0, 6.0, 6.0].into_iter().enumerate() {
+        if elapsed_tics < duration {
+            return Some(frame);
+        }
+        elapsed_tics -= duration;
+    }
+    None
+}
+
+fn projectile_explosion_duration() -> f32 {
+    18.0 / 35.0
+}
+
 fn sprite_patch_texture(data: &[u8], name: [u8; 8]) -> api::Result<SpriteTexture> {
     let lumps = wad_lumps(data)?;
     let patch = lump_bytes(data, &lumps, name)?;
@@ -896,6 +911,7 @@ struct PreparedScene {
     weapon_idle: SpriteTexture,
     weapon_fire: SpriteTexture,
     projectile_sprite: SpriteTexture,
+    projectile_explosion: [SpriteTexture; 3],
     actors: Vec<Actor>,
     pickups: Vec<Pickup>,
     start: Player,
@@ -930,6 +946,7 @@ struct Projectile {
     velocity_x: f32,
     velocity_y: f32,
     lifetime: f32,
+    explosion_time: Option<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -1535,12 +1552,15 @@ fn update_actors(
             }
             continue;
         }
+        actor.attack_animation_remaining = (actor.attack_animation_remaining - delta).max(0.0);
+        if *health <= 0 {
+            continue;
+        }
         let previous_position = (actor.x, actor.y);
         actor.attack_cooldown = (actor.attack_cooldown - delta).max(0.0);
         let dx = player.x - actor.x;
         let dy = player.y - actor.y;
         let distance = (dx * dx + dy * dy).sqrt();
-        actor.attack_animation_remaining = (actor.attack_animation_remaining - delta).max(0.0);
         if distance < 640.0 {
             actor.angle = dy.atan2(dx).to_degrees().rem_euclid(360.0);
         }
@@ -1591,6 +1611,7 @@ fn update_actors(
                     velocity_x: dx * speed,
                     velocity_y: dy * speed,
                     lifetime: 3.0,
+                    explosion_time: None,
                 });
                 actor.attack_cooldown = 2.0;
                 actor.attack_animation_remaining = actor_attack_duration(actor.sprite);
@@ -1632,6 +1653,10 @@ fn update_projectiles(
     delta: f32,
 ) {
     projectiles.retain_mut(|projectile| {
+        if let Some(time) = &mut projectile.explosion_time {
+            *time += delta;
+            return *time < projectile_explosion_duration();
+        }
         projectile.lifetime -= delta;
         if projectile.lifetime <= 0.0 {
             return false;
@@ -1644,19 +1669,31 @@ fn update_projectiles(
             x: from.x + projectile.velocity_x * delta,
             y: from.y + projectile.velocity_y * delta,
         };
+        let step_x = to.x - from.x;
+        let step_y = to.y - from.y;
+        let step_distance = (step_x * step_x + step_y * step_y).sqrt();
         if !has_line_of_sight(map, from, to) {
-            return false;
+            let direction = Vertex2 {
+                x: step_x / step_distance,
+                y: step_y / step_distance,
+            };
+            let travel = nearest_blocking_wall(map, from, direction).min(step_distance);
+            projectile.x = from.x + direction.x * travel;
+            projectile.y = from.y + direction.y * travel;
+            projectile.explosion_time = Some(0.0);
+            return true;
         }
         projectile.x = to.x;
         projectile.y = to.y;
         let dx = player.x - to.x;
         let dy = player.y - to.y;
         if dx * dx + dy * dy <= 16.0 * 16.0 {
-            *health -= 8;
-            false
-        } else {
-            true
+            if *health > 0 {
+                *health -= 8;
+            }
+            projectile.explosion_time = Some(0.0);
         }
+        true
     });
 }
 
@@ -1705,6 +1742,11 @@ impl PreparedScene {
         let weapon_idle = sprite_patch_texture(&data, *b"PISGA0\0\0")?;
         let weapon_fire = sprite_patch_texture(&data, *b"PISGC0\0\0")?;
         let projectile_sprite = sprite_patch_texture(&data, *b"BAL1A0\0\0")?;
+        let projectile_explosion = [
+            sprite_patch_texture(&data, *b"BAL1C0\0\0")?,
+            sprite_patch_texture(&data, *b"BAL1D0\0\0")?,
+            sprite_patch_texture(&data, *b"BAL1E0\0\0")?,
+        ];
         let sampler = Sampler {
             filter: Filter::Nearest,
             address: Address::Repeat,
@@ -1803,6 +1845,7 @@ impl PreparedScene {
             weapon_idle,
             weapon_fire,
             projectile_sprite,
+            projectile_explosion,
             actors,
             pickups,
             start: Player {
@@ -1902,11 +1945,18 @@ impl PreparedScene {
             let Some(sector) = bsp_sector_at(&self.map, projectile.x, projectile.y) else {
                 continue;
             };
-            let vertices =
-                projectile_vertices(projectile, &self.projectile_sprite, player.angle, sector);
+            let sprite = if let Some(time) = projectile.explosion_time {
+                let Some(frame) = projectile_explosion_frame(time) else {
+                    continue;
+                };
+                &self.projectile_explosion[frame]
+            } else {
+                &self.projectile_sprite
+            };
+            let vertices = projectile_vertices(projectile, sprite, player.angle, sector);
             let count = u32::try_from(vertices.len())
                 .map_err(|_| invalid("E1M1 projectile vertex count exceeds SILICON draw range"))?;
-            commands.bind_texture(0, self.projectile_sprite.texture.clone(), self.sampler);
+            commands.bind_texture(0, sprite.texture.clone(), self.sampler);
             commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
             commands.draw(0, count);
         }
@@ -2019,17 +2069,17 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 weapon_flash = 0.16;
                 kills += usize::from(fire_weapon(&scene.map, &mut actors, player));
             }
-            update_actors(
-                &scene.map,
-                &mut actors,
-                &mut projectiles,
-                player,
-                &mut health,
-                delta,
-            );
-            update_projectiles(&scene.map, &mut projectiles, player, &mut health, delta);
-            health = health.max(0);
         }
+        update_actors(
+            &scene.map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            delta,
+        );
+        update_projectiles(&scene.map, &mut projectiles, player, &mut health, delta);
+        health = health.max(0);
         let submission = scene.draw(
             player,
             &actors,
@@ -2184,6 +2234,17 @@ mod tests {
             assert_eq!(actor_death_frame(sprite, 100.0), corpse);
             assert_eq!(actor_death_duration(sprite), elapsed / 35.0);
         }
+    }
+
+    #[test]
+    fn fireball_impact_frames_last_six_doom_tics_each() {
+        assert_eq!(projectile_explosion_frame(0.0), Some(0));
+        assert_eq!(projectile_explosion_frame(6.0 / 35.0 + 0.001), Some(1));
+        assert_eq!(projectile_explosion_frame(12.0 / 35.0 + 0.001), Some(2));
+        assert_eq!(
+            projectile_explosion_frame(projectile_explosion_duration()),
+            None
+        );
     }
 
     #[test]
@@ -2401,9 +2462,31 @@ mod tests {
             0.1,
         );
         assert_eq!(actors[0].death_animation_time, Some(0.1));
-
+        health = 0;
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.1,
+        );
+        assert_eq!(health, 0);
+        assert_eq!(actors[0].death_animation_time, Some(0.2));
         actors[0].health = 20;
         actors[0].death_animation_time = None;
+        actors[0].attack_animation_remaining = 0.1;
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.05,
+        );
+        assert_eq!(health, 0);
+        assert_eq!(actors[0].attack_animation_remaining, 0.05);
+
         let map = Map {
             vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
             lines: vec![[0, 1, 1, u16::MAX, u16::MAX]],
@@ -2653,6 +2736,15 @@ mod tests {
         assert_eq!(health, 100);
         update_projectiles(&map, &mut projectiles, player, &mut health, 0.1);
         assert_eq!(health, 92);
+        assert_eq!(projectiles.len(), 1);
+        assert_eq!(projectiles[0].explosion_time, Some(0.0));
+        update_projectiles(&map, &mut projectiles, player, &mut health, 0.2);
+        assert_eq!(health, 92);
+        assert_eq!(
+            projectile_explosion_frame(projectiles[0].explosion_time.unwrap()),
+            Some(1)
+        );
+        update_projectiles(&map, &mut projectiles, player, &mut health, 0.4);
         assert!(projectiles.is_empty());
 
         projectiles.push(Projectile {
@@ -2661,11 +2753,18 @@ mod tests {
             velocity_x: -180.0,
             velocity_y: 0.0,
             lifetime: 3.0,
+            explosion_time: None,
         });
         map.lines.push([0, 1, 1, u16::MAX, u16::MAX]);
         update_projectiles(&map, &mut projectiles, player, &mut health, 0.3);
-        assert!(projectiles.is_empty());
+        assert_eq!(projectiles.len(), 1);
+        assert_eq!(projectiles[0].explosion_time, Some(0.0));
+        assert!((projectiles[0].x - 50.0).abs() < 0.01);
         assert_eq!(health, 92);
+        health = 0;
+        update_projectiles(&map, &mut projectiles, player, &mut health, 0.2);
+        assert_eq!(health, 0);
+        assert_eq!(projectiles[0].explosion_time, Some(0.2));
     }
 
     #[test]
