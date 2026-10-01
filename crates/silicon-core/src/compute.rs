@@ -1678,6 +1678,98 @@ mod tests {
     }
 
     #[test]
+    fn bounded_loops_resume_across_uniform_workgroup_barriers() {
+        use Instruction::*;
+        use silicon_shader::Comparison;
+        let device = Device::new();
+        let program = Program::new(vec![
+            Const {
+                dst: 0,
+                value: Vec4::new(2.0, 2.0, 2.0, 2.0),
+            },
+            Const {
+                dst: 1,
+                value: Vec4::new(1.0, 1.0, 1.0, 1.0),
+            },
+            Const {
+                dst: 2,
+                value: Vec4::ZERO,
+            },
+            Input { dst: 4, slot: 1 },
+            Const {
+                dst: 5,
+                value: Vec4::ZERO,
+            },
+            Compare {
+                dst: 3,
+                a: 0,
+                b: 2,
+                kind: Comparison::Greater,
+            },
+            LoopStart { condition: 3 },
+            Add { dst: 5, a: 5, b: 1 },
+            SharedStore { index: 4, src: 5 },
+            WorkgroupBarrier,
+            Sub { dst: 0, a: 0, b: 1 },
+            Compare {
+                dst: 3,
+                a: 0,
+                b: 2,
+                kind: Comparison::Greater,
+            },
+            LoopEnd,
+            Output { slot: 0, src: 5 },
+        ])
+        .unwrap();
+        let pipeline = device
+            .create_compute_pipeline_with_shared_memory(program, [4, 1, 1], 4)
+            .unwrap();
+        let mut output = device.create_storage_buffer(vec![Vec4::ZERO; 4]).unwrap();
+        let mut simd_output = device.create_storage_buffer(vec![Vec4::ZERO; 4]).unwrap();
+        let stats = device
+            .dispatch_compute(&pipeline, [1, 1, 1], &[], &mut output)
+            .unwrap();
+        let simd_stats = device
+            .dispatch_compute_simd(&pipeline, [1, 1, 1], &[], &mut simd_output)
+            .unwrap();
+
+        assert_eq!(output.as_slice(), &[Vec4::new(2.0, 2.0, 2.0, 2.0); 4]);
+        assert_eq!(simd_output.as_slice(), output.as_slice());
+        assert_eq!(simd_stats, stats);
+        assert_eq!(stats.instructions, 22 * 4);
+
+        let divergent = Program::new(vec![
+            Input { dst: 0, slot: 1 },
+            Const {
+                dst: 1,
+                value: Vec4::ZERO,
+            },
+            Compare {
+                dst: 2,
+                a: 0,
+                b: 1,
+                kind: Comparison::Greater,
+            },
+            LoopStart { condition: 2 },
+            WorkgroupBarrier,
+            LoopEnd,
+            Output { slot: 0, src: 0 },
+        ])
+        .unwrap();
+        let pipeline = device
+            .create_compute_pipeline(divergent, [4, 1, 1])
+            .unwrap();
+        let sentinel = Vec4::new(-9.0, -9.0, -9.0, -9.0);
+        let mut unchanged = device.create_storage_buffer(vec![sentinel; 4]).unwrap();
+        let error = device
+            .dispatch_compute(&pipeline, [1, 1, 1], &[], &mut unchanged)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("barrier divergence"));
+        assert_eq!(unchanged.as_slice(), &[sentinel; 4]);
+    }
+
+    #[test]
     fn workgroup_barrier_divergence_and_shared_races_fail_atomically() {
         use Instruction::*;
         let device = Device::new();
