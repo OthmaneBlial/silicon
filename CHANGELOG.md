@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add one-shot Doom special-18 use actions that raise tagged floors to the next
+  higher neighboring floor at normal floor speed.
 - Add one-shot, use-triggered Doom special-29 doors that raise and close tagged
   sectors through the existing door animation and collision path.
 - Add use-triggered Doom special-103 doors that open tagged sectors and remain

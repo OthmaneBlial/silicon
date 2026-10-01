@@ -47,6 +47,7 @@ const LINE_WALK_LOWER_FLOOR_TO_LOWEST: u16 = 38;
 const LINE_USE_DOWN_WAIT_UP_PLATFORM: u16 = 62;
 const LINE_USE_OPEN_DOOR_ONCE: u16 = 103;
 const LINE_USE_LOWER_FLOOR_TO_LOWEST: u16 = 23;
+const LINE_USE_RAISE_FLOOR_TO_NEAREST: u16 = 18;
 const LINE_PLAT_DOWN_WAIT_UP: u16 = 88;
 const LINE_EXIT_USE: u16 = 11;
 const LINE_SECRET_EXIT_USE: u16 = 51;
@@ -3249,6 +3250,63 @@ fn sector_platform(map: &Map, platform_sector: u16) -> Option<Platform> {
     })
 }
 
+fn next_higher_floor(map: &Map, sector_index: usize) -> Option<f32> {
+    let sector = map.sectors.get(sector_index)?;
+    map.lines
+        .iter()
+        .filter_map(|line| {
+            let side0 = map.sides.get(line[3] as usize)?;
+            let side1 = map.sides.get(line[4] as usize)?;
+            let adjacent = if side0.sector as usize == sector_index {
+                side1.sector
+            } else if side1.sector as usize == sector_index {
+                side0.sector
+            } else {
+                return None;
+            };
+            let floor = map.sectors.get(adjacent as usize)?.floor;
+            (floor > sector.floor).then_some(floor)
+        })
+        .min_by(f32::total_cmp)
+}
+
+fn raise_to_nearest_floors(map: &mut Map, line_index: usize, active: &[Platform]) -> Vec<Platform> {
+    let Some(line) = map.lines.get(line_index).copied() else {
+        return Vec::new();
+    };
+    if line[5] != LINE_USE_RAISE_FLOOR_TO_NEAREST || line[6] == 0 {
+        return Vec::new();
+    }
+    let started = map
+        .sectors
+        .iter()
+        .enumerate()
+        .filter(|(_, sector)| sector.tag == line[6])
+        .filter_map(|(index, sector)| {
+            let sector_index = u16::try_from(index).ok()?;
+            if active
+                .iter()
+                .any(|platform| platform.sector == sector_index)
+            {
+                return None;
+            }
+            Some(Platform {
+                sector: sector_index,
+                low: sector.floor,
+                high: next_higher_floor(map, index)?,
+                speed: FLOOR_SPEED,
+                wait: 0.0,
+                direction: 1,
+                return_to_high: false,
+            })
+        })
+        .collect::<Vec<_>>();
+    if !started.is_empty() {
+        map.lines[line_index][5] = 0;
+    }
+    started
+}
+
 fn lower_to_lowest_floors(map: &mut Map, line_index: usize, active: &[Platform]) -> Vec<Platform> {
     let Some(line) = map.lines.get(line_index).copied() else {
         return Vec::new();
@@ -3357,7 +3415,9 @@ fn update_platforms(map: &mut Map, platforms: &mut Vec<Platform>, delta: f32) ->
             (previous + speed * delta).min(target)
         };
         if direction > 0 && floor + ACTOR_HEIGHT > sector.ceiling {
-            platform.direction = -1;
+            if platform.return_to_high {
+                platform.direction = -1;
+            }
             index += 1;
             continue;
         }
@@ -4624,6 +4684,10 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     let started = lower_to_lowest_floors(&mut scene.map, line, &platforms);
                     activated_sectors += started.len();
                     platforms.extend(started);
+                } else if special == LINE_USE_RAISE_FLOOR_TO_NEAREST {
+                    let started = raise_to_nearest_floors(&mut scene.map, line, &platforms);
+                    activated_sectors += started.len();
+                    platforms.extend(started);
                 } else if special == LINE_USE_DOWN_WAIT_UP_PLATFORM {
                     let started = down_wait_up_platforms(&scene.map, line, &platforms);
                     activated_sectors += started.len();
@@ -5875,6 +5939,11 @@ mod tests {
         assert_eq!(use_line(&map, player), Some((1, LINE_USE_OPEN_DOOR_ONCE)));
         map.lines[1][5] = LINE_DOOR_RAISE_ONCE;
         assert_eq!(use_line(&map, player), Some((1, LINE_DOOR_RAISE_ONCE)));
+        map.lines[1][5] = LINE_USE_RAISE_FLOOR_TO_NEAREST;
+        assert_eq!(
+            use_line(&map, player),
+            Some((1, LINE_USE_RAISE_FLOOR_TO_NEAREST))
+        );
         for special in [
             LINE_BLUE_BLAZING_OPEN,
             LINE_RED_BLAZING_OPEN,
@@ -6527,6 +6596,48 @@ mod tests {
                 .all(|floor| floor.speed == FLOOR_SPEED && !floor.return_to_high)
         );
         assert_eq!(map.lines[0][5], 0);
+
+        map.sectors[0].floor = 32.0;
+        map.sectors[1].floor = 0.0;
+        map.sectors[1].ceiling = 64.0;
+        map.sectors[2].floor = 32.0;
+        map.lines[0][5] = LINE_USE_RAISE_FLOOR_TO_NEAREST;
+        assert_eq!(
+            use_line(&map, player),
+            Some((0, LINE_USE_RAISE_FLOOR_TO_NEAREST))
+        );
+        assert_eq!(next_higher_floor(&map, 1), Some(32.0));
+        let busy = [Platform {
+            sector: 1,
+            low: 0.0,
+            high: 32.0,
+            speed: FLOOR_SPEED,
+            wait: 0.0,
+            direction: 1,
+            return_to_high: false,
+        }];
+        assert!(raise_to_nearest_floors(&mut map, 0, &busy).is_empty());
+        assert_eq!(map.lines[0][5], LINE_USE_RAISE_FLOOR_TO_NEAREST);
+
+        let mut raised = raise_to_nearest_floors(&mut map, 0, &[]);
+        assert_eq!(raised.len(), 1);
+        assert_eq!(raised[0].high, 32.0);
+        assert_eq!(raised[0].speed, FLOOR_SPEED);
+        assert!(!raised[0].return_to_high);
+        assert_eq!(map.lines[0][5], 0);
+        assert!(!update_platforms(&mut map, &mut raised, 0.5));
+        assert_eq!(map.sectors[1].floor, 0.0);
+        assert_eq!(raised[0].direction, 1);
+        map.sectors[1].ceiling = 128.0;
+        assert!(update_platforms(&mut map, &mut raised, 0.5));
+        assert_eq!(map.sectors[1].floor, 17.5);
+        assert!(update_platforms(&mut map, &mut raised, 0.5));
+        assert_eq!(map.sectors[1].floor, 32.0);
+        assert!(raised.is_empty());
+
+        map.lines[0][5] = LINE_USE_RAISE_FLOOR_TO_NEAREST;
+        assert!(raise_to_nearest_floors(&mut map, 0, &[]).is_empty());
+        assert_eq!(map.lines[0][5], LINE_USE_RAISE_FLOOR_TO_NEAREST);
     }
 
     #[test]
