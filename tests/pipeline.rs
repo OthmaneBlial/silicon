@@ -298,6 +298,45 @@ fn shared_vertex_bands_run_each_vertex_shader_once() {
     );
     assert_eq!(parallel.stats.fragments, expected.stats.fragments);
 }
+
+#[test]
+fn shared_prepared_bands_match_clipped_multisample_triangles() {
+    let vertices = [
+        Vertex::new(Vec3::new(-1.4, -1.2, 0.2), Color::new(1., 0.1, 0.1, 1.)),
+        Vertex::new(Vec3::new(1.3, -0.8, 0.5), Color::new(0.1, 1., 0.1, 1.)),
+        Vertex::new(Vec3::new(-0.4, 1.4, 0.8), Color::new(0.1, 0.1, 1., 1.)),
+    ];
+    let mut expected = Renderer::new(101, 67).unwrap();
+    expected.set_sample_count(SampleCount::Four).unwrap();
+    expected.clear(Color::BLACK);
+    expected
+        .draw(&vertices, None, Pipeline::default(), vertex, |f| {
+            Some(f.color())
+        })
+        .unwrap();
+    assert_eq!(expected.stats.clipped, 1);
+    assert!(expected.stats.fragments > 0);
+
+    for backend in [Backend::Scalar, Backend::Simd] {
+        let mut parallel = Renderer::new(101, 67).unwrap();
+        parallel.backend = backend;
+        parallel.set_sample_count(SampleCount::Four).unwrap();
+        parallel.clear(Color::BLACK);
+        parallel
+            .render_bands_shared_vertices(4, |band| {
+                band.draw(&vertices, None, Pipeline::default(), vertex, |f| {
+                    Some(f.color())
+                })
+            })
+            .unwrap();
+        assert_eq!(parallel.framebuffer.bytes(), expected.framebuffer.bytes());
+        assert_eq!(parallel.stats.triangles, expected.stats.triangles);
+        assert_eq!(parallel.stats.clipped, expected.stats.clipped);
+        assert_eq!(parallel.stats.fragments, expected.stats.fragments);
+        assert_eq!(parallel.stats.shaded, expected.stats.shaded);
+    }
+}
+
 #[test]
 fn shared_vertex_bands_reject_pipeline_drift() {
     use std::sync::atomic::{AtomicUsize, Ordering};

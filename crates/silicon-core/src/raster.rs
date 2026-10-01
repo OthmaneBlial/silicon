@@ -10,6 +10,9 @@ const MAX_TILE_REFERENCES: usize = 1_048_576;
 const MAX_SHARED_VERTEX_DRAWS: usize = 4_096;
 // ponytail: bound one render's shared vertex copy to 16 MiB; larger workloads compute per band.
 const MAX_SHARED_VERTEX_CACHE_BYTES: usize = 16 * 1024 * 1024;
+// ponytail: bound prepared triangle sharing to 16 MiB; larger draws keep the streaming path.
+const MAX_SHARED_SETUP_CACHE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CLIPPED_FAN_TRIANGLES: usize = 7;
 const SAMPLE_2X: [(i64, i64); 2] = [(64, 64), (192, 192)];
 const SAMPLE_4X: [(i64, i64); 4] = [(96, 32), (224, 96), (32, 160), (160, 224)];
 type ColorOutputs = [Option<Color>; MAX_COLOR_ATTACHMENTS];
@@ -72,9 +75,9 @@ impl SharedVertexCache {
         indices: Option<&[u32]>,
         pipeline: Pipeline,
         compute: F,
-    ) -> Result<(Arc<[VertexOutput]>, bool)> {
+    ) -> Result<(Arc<[VertexOutput]>, bool, bool)> {
         if draw >= MAX_SHARED_VERTEX_DRAWS {
-            return Ok((compute()?.into(), true));
+            return Ok((compute()?.into(), true, false));
         }
         let mut entries = self.0.lock().map_err(|_| "shared vertex cache poisoned")?;
         entries.entries.resize_with(draw + 1, || None);
@@ -88,7 +91,7 @@ impl SharedVertexCache {
                 )
                 .into());
             }
-            return Ok((Arc::clone(&entry.transformed), false));
+            return Ok((Arc::clone(&entry.transformed), false, true));
         }
         let transformed: Arc<[VertexOutput]> = compute()?.into();
         let entry_bytes = vertices
@@ -101,7 +104,7 @@ impl SharedVertexCache {
                     })
                     .and_then(|index_bytes| bytes.checked_add(index_bytes))
             });
-        if entry_bytes.is_some_and(|bytes| {
+        let cached = if entry_bytes.is_some_and(|bytes| {
             entries
                 .bytes
                 .checked_add(bytes)
@@ -115,8 +118,97 @@ impl SharedVertexCache {
                 pipeline,
                 transformed: Arc::clone(&transformed),
             });
+            true
+        } else {
+            false
+        };
+        Ok((transformed, true, cached))
+    }
+}
+
+struct PreparedTriangleDraw {
+    setups: Vec<TriangleSetup>,
+    triangles: u64,
+    clipped: u64,
+    culled: u64,
+}
+struct SharedPreparedKey {
+    transformed: Arc<[VertexOutput]>,
+    pipeline: Pipeline,
+    width: u32,
+    height: u32,
+    sample_count: SampleCount,
+}
+struct SharedPreparedDraw {
+    key: SharedPreparedKey,
+    setups: Arc<[TriangleSetup]>,
+    triangles: u64,
+    clipped: u64,
+    culled: u64,
+}
+#[derive(Default)]
+struct SharedPreparedState {
+    entries: Vec<Option<Arc<SharedPreparedDraw>>>,
+    bytes: usize,
+}
+#[derive(Default)]
+struct SharedPreparedCache(Mutex<SharedPreparedState>);
+impl SharedPreparedCache {
+    fn get_or_prepare<F: FnOnce() -> Result<PreparedTriangleDraw>>(
+        &self,
+        draw: usize,
+        key: SharedPreparedKey,
+        estimated_bytes: usize,
+        prepare: F,
+    ) -> Result<Option<(Arc<SharedPreparedDraw>, bool)>> {
+        if draw >= MAX_SHARED_VERTEX_DRAWS || estimated_bytes > MAX_SHARED_SETUP_CACHE_BYTES {
+            return Ok(None);
         }
-        Ok((transformed, true))
+        let mut state = self.0.lock().map_err(|_| "shared setup cache poisoned")?;
+        state.entries.resize_with(draw + 1, || None);
+        if let Some(entry) = &state.entries[draw] {
+            if !Arc::ptr_eq(&entry.key.transformed, &key.transformed)
+                || entry.key.pipeline != key.pipeline
+                || entry.key.width != key.width
+                || entry.key.height != key.height
+                || entry.key.sample_count != key.sample_count
+            {
+                return Err(format!(
+                    "shared setup cache draw {draw} received different vertices or render state"
+                )
+                .into());
+            }
+            return Ok(Some((Arc::clone(entry), false)));
+        }
+        if state
+            .bytes
+            .checked_add(estimated_bytes)
+            .is_none_or(|bytes| bytes > MAX_SHARED_SETUP_CACHE_BYTES)
+        {
+            return Ok(None);
+        }
+        let prepared = prepare()?;
+        let setups: Arc<[TriangleSetup]> = prepared.setups.into();
+        let entry_bytes = setups
+            .len()
+            .checked_mul(std::mem::size_of::<TriangleSetup>())
+            .ok_or("shared triangle setup size overflow")?;
+        let entry = Arc::new(SharedPreparedDraw {
+            key,
+            setups,
+            triangles: prepared.triangles,
+            clipped: prepared.clipped,
+            culled: prepared.culled,
+        });
+        if state
+            .bytes
+            .checked_add(entry_bytes)
+            .is_some_and(|bytes| bytes <= MAX_SHARED_SETUP_CACHE_BYTES)
+        {
+            state.bytes += entry_bytes;
+            state.entries[draw] = Some(Arc::clone(&entry));
+        }
+        Ok(Some((entry, true)))
     }
 }
 #[derive(Clone, Debug, Default)]
@@ -188,6 +280,7 @@ pub struct Renderer {
     pub debug_pixel: Option<(u32, u32)>,
     pub traces: Vec<PixelTrace>,
     shared_vertices: Option<Arc<SharedVertexCache>>,
+    shared_prepared: Option<Arc<SharedPreparedCache>>,
     draw_index: usize,
 }
 #[derive(Clone, Copy)]
@@ -212,6 +305,13 @@ struct TriangleSetup {
     inv_area: f32,
     dx: [f32; 3],
     dy: [f32; 3],
+}
+struct TriangleBins {
+    tiles_x: u32,
+    setups: Vec<TriangleSetup>,
+    bins: Option<Vec<Vec<usize>>>,
+    touched: Vec<usize>,
+    references: usize,
 }
 #[derive(Clone, Copy)]
 struct PreparedFragment {
@@ -242,6 +342,7 @@ impl Renderer {
             debug_pixel: None,
             traces: Vec::new(),
             shared_vertices: None,
+            shared_prepared: None,
             draw_index: 0,
         })
     }
@@ -366,32 +467,71 @@ impl Renderer {
             }
             Ok(transformed)
         };
-        let (transformed, vertex_shader_invoked): (Arc<[VertexOutput]>, bool) =
+        let (transformed, vertex_shader_invoked, vertex_cacheable) =
             if let Some(cache) = &self.shared_vertices {
                 let start = Instant::now();
-                let (transformed, computed) =
+                let (transformed, computed, cacheable) =
                     cache.get_or_compute(draw_index, vertices, indices, pipeline, transform)?;
                 if computed {
                     self.stats.vertex_time += start.elapsed();
                 }
-                (transformed, computed)
+                (transformed, computed, cacheable)
             } else {
                 let start = Instant::now();
                 let transformed: Arc<[VertexOutput]> = transform()?.into();
                 self.stats.vertex_time += start.elapsed();
-                (transformed, true)
+                (transformed, true, false)
             };
         self.stats.vertices += vertices.len() as u64;
         if vertex_shader_invoked {
             self.stats.vertex_shader_invocations += vertices.len() as u64;
         }
+        let shared_prepared = if vertex_cacheable {
+            let max_setups = (count / 3).checked_mul(MAX_CLIPPED_FAN_TRIANGLES);
+            let estimated_bytes = max_setups
+                .and_then(|setups| setups.checked_mul(std::mem::size_of::<TriangleSetup>()));
+            if let (Some(cache), Some(estimated_bytes)) =
+                (self.shared_prepared.clone(), estimated_bytes)
+            {
+                let key = SharedPreparedKey {
+                    transformed: Arc::clone(&transformed),
+                    pipeline,
+                    width: self.framebuffer.width,
+                    height: self.viewport_height,
+                    sample_count: self.framebuffer.sample_count(),
+                };
+                let transformed_for_setup = Arc::clone(&transformed);
+                let result = cache.get_or_prepare(draw_index, key, estimated_bytes, || {
+                    self.prepare_shared_triangle_draw(
+                        &transformed_for_setup,
+                        indices,
+                        count,
+                        pipeline,
+                    )
+                })?;
+                if let Some((prepared, computed)) = result {
+                    if !computed {
+                        self.stats.triangles += prepared.triangles;
+                        self.stats.clipped += prepared.clipped;
+                        self.stats.culled += prepared.culled;
+                    }
+                    Some(prepared)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let start = Instant::now();
         let render_result = (|| {
             let tiles_x = self.framebuffer.width.div_ceil(TILE);
             let tile_count = (tiles_x as usize)
                 .checked_mul(self.framebuffer.height.div_ceil(TILE) as usize)
                 .ok_or("tile grid size overflow")?;
-            let mut bins = if tile_count <= MAX_BINNED_TILES {
+            let bins = if tile_count <= MAX_BINNED_TILES {
                 let mut bins = Vec::new();
                 bins.try_reserve_exact(tile_count)
                     .map_err(|_| "could not allocate tile bins")?;
@@ -400,91 +540,53 @@ impl Renderer {
             } else {
                 None
             };
-            let mut setups = Vec::new();
-            setups
+            let mut triangle_bins = TriangleBins {
+                tiles_x,
+                setups: Vec::new(),
+                bins,
+                touched: Vec::new(),
+                references: 0,
+            };
+            triangle_bins
+                .setups
                 .try_reserve_exact(MAX_BINNED_TRIANGLES)
                 .map_err(|_| "could not allocate triangle bin")?;
-            let mut touched = Vec::new();
-            let mut references = 0usize;
-            for i in (0..count).step_by(3) {
-                let setup_start = self.profile_shaders.then(Instant::now);
-                let ix = |n: usize| indices.map_or(n, |ind| ind[n] as usize);
-                let original = [
-                    transformed[ix(i)],
-                    transformed[ix(i + 1)],
-                    transformed[ix(i + 2)],
-                ];
-                let poly = clip_triangle(original);
-                self.record_primitive_setup(setup_start);
-                self.stats.triangles += 1;
-                if poly.as_slice() != original.as_slice() {
-                    self.stats.clipped += 1;
+            if let Some(prepared) = shared_prepared {
+                for &global_setup in prepared.setups.iter() {
+                    if let Some(setup) = self.setup_for_band(global_setup) {
+                        self.bin_triangle_setup(&mut triangle_bins, setup, pipeline, &fragment)?;
+                    }
                 }
-                let primitive = (self.stats.triangles - 1) as u32;
-                for k in 1..poly.len().saturating_sub(1) {
-                    let Some(setup) =
-                        self.setup_triangle([poly[0], poly[k], poly[k + 1]], primitive, pipeline)
-                    else {
-                        continue;
-                    };
-                    let Some(bins) = bins.as_mut() else {
-                        self.raster_triangle_setup(setup, pipeline, &fragment)?;
-                        continue;
-                    };
-                    let min_tile_x = setup.min_x / TILE;
-                    let min_tile_y = setup.min_y / TILE;
-                    let end_tile_x = (setup.max_x - 1) / TILE + 1;
-                    let end_tile_y = (setup.max_y - 1) / TILE + 1;
-                    let tile_references = ((end_tile_x - min_tile_x) as usize)
-                        .checked_mul((end_tile_y - min_tile_y) as usize)
-                        .ok_or("triangle tile count overflow")?;
-                    if tile_references > MAX_TILE_REFERENCES
-                        || setups.len() == MAX_BINNED_TRIANGLES
-                        || references
-                            .checked_add(tile_references)
-                            .is_none_or(|count| count > MAX_TILE_REFERENCES)
-                    {
-                        self.flush_tile_bins(
-                            tiles_x,
-                            &mut setups,
-                            bins,
-                            &mut touched,
+            } else {
+                for i in (0..count).step_by(3) {
+                    let setup_start = self.profile_shaders.then(Instant::now);
+                    let ix = |n: usize| indices.map_or(n, |ind| ind[n] as usize);
+                    let original = [
+                        transformed[ix(i)],
+                        transformed[ix(i + 1)],
+                        transformed[ix(i + 2)],
+                    ];
+                    let poly = clip_triangle(original);
+                    self.record_primitive_setup(setup_start);
+                    self.stats.triangles += 1;
+                    if poly.as_slice() != original.as_slice() {
+                        self.stats.clipped += 1;
+                    }
+                    let primitive = (self.stats.triangles - 1) as u32;
+                    for k in 1..poly.len().saturating_sub(1) {
+                        let Some(setup) = self.setup_triangle(
+                            [poly[0], poly[k], poly[k + 1]],
+                            primitive,
                             pipeline,
-                            &fragment,
-                        )?;
-                        references = 0;
+                        ) else {
+                            continue;
+                        };
+                        self.bin_triangle_setup(&mut triangle_bins, setup, pipeline, &fragment)?;
                     }
-                    if tile_references > MAX_TILE_REFERENCES {
-                        self.raster_triangle_setup(setup, pipeline, &fragment)?;
-                        continue;
-                    }
-                    let setup_index = setups.len();
-                    setups.push(setup);
-                    let bin_start = self.profile_shaders.then(Instant::now);
-                    for tile_y in min_tile_y..end_tile_y {
-                        for tile_x in min_tile_x..end_tile_x {
-                            let tile = (tile_y * tiles_x + tile_x) as usize;
-                            if bins[tile].is_empty() {
-                                touched.push(tile);
-                            }
-                            bins[tile].push(setup_index);
-                        }
-                    }
-                    if let Some(bin_start) = bin_start {
-                        self.stats.primitive_setup_time += bin_start.elapsed();
-                    }
-                    references += tile_references;
                 }
             }
-            if let Some(bins) = bins.as_mut() {
-                self.flush_tile_bins(
-                    tiles_x,
-                    &mut setups,
-                    bins,
-                    &mut touched,
-                    pipeline,
-                    &fragment,
-                )?;
+            if triangle_bins.bins.is_some() {
+                self.flush_tile_bins(&mut triangle_bins, pipeline, &fragment)?;
             }
             Ok(())
         })();
@@ -498,13 +600,37 @@ impl Renderer {
         primitive: u32,
         state: Pipeline,
     ) -> Option<TriangleSetup> {
+        self.setup_triangle_at(
+            v,
+            primitive,
+            state,
+            self.row_offset,
+            self.framebuffer.height,
+        )
+    }
+    fn setup_triangle_global(
+        &mut self,
+        v: [VertexOutput; 3],
+        primitive: u32,
+        state: Pipeline,
+    ) -> Option<TriangleSetup> {
+        self.setup_triangle_at(v, primitive, state, 0, self.viewport_height)
+    }
+    fn setup_triangle_at(
+        &mut self,
+        v: [VertexOutput; 3],
+        primitive: u32,
+        state: Pipeline,
+        row_offset: u32,
+        height: u32,
+    ) -> Option<TriangleSetup> {
         let setup_start = self.profile_shaders.then(Instant::now);
         if v.iter().any(|v| v.position.w <= 0.) {
             self.record_primitive_setup(setup_start);
             return None;
         }
         let w = self.framebuffer.width;
-        let h = self.framebuffer.height;
+        let h = height;
         let full_height = self.viewport_height;
         let min_w = v.iter().map(|v| v.position.w).fold(f32::INFINITY, f32::min);
         let mut s = std::array::from_fn::<_, 3, _>(|source| {
@@ -520,7 +646,7 @@ impl Renderer {
                     * full_height as f32
                     * SUBPIXEL as f32)
                     .round() as i64
-                    - self.row_offset as i64 * SUBPIXEL,
+                    - row_offset as i64 * SUBPIXEL,
                 z: v.position.z / v.position.w,
                 inv_w: iw,
                 varyings: v.varyings,
@@ -585,6 +711,110 @@ impl Renderer {
             dx,
             dy,
         })
+    }
+    fn prepare_shared_triangle_draw(
+        &mut self,
+        transformed: &[VertexOutput],
+        indices: Option<&[u32]>,
+        count: usize,
+        pipeline: Pipeline,
+    ) -> Result<PreparedTriangleDraw> {
+        let triangles = self.stats.triangles;
+        let clipped = self.stats.clipped;
+        let culled = self.stats.culled;
+        let triangle_count = count / 3;
+        let mut setups = Vec::new();
+        setups
+            .try_reserve_exact(triangle_count)
+            .map_err(|_| "could not allocate shared triangle setups")?;
+        for i in (0..count).step_by(3) {
+            let setup_start = self.profile_shaders.then(Instant::now);
+            let ix = |n: usize| indices.map_or(n, |ind| ind[n] as usize);
+            let original = [
+                transformed[ix(i)],
+                transformed[ix(i + 1)],
+                transformed[ix(i + 2)],
+            ];
+            let poly = clip_triangle(original);
+            self.record_primitive_setup(setup_start);
+            self.stats.triangles += 1;
+            if poly.as_slice() != original.as_slice() {
+                self.stats.clipped += 1;
+            }
+            let primitive = (self.stats.triangles - 1) as u32;
+            for k in 1..poly.len().saturating_sub(1) {
+                if let Some(setup) =
+                    self.setup_triangle_global([poly[0], poly[k], poly[k + 1]], primitive, pipeline)
+                {
+                    setups.push(setup);
+                }
+            }
+        }
+        Ok(PreparedTriangleDraw {
+            setups,
+            triangles: self.stats.triangles - triangles,
+            clipped: self.stats.clipped - clipped,
+            culled: self.stats.culled - culled,
+        })
+    }
+    fn setup_for_band(&self, mut setup: TriangleSetup) -> Option<TriangleSetup> {
+        let offset = self.row_offset as i64 * SUBPIXEL;
+        for vertex in &mut setup.vertices {
+            vertex.y -= offset;
+        }
+        setup.min_y = setup.min_y.saturating_sub(self.row_offset);
+        setup.max_y = setup
+            .max_y
+            .saturating_sub(self.row_offset)
+            .min(self.framebuffer.height);
+        (setup.min_y < setup.max_y && setup.min_x < setup.max_x).then_some(setup)
+    }
+    fn bin_triangle_setup<F: Fn(&[Fragment; 4], u8) -> Result<[Option<ColorOutputs>; 4]>>(
+        &mut self,
+        triangle_bins: &mut TriangleBins,
+        setup: TriangleSetup,
+        state: Pipeline,
+        shader: &F,
+    ) -> Result<()> {
+        if triangle_bins.bins.is_none() {
+            return self.raster_triangle_setup(setup, state, shader);
+        }
+        let min_tile_x = setup.min_x / TILE;
+        let min_tile_y = setup.min_y / TILE;
+        let end_tile_x = (setup.max_x - 1) / TILE + 1;
+        let end_tile_y = (setup.max_y - 1) / TILE + 1;
+        let tile_references = ((end_tile_x - min_tile_x) as usize)
+            .checked_mul((end_tile_y - min_tile_y) as usize)
+            .ok_or("triangle tile count overflow")?;
+        if tile_references > MAX_TILE_REFERENCES
+            || triangle_bins.setups.len() == MAX_BINNED_TRIANGLES
+            || triangle_bins
+                .references
+                .checked_add(tile_references)
+                .is_none_or(|count| count > MAX_TILE_REFERENCES)
+        {
+            self.flush_tile_bins(triangle_bins, state, shader)?;
+        }
+        if tile_references > MAX_TILE_REFERENCES {
+            return self.raster_triangle_setup(setup, state, shader);
+        }
+        let setup_index = triangle_bins.setups.len();
+        triangle_bins.setups.push(setup);
+        let bin_start = self.profile_shaders.then(Instant::now);
+        for tile_y in min_tile_y..end_tile_y {
+            for tile_x in min_tile_x..end_tile_x {
+                let tile = (tile_y * triangle_bins.tiles_x + tile_x) as usize;
+                if triangle_bins.bins.as_ref().unwrap()[tile].is_empty() {
+                    triangle_bins.touched.push(tile);
+                }
+                triangle_bins.bins.as_mut().unwrap()[tile].push(setup_index);
+            }
+        }
+        if let Some(bin_start) = bin_start {
+            self.stats.primitive_setup_time += bin_start.elapsed();
+        }
+        triangle_bins.references += tile_references;
+        Ok(())
     }
     fn raster_triangle_setup<F: Fn(&[Fragment; 4], u8) -> Result<[Option<ColorOutputs>; 4]>>(
         &mut self,
@@ -707,24 +937,25 @@ impl Renderer {
     }
     fn flush_tile_bins<F: Fn(&[Fragment; 4], u8) -> Result<[Option<ColorOutputs>; 4]>>(
         &mut self,
-        tiles_x: u32,
-        setups: &mut Vec<TriangleSetup>,
-        bins: &mut [Vec<usize>],
-        touched: &mut Vec<usize>,
+        triangle_bins: &mut TriangleBins,
         state: Pipeline,
         shader: &F,
     ) -> Result<()> {
-        for &tile in touched.iter() {
-            let tile_x = tile as u32 % tiles_x;
-            let tile_y = tile as u32 / tiles_x;
+        let Some(bins) = triangle_bins.bins.as_mut() else {
+            return Ok(());
+        };
+        for &tile in &triangle_bins.touched {
+            let tile_x = tile as u32 % triangle_bins.tiles_x;
+            let tile_y = tile as u32 / triangle_bins.tiles_x;
             self.stats.tiles += bins[tile].len() as u64;
             for &setup in &bins[tile] {
-                self.raster_tile(setups[setup], tile_x, tile_y, state, shader)?;
+                self.raster_tile(triangle_bins.setups[setup], tile_x, tile_y, state, shader)?;
             }
             bins[tile].clear();
         }
-        touched.clear();
-        setups.clear();
+        triangle_bins.touched.clear();
+        triangle_bins.setups.clear();
+        triangle_bins.references = 0;
         Ok(())
     }
     #[allow(clippy::too_many_arguments)]
@@ -989,19 +1220,18 @@ pub fn draw_line(fb: &mut Framebuffer, a: Vec2, b: Vec2, color: Color) -> Result
 }
 impl Renderer {
     /// Raster workers own disjoint horizontal bands and retain submission order.
-    /// ponytail: geometry setup is repeated per band; bin prepared triangles when
-    /// profiling shows setup dominates. No framebuffer lock or unsafe sharing.
+    /// No framebuffer lock or unsafe sharing.
     pub fn render_bands<F>(&mut self, threads: usize, render: F) -> Result<()>
     where
         F: Fn(&mut Renderer) -> Result<()> + Sync,
     {
         self.render_bands_inner(threads, render, None)
     }
-    /// Like `render_bands`, but shares vertex shader results for identical draws.
+    /// Like `render_bands`, but shares vertex results and prepared triangles for identical draws.
     /// The closure must submit the same draw sequence, geometry, pipeline state,
     /// and vertex shader behavior for every band. Fragment shading remains local.
-    /// The cache retains at most 16 MiB across 4,096 draws; larger draws execute
-    /// locally in each band.
+    /// Each cache retains at most 16 MiB across 4,096 draws; oversized draws
+    /// keep the per-band path.
     pub fn render_bands_shared_vertices<F>(&mut self, threads: usize, render: F) -> Result<()>
     where
         F: Fn(&mut Renderer) -> Result<()> + Sync,
@@ -1027,6 +1257,9 @@ impl Renderer {
         if threads == 1 {
             return render(self);
         }
+        let shared_prepared = shared_vertices
+            .as_ref()
+            .map(|_| Arc::new(SharedPreparedCache::default()));
         let workers = threads.min(self.framebuffer.height as usize);
         let rows = self.framebuffer.height.div_ceil(workers as u32);
         let mut bands = Vec::new();
@@ -1041,6 +1274,7 @@ impl Renderer {
                 debug_pixel: self.debug_pixel,
                 traces: Vec::new(),
                 shared_vertices: shared_vertices.clone(),
+                shared_prepared: shared_prepared.clone(),
                 draw_index: 0,
                 row_offset: y,
                 viewport_height: self.framebuffer.height,
@@ -1124,12 +1358,13 @@ mod shared_vertex_cache_tests {
         let cache = SharedVertexCache::default();
 
         for _ in 0..2 {
-            let (transformed, computed) = cache
+            let (transformed, computed, cached) = cache
                 .get_or_compute(0, &vertices, None, Pipeline::default(), || {
                     Ok(vec![output; count])
                 })
                 .unwrap();
             assert!(computed);
+            assert!(!cached);
             assert_eq!(transformed.len(), count);
         }
         assert_eq!(cache.0.lock().unwrap().bytes, 0);
@@ -1140,10 +1375,11 @@ mod shared_vertex_cache_tests {
         let cache = SharedVertexCache::default();
         let mut vertex = Vertex::new(Vec3::ZERO, Color::BLACK);
         vertex.position.x = -0.0;
-        let (_, computed) = cache
+        let (_, computed, cached) = cache
             .get_or_compute(0, &[vertex], None, Pipeline::default(), || Ok(Vec::new()))
             .unwrap();
         assert!(computed);
+        assert!(cached);
 
         let mut different_zero = vertex;
         different_zero.position.x = 0.0;
@@ -1157,14 +1393,62 @@ mod shared_vertex_cache_tests {
 
         let mut nan = vertex;
         nan.position.x = f32::from_bits(0x7fc0_1234);
-        let (value, computed) = cache
+        let (value, computed, cached) = cache
             .get_or_compute(1, &[nan], None, Pipeline::default(), || Ok(Vec::new()))
             .unwrap();
         drop(value);
         assert!(computed);
-        let (_, computed) = cache
+        assert!(cached);
+        let (_, computed, cached) = cache
             .get_or_compute(1, &[nan], None, Pipeline::default(), || Ok(Vec::new()))
             .unwrap();
         assert!(!computed);
+        assert!(cached);
+    }
+}
+
+#[cfg(test)]
+mod shared_prepared_cache_tests {
+    use super::*;
+
+    #[test]
+    fn prepared_draws_are_reused_only_for_the_same_render_state() {
+        let cache = SharedPreparedCache::default();
+        let transformed: Arc<[VertexOutput]> = Arc::from([]);
+        let key = |width| SharedPreparedKey {
+            transformed: Arc::clone(&transformed),
+            pipeline: Pipeline::default(),
+            width,
+            height: 48,
+            sample_count: SampleCount::One,
+        };
+        let build = || {
+            Ok(PreparedTriangleDraw {
+                setups: Vec::new(),
+                triangles: 3,
+                clipped: 1,
+                culled: 0,
+            })
+        };
+        let (first, computed) = cache
+            .get_or_prepare(0, key(64), std::mem::size_of::<TriangleSetup>(), build)
+            .unwrap()
+            .unwrap();
+        assert!(computed);
+        assert_eq!((first.triangles, first.clipped, first.culled), (3, 1, 0));
+
+        let (again, computed) = cache
+            .get_or_prepare(0, key(64), std::mem::size_of::<TriangleSetup>(), || {
+                panic!("cache hit must not rebuild triangle setup")
+            })
+            .unwrap()
+            .unwrap();
+        assert!(!computed);
+        assert!(Arc::ptr_eq(&first, &again));
+        assert!(
+            cache
+                .get_or_prepare(0, key(80), std::mem::size_of::<TriangleSetup>(), build,)
+                .is_err()
+        );
     }
 }
