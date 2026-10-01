@@ -6,7 +6,9 @@ command stream is validated before submission modifies the target framebuffer.
 Runtime shader failure can leave an incomplete frame; submission returns the
 specific error rather than reporting success.
 
-Current limits: 16M framebuffer/texture pixels, 1M OBJ/vertex-buffer vertices,
+Current limits: 16M framebuffer/2D texture pixels, 2048 texture-array layers
+and 16M array mip texels, 16M 3D base texels and 32M total 3D mip texels,
+1M OBJ/vertex-buffer vertices,
 3M indices, 64 uniform vec4s, 65536 commands, 4096 SIR instructions, 64 selection levels. External
 captures are limited to 64 MiB before JSON deserialization; OBJ text is limited
 to 32 MiB; CLI scene descriptors and SPIR-V binaries to 1 MiB. SPIR-V has an ID

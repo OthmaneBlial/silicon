@@ -151,6 +151,10 @@ impl Device {
                 }
                 Instruction::Sample { .. }
                 | Instruction::SampleImplicit { .. }
+                | Instruction::SampleArray { .. }
+                | Instruction::SampleArrayImplicit { .. }
+                | Instruction::Sample3D { .. }
+                | Instruction::Sample3DImplicit { .. }
                 | Instruction::SampleCube { .. }
                 | Instruction::SampleCubeImplicit { .. } => {
                     return Err("compute programs do not sample textures".into());

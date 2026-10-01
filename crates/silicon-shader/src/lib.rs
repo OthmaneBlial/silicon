@@ -202,6 +202,30 @@ pub enum Instruction {
         direction: u8,
         texture: u8,
     },
+    /// Sample a 2D array: xy is UV, z is the integer layer and w is explicit LOD.
+    SampleArray {
+        dst: u8,
+        uv: u8,
+        texture: u8,
+    },
+    /// Sample a 2D array with derivative-derived LOD; z remains the layer.
+    SampleArrayImplicit {
+        dst: u8,
+        uv: u8,
+        texture: u8,
+    },
+    /// Sample a 3D volume: xyz are coordinates and w is explicit LOD.
+    Sample3D {
+        dst: u8,
+        coordinate: u8,
+        texture: u8,
+    },
+    /// Sample a 3D volume with derivative-derived LOD.
+    Sample3DImplicit {
+        dst: u8,
+        coordinate: u8,
+        texture: u8,
+    },
     Output {
         slot: u8,
         src: u8,
@@ -326,12 +350,24 @@ impl Instruction {
                 }
                 dst
             }
-            Sample { dst, uv, .. } | SampleImplicit { dst, uv, .. } => {
+            Sample { dst, uv, .. }
+            | SampleImplicit { dst, uv, .. }
+            | SampleArray { dst, uv, .. }
+            | SampleArrayImplicit { dst, uv, .. } => {
                 *uv = f(*uv, false)?;
                 dst
             }
             SampleCube { dst, direction, .. } | SampleCubeImplicit { dst, direction, .. } => {
                 *direction = f(*direction, false)?;
+                dst
+            }
+            Sample3D {
+                dst, coordinate, ..
+            }
+            | Sample3DImplicit {
+                dst, coordinate, ..
+            } => {
+                *coordinate = f(*coordinate, false)?;
                 dst
             }
             Output { src, .. } => {
@@ -748,8 +784,26 @@ impl Program {
                     Some(dst)
                 }
                 Instruction::Sample { dst, uv, texture }
-                | Instruction::SampleImplicit { dst, uv, texture } => {
+                | Instruction::SampleImplicit { dst, uv, texture }
+                | Instruction::SampleArray { dst, uv, texture }
+                | Instruction::SampleArrayImplicit { dst, uv, texture } => {
                     source(uv)?;
+                    if texture >= 16 {
+                        return Err("SIR texture slot exceeds 15".into());
+                    }
+                    Some(dst)
+                }
+                Instruction::Sample3D {
+                    dst,
+                    coordinate,
+                    texture,
+                }
+                | Instruction::Sample3DImplicit {
+                    dst,
+                    coordinate,
+                    texture,
+                } => {
+                    source(coordinate)?;
                     if texture >= 16 {
                         return Err("SIR texture slot exceeds 15".into());
                     }
@@ -1335,6 +1389,26 @@ impl Program {
                             .map_err(|e| format!("SIR instruction {pc}: {e}"))?,
                     )
                 }
+                Instruction::SampleArray { dst, uv, texture }
+                | Instruction::SampleArrayImplicit { dst, uv, texture } => {
+                    result.samples += 1;
+                    let mut coordinate = regs[uv as usize];
+                    if matches!(op, Instruction::SampleArrayImplicit { .. }) {
+                        coordinate.w = *implicit_lods.get(texture as usize).ok_or_else(|| {
+                            format!(
+                                "SIR instruction {pc}: missing implicit LOD for texture {texture}"
+                            )
+                        })?;
+                        if !coordinate.w.is_finite() {
+                            return Err(format!("SIR instruction {pc}: non-finite implicit LOD"));
+                        }
+                    }
+                    (
+                        Some(dst),
+                        sample(texture as usize, coordinate)
+                            .map_err(|e| format!("SIR instruction {pc}: {e}"))?,
+                    )
+                }
                 Instruction::SampleCube {
                     dst,
                     direction,
@@ -1355,6 +1429,34 @@ impl Program {
                             return Err(format!(
                                 "SIR instruction {pc}: non-finite implicit LOD for cube texture {texture}"
                             ));
+                        }
+                    }
+                    (
+                        Some(dst),
+                        sample(texture as usize, coordinate)
+                            .map_err(|e| format!("SIR instruction {pc}: {e}"))?,
+                    )
+                }
+                Instruction::Sample3D {
+                    dst,
+                    coordinate,
+                    texture,
+                }
+                | Instruction::Sample3DImplicit {
+                    dst,
+                    coordinate,
+                    texture,
+                } => {
+                    result.samples += 1;
+                    let mut coordinate = regs[coordinate as usize];
+                    if matches!(op, Instruction::Sample3DImplicit { .. }) {
+                        coordinate.w = *implicit_lods.get(texture as usize).ok_or_else(|| {
+                            format!(
+                                "SIR instruction {pc}: missing implicit LOD for texture {texture}"
+                            )
+                        })?;
+                        if !coordinate.w.is_finite() {
+                            return Err(format!("SIR instruction {pc}: non-finite implicit LOD"));
                         }
                     }
                     (

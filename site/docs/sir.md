@@ -45,6 +45,11 @@ explicit LOD; `SampleImplicit` gets LOD from a separate per-texture invocation
 array, so derivative metadata does not contaminate SPIR-V vector arithmetic.
 `SampleCube` uses xyz direction and w explicit LOD; `SampleCubeImplicit` gets its
 LOD from the same per-texture array.
+`SampleArray` uses xy UV, z integer layer and w explicit LOD;
+`SampleArrayImplicit` replaces w with derivative-derived LOD. `Sample3D` uses
+xyz volume coordinates and w explicit LOD; `Sample3DImplicit` derives that LOD
+from the interpolated coordinate derivatives. The SPIR-V translator currently
+emits only 2D and cube samples.
 `StorageLoad`, `StorageStore`, `AtomicAdd`, `AtomicExchange`,
 `AtomicCompareExchange`, `SharedLoad`, `SharedStore` and `WorkgroupBarrier` are
 compute-only. Indexed accesses use checked vec4 addresses; the barrier

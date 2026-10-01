@@ -22,6 +22,7 @@ long-term. This repository ships working stages and labels the remaining work.
 | Shadow maps / explicit-LOD sampling | Two SILICON CPU raster passes; 512×512 `Depth32Float` texture sampled by ordinary GLSL/SPIR-V; scalar and SIMD replay match |
 | PBR material shading | Cook-Torrance GGX direct lighting, tangent-space normal mapping, and explicit-LOD `samplerCube` reflections in ordinary GLSL/SPIR-V, with capture replay |
 | Cube-map sampling and visual reflections | Six-face `CubeMap` sampler, mip-selected roughness approximation, explicit and direct-input implicit GLSL sampling, scalar/SIMD pixel equivalence; transformed direction derivatives remain unsupported |
+| Advanced textures (phase 50) | Bounded 2D texture arrays and color 3D volumes with checked construction, nearest/bilinear spatial filtering, mip selection/generation and explicit/implicit SIR samples; command binding is exercised through scalar and SIMD-requested renders. Cube maps and single-level depth textures are covered above. SPIR-V remains limited to its documented 2D/cube subset |
 | MSAA | Deterministic 2×/4× coverage with separate color/depth/stencil samples, resolved framebuffer, CLI control, scalar/SIMD band equivalence |
 | Anisotropic texture filtering | Derivative-aware 1×–16× sampling, minor-axis mip selection, focused unit test and side-by-side steep-angle scene |
 | GPU profiler | Command, vertex, primitive setup, coverage/depth, shader, and blend/write timing with render counters; headless presentation is marked unmeasured |

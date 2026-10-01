@@ -1,7 +1,37 @@
 use crate::{Color, Result, Vec2, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 pub const MAX_ANISOTROPY: u8 = 16;
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+const MAX_TEXTURE_TEXELS: usize = 16_777_216;
+const MAX_TEXTURE_ARRAY_LAYERS: usize = 2048;
+const MAX_TEXTURE_3D_MIP_TEXELS: usize = 33_554_432;
+
+fn wrap_coordinate(value: f32, address: Address) -> f32 {
+    match address {
+        Address::Clamp => value.clamp(0., 1.),
+        Address::Repeat => value.rem_euclid(1.),
+        Address::Mirror => {
+            let value = value.rem_euclid(2.);
+            if value > 1. { 2. - value } else { value }
+        }
+    }
+}
+
+fn address_texel(index: i64, size: u32, address: Address) -> u32 {
+    match address {
+        Address::Clamp => index.clamp(0, size as i64 - 1) as u32,
+        Address::Repeat => index.rem_euclid(size as i64) as u32,
+        Address::Mirror => {
+            let index = index.rem_euclid(2 * size as i64);
+            if index >= size as i64 {
+                (2 * size as i64 - 1 - index) as u32
+            } else {
+                index as u32
+            }
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextureFormat {
     Rgba8,
     Rgb8,
@@ -46,6 +76,27 @@ pub struct MipLevel {
 pub struct Texture {
     pub format: TextureFormat,
     pub levels: Vec<MipLevel>,
+}
+
+/// Same-sized 2D textures sampled from an integer layer coordinate.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TextureArray {
+    layers: Vec<Texture>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Texture3DLevel {
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pixels: Vec<[u8; 4]>,
+}
+
+/// Color volume stored as a bounded chain of 3D mip levels.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Texture3D {
+    pub format: TextureFormat,
+    levels: Vec<Texture3DLevel>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,6 +364,289 @@ impl CubeMap {
         Ok(Color(color))
     }
 }
+
+impl TextureArray {
+    pub fn new(layers: Vec<Texture>) -> Result<Self> {
+        let array = Self { layers };
+        array.validate()?;
+        Ok(array)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let Some(first) = self.layers.first() else {
+            return Err("texture array requires at least one layer".into());
+        };
+        if self.layers.len() > MAX_TEXTURE_ARRAY_LAYERS {
+            return Err(format!("texture array exceeds {MAX_TEXTURE_ARRAY_LAYERS} layers").into());
+        }
+        first.validate()?;
+        let mut total_texels = 0usize;
+        for layer in &self.layers {
+            layer.validate()?;
+            if layer.format != first.format || layer.levels.len() != first.levels.len() {
+                return Err("texture array layers require matching formats and mip counts".into());
+            }
+            for (level, first_level) in layer.levels.iter().zip(&first.levels) {
+                if level.width != first_level.width || level.height != first_level.height {
+                    return Err("texture array layers require matching mip dimensions".into());
+                }
+                total_texels = total_texels
+                    .checked_add(
+                        (level.width as usize)
+                            .checked_mul(level.height as usize)
+                            .ok_or("texture array size overflow")?,
+                    )
+                    .ok_or("texture array size overflow")?;
+                if total_texels > MAX_TEXTURE_TEXELS {
+                    return Err("texture array exceeds 16M total mip texels".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
+    }
+
+    pub fn lod(&self, dx: Vec2, dy: Vec2) -> f32 {
+        self.layers[0].lod(dx, dy)
+    }
+
+    pub fn sample(&self, uv: Vec2, layer: f32, lod: f32, sampler: Sampler) -> Result<Color> {
+        if !layer.is_finite() || layer < 0.0 || layer.fract() != 0.0 {
+            return Err("texture-array layer must be a finite non-negative integer".into());
+        }
+        let layer = layer as usize;
+        let texture = self
+            .layers
+            .get(layer)
+            .ok_or_else(|| format!("texture-array layer {layer} is out of bounds"))?;
+        texture.sample(uv, lod, sampler)
+    }
+}
+
+impl Texture3D {
+    pub fn new(
+        width: u32,
+        height: u32,
+        depth: u32,
+        format: TextureFormat,
+        bytes: &[u8],
+    ) -> Result<Self> {
+        let components = match format {
+            TextureFormat::Rgba8 => 4,
+            TextureFormat::Rgb8 => 3,
+            TextureFormat::R8 => 1,
+            TextureFormat::Depth32Float => {
+                return Err("3D textures require an R8, RGB8 or RGBA8 format".into());
+            }
+        };
+        let count = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|count| count.checked_mul(depth as usize))
+            .ok_or("3D texture size overflow")?;
+        if width == 0
+            || height == 0
+            || depth == 0
+            || count > MAX_TEXTURE_TEXELS
+            || count.checked_mul(components) != Some(bytes.len())
+        {
+            return Err("invalid 3D texture dimensions or byte length (maximum 16M texels)".into());
+        }
+        let pixels = bytes
+            .chunks_exact(components)
+            .map(|pixel| match format {
+                TextureFormat::Rgba8 => [pixel[0], pixel[1], pixel[2], pixel[3]],
+                TextureFormat::Rgb8 => [pixel[0], pixel[1], pixel[2], 255],
+                TextureFormat::R8 => [pixel[0], pixel[0], pixel[0], 255],
+                TextureFormat::Depth32Float => unreachable!(),
+            })
+            .collect();
+        let texture = Self {
+            format,
+            levels: vec![Texture3DLevel {
+                width,
+                height,
+                depth,
+                pixels,
+            }],
+        };
+        texture.validate()?;
+        Ok(texture)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.levels.is_empty() || self.levels.len() > 25 {
+            return Err("3D texture requires 1..25 mip levels".into());
+        }
+        if matches!(self.format, TextureFormat::Depth32Float) {
+            return Err("3D textures do not support depth format".into());
+        }
+        let mut previous: Option<(u32, u32, u32)> = None;
+        let mut total_texels = 0usize;
+        for level in &self.levels {
+            let count = (level.width as usize)
+                .checked_mul(level.height as usize)
+                .and_then(|count| count.checked_mul(level.depth as usize))
+                .ok_or("3D texture size overflow")?;
+            if level.width == 0
+                || level.height == 0
+                || level.depth == 0
+                || count > MAX_TEXTURE_TEXELS
+                || level.pixels.len() != count
+            {
+                return Err("invalid 3D texture mip dimensions/storage".into());
+            }
+            if previous.is_some_and(|(width, height, depth)| {
+                level.width != (width / 2).max(1)
+                    || level.height != (height / 2).max(1)
+                    || level.depth != (depth / 2).max(1)
+            }) {
+                return Err("invalid 3D texture mip chain dimensions".into());
+            }
+            total_texels = total_texels
+                .checked_add(count)
+                .ok_or("3D texture mip size overflow")?;
+            if total_texels > MAX_TEXTURE_3D_MIP_TEXELS {
+                return Err("3D texture exceeds 32M total mip texels".into());
+            }
+            previous = Some((level.width, level.height, level.depth));
+        }
+        Ok(())
+    }
+
+    pub fn mip_levels(&self) -> usize {
+        self.levels.len()
+    }
+
+    pub fn generate_mips(&mut self) {
+        self.levels.truncate(1);
+        while self
+            .levels
+            .last()
+            .is_some_and(|level| level.width > 1 || level.height > 1 || level.depth > 1)
+        {
+            let source = self.levels.last().unwrap();
+            let (width, height, depth) = (
+                (source.width / 2).max(1),
+                (source.height / 2).max(1),
+                (source.depth / 2).max(1),
+            );
+            let mut pixels = Vec::with_capacity((width * height * depth) as usize);
+            for z in 0..depth {
+                for y in 0..height {
+                    for x in 0..width {
+                        let mut sum = [0u32; 4];
+                        let mut count = 0;
+                        for source_z in z * source.depth / depth..(z + 1) * source.depth / depth {
+                            for source_y in
+                                y * source.height / height..(y + 1) * source.height / height
+                            {
+                                for source_x in
+                                    x * source.width / width..(x + 1) * source.width / width
+                                {
+                                    let pixel = source.pixels[((source_z * source.height
+                                        + source_y)
+                                        * source.width
+                                        + source_x)
+                                        as usize];
+                                    for component in 0..4 {
+                                        sum[component] += pixel[component] as u32;
+                                    }
+                                    count += 1;
+                                }
+                            }
+                        }
+                        pixels.push(sum.map(|value| ((value + count / 2) / count) as u8));
+                    }
+                }
+            }
+            self.levels.push(Texture3DLevel {
+                width,
+                height,
+                depth,
+                pixels,
+            });
+        }
+    }
+
+    pub fn lod(&self, dx: Vec3, dy: Vec3) -> f32 {
+        let level = &self.levels[0];
+        let scale = |derivative: Vec3| {
+            Vec3::new(
+                derivative.x * level.width as f32,
+                derivative.y * level.height as f32,
+                derivative.z * level.depth as f32,
+            )
+            .length()
+        };
+        scale(dx).max(scale(dy)).max(1.).log2()
+    }
+
+    pub fn sample(&self, coordinate: Vec3, lod: f32, sampler: Sampler) -> Result<Color> {
+        if !coordinate.is_finite() || !lod.is_finite() {
+            return Err("3D texture coordinates and LOD must be finite".into());
+        }
+        let level = match sampler.mip {
+            MipFilter::None => 0.,
+            _ => lod.clamp(0., (self.levels.len() - 1) as f32),
+        };
+        let sample_level = |index| self.at(coordinate, index, sampler);
+        let color = if matches!(sampler.mip, MipFilter::Trilinear) {
+            let low = level.floor() as usize;
+            let high = (low + 1).min(self.levels.len() - 1);
+            sample_level(low).lerp(sample_level(high), level.fract())
+        } else {
+            sample_level(level.round() as usize)
+        };
+        Ok(Color(color))
+    }
+
+    fn at(&self, coordinate: Vec3, level: usize, sampler: Sampler) -> Vec4 {
+        let mip = &self.levels[level];
+        let coordinate = Vec3::new(
+            wrap_coordinate(coordinate.x, sampler.address),
+            wrap_coordinate(coordinate.y, sampler.address),
+            wrap_coordinate(coordinate.z, sampler.address),
+        );
+        let texel = |x: i64, y: i64, z: i64| {
+            let x = address_texel(x, mip.width, sampler.address);
+            let y = address_texel(y, mip.height, sampler.address);
+            let z = address_texel(z, mip.depth, sampler.address);
+            Color::from_rgba8(mip.pixels[((z * mip.height + y) * mip.width + x) as usize]).0
+        };
+        if matches!(sampler.filter, Filter::Nearest) {
+            return texel(
+                (coordinate.x * mip.width as f32).floor() as i64,
+                (coordinate.y * mip.height as f32).floor() as i64,
+                (coordinate.z * mip.depth as f32).floor() as i64,
+            );
+        }
+        let position = Vec3::new(
+            coordinate.x * mip.width as f32 - 0.5,
+            coordinate.y * mip.height as f32 - 0.5,
+            coordinate.z * mip.depth as f32 - 0.5,
+        );
+        let (x, y, z) = (
+            position.x.floor() as i64,
+            position.y.floor() as i64,
+            position.z.floor() as i64,
+        );
+        let (fx, fy, fz) = (
+            position.x - position.x.floor(),
+            position.y - position.y.floor(),
+            position.z - position.z.floor(),
+        );
+        let plane = |z| {
+            texel(x, y, z)
+                .lerp(texel(x + 1, y, z), fx)
+                .lerp(texel(x, y + 1, z).lerp(texel(x + 1, y + 1, z), fx), fy)
+        };
+        plane(z).lerp(plane(z + 1), fz)
+    }
+}
+
 impl Texture {
     pub fn validate(&self) -> Result<()> {
         if self.levels.is_empty()
@@ -551,29 +885,13 @@ impl Texture {
     }
     fn at(&self, uv: Vec2, level: usize, sampler: Sampler) -> Color {
         let mip = &self.levels[level];
-        let wrap = |v: f32| match sampler.address {
-            Address::Clamp => v.clamp(0., 1.),
-            Address::Repeat => v.rem_euclid(1.),
-            Address::Mirror => {
-                let t = v.rem_euclid(2.);
-                if t > 1. { 2. - t } else { t }
-            }
-        };
-        let uv = Vec2::new(wrap(uv.x), wrap(uv.y));
-        let address = |i: i64, n: u32| match sampler.address {
-            Address::Clamp => i.clamp(0, n as i64 - 1) as u32,
-            Address::Repeat => i.rem_euclid(n as i64) as u32,
-            Address::Mirror => {
-                let j = i.rem_euclid(2 * n as i64);
-                if j >= n as i64 {
-                    (2 * n as i64 - 1 - j) as u32
-                } else {
-                    j as u32
-                }
-            }
-        };
+        let uv = Vec2::new(
+            wrap_coordinate(uv.x, sampler.address),
+            wrap_coordinate(uv.y, sampler.address),
+        );
         let texel = |x: i64, y: i64| {
-            let i = (address(y, mip.height) * mip.width + address(x, mip.width)) as usize;
+            let i = (address_texel(y, mip.height, sampler.address) * mip.width
+                + address_texel(x, mip.width, sampler.address)) as usize;
             if let Some(depth) = &mip.depth {
                 Vec4::new(depth[i], 0., 0., 1.)
             } else {
@@ -962,5 +1280,79 @@ mod tests {
             rgba(2, 2),
         ];
         assert!(CubeMap::new(faces).is_err());
+    }
+
+    #[test]
+    fn texture_array_selects_checked_integer_layers() {
+        let red = Texture::new(1, 1, TextureFormat::Rgba8, &[255, 0, 0, 255]).unwrap();
+        let blue = Texture::new(1, 1, TextureFormat::Rgba8, &[0, 0, 255, 255]).unwrap();
+        let array = TextureArray::new(vec![red, blue]).unwrap();
+        assert_eq!(array.layer_count(), 2);
+        assert_eq!(
+            array
+                .sample(Vec2::new(0.5, 0.5), 1.0, 0.0, Sampler::default())
+                .unwrap()
+                .rgba8(),
+            [0, 0, 255, 255]
+        );
+        assert!(
+            array
+                .sample(Vec2::ZERO, 0.5, 0.0, Sampler::default())
+                .is_err()
+        );
+        assert!(
+            array
+                .sample(Vec2::ZERO, 2.0, 0.0, Sampler::default())
+                .is_err()
+        );
+
+        let mismatched = vec![
+            Texture::new(2, 1, TextureFormat::Rgba8, &[0; 8]).unwrap(),
+            Texture::new(1, 2, TextureFormat::Rgba8, &[0; 8]).unwrap(),
+        ];
+        assert!(TextureArray::new(mismatched).is_err());
+    }
+
+    #[test]
+    fn volume_texture_filters_xyz_and_builds_mips() {
+        let mut bytes = vec![0; 2 * 2 * 2 * 4];
+        for pixel in bytes.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+        bytes[..4].copy_from_slice(&[255, 255, 255, 255]);
+        let mut volume = Texture3D::new(2, 2, 2, TextureFormat::Rgba8, &bytes).unwrap();
+        let filtered = volume
+            .sample(
+                Vec3::new(0.5, 0.5, 0.5),
+                0.0,
+                Sampler {
+                    filter: Filter::Bilinear,
+                    mip: MipFilter::None,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .rgba8();
+        assert_eq!(filtered, [32, 32, 32, 255]);
+
+        volume.generate_mips();
+        assert_eq!(volume.mip_levels(), 2);
+        assert_eq!(
+            volume
+                .sample(
+                    Vec3::new(0.5, 0.5, 0.5),
+                    1.0,
+                    Sampler {
+                        filter: Filter::Nearest,
+                        mip: MipFilter::Nearest,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .rgba8(),
+            [32, 32, 32, 255]
+        );
+        assert!(Texture3D::new(1, 1, 1, TextureFormat::Depth32Float, &[0; 4]).is_err());
+        assert!(Texture3D::new(0, 1, 1, TextureFormat::R8, &[]).is_err());
     }
 }

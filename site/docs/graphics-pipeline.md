@@ -47,6 +47,16 @@ sRGB decoding and multiple color attachments remain future work. Anisotropy is
 currently exposed to native Rust fragment shaders; the SIR/SPIR-V sampling path
 continues to use isotropic LOD.
 
+`TextureArray` layers must have matching format, dimensions and mip chains; its
+layer coordinate is a finite non-negative integer. `Texture3D` stores bounded
+RGBA-expanded color voxels and generates mips by averaging 3D source regions.
+Both support nearest/bilinear spatial filtering, no/nearest/trilinear mip
+selection, and clamp/repeat/mirror addressing. Volume bilinear filtering
+interpolates the eight neighboring voxels. SIR offers explicit-LOD and
+derivative-LOD sampling for both types. Arrays are capped at 2048 layers and
+16M total mip texels; a volume is capped at 16M base texels and 32M total mip
+texels. Depth textures remain single-level 2D resources.
+
 `CubeMap` owns six square color textures in +X, -X, +Y, -Y, +Z, -Z order. A
 direction selects the face with the largest absolute component; the other two
 components map to face UVs. Nearest samples stay on that face; bilinear taps that

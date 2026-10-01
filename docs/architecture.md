@@ -57,6 +57,9 @@ Resources use typed, reference-counted owned buffers. Commands keep their data
 alive independently of the creating code. Mapping exposes a read-only slice.
 Upload means constructing an owned resource; dynamic subrange updates, device
 memory budgets, resource deletion and GPU asynchronous fences are not implemented.
+Color images include 2D textures, fixed-layer 2D arrays, 3D volumes and six-face
+cube maps; single-level float depth textures remain 2D. Their samplers share the
+same owned command and capture path.
 Submission is synchronous. The first command model deliberately permits one
 complete render pass; malformed streams are rejected before the framebuffer is
 cleared. Per-shader runtime errors include command and instruction context. With the

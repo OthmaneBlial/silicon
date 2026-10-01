@@ -42,11 +42,15 @@ pub struct ShaderPipeline {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ImageKind {
     Texture2D,
+    TextureArray,
+    Texture3D,
     CubeMap,
 }
 #[derive(Clone, Copy)]
 enum BoundImage<'a> {
     Texture2D(&'a Texture, Sampler),
+    TextureArray(&'a TextureArray, Sampler),
+    Texture3D(&'a Texture3D, Sampler),
     CubeMap(&'a CubeMap, Sampler),
 }
 #[derive(Clone, Debug)]
@@ -153,6 +157,16 @@ pub enum Command {
     BindTexture {
         slot: u8,
         texture: Arc<Texture>,
+        sampler: Sampler,
+    },
+    BindTextureArray {
+        slot: u8,
+        texture_array: Arc<TextureArray>,
+        sampler: Sampler,
+    },
+    BindTexture3D {
+        slot: u8,
+        texture: Arc<Texture3D>,
         sampler: Sampler,
     },
     BindCubeMap {
@@ -275,6 +289,22 @@ impl Device {
                     textures[*slot as usize] =
                         Some(BoundImage::Texture2D(texture.as_ref(), *sampler));
                 }
+                Command::BindTextureArray {
+                    slot,
+                    texture_array,
+                    sampler,
+                } => {
+                    textures[*slot as usize] =
+                        Some(BoundImage::TextureArray(texture_array.as_ref(), *sampler));
+                }
+                Command::BindTexture3D {
+                    slot,
+                    texture,
+                    sampler,
+                } => {
+                    textures[*slot as usize] =
+                        Some(BoundImage::Texture3D(texture.as_ref(), *sampler));
+                }
                 Command::BindCubeMap {
                     slot,
                     cube_map,
@@ -307,6 +337,14 @@ impl Device {
                         match image {
                             BoundImage::Texture2D(texture, sampler) => texture
                                 .sample(Vec2::new(uv.x, uv.y), uv.z, sampler)
+                                .map(|c| c.0)
+                                .map_err(|e| e.to_string()),
+                            BoundImage::TextureArray(texture, sampler) => texture
+                                .sample(Vec2::new(uv.x, uv.y), uv.z, uv.w, sampler)
+                                .map(|c| c.0)
+                                .map_err(|e| e.to_string()),
+                            BoundImage::Texture3D(texture, sampler) => texture
+                                .sample(Vec3::new(uv.x, uv.y, uv.z), uv.w, sampler)
                                 .map(|c| c.0)
                                 .map_err(|e| e.to_string()),
                             BoundImage::CubeMap(cube_map, sampler) => cube_map
@@ -386,6 +424,22 @@ impl Device {
                                             texture.lod(
                                                 fragments[i].uv_dx,
                                                 fragments[i].uv_dy,
+                                            )
+                                        }
+                                        Some(BoundImage::TextureArray(texture, sampler))
+                                            if !matches!(sampler.mip, MipFilter::None) =>
+                                        {
+                                            texture.lod(
+                                                fragments[i].uv_dx,
+                                                fragments[i].uv_dy,
+                                            )
+                                        }
+                                        Some(BoundImage::Texture3D(texture, sampler))
+                                            if !matches!(sampler.mip, MipFilter::None) =>
+                                        {
+                                            texture.lod(
+                                                fragments[i].direction_dx,
+                                                fragments[i].direction_dy,
                                             )
                                         }
                                         _ => 0.,
@@ -494,6 +548,25 @@ impl CommandBuffer {
     }
     pub fn bind_texture(&mut self, slot: u8, texture: Arc<Texture>, sampler: Sampler) {
         self.commands.push(Command::BindTexture {
+            slot,
+            texture,
+            sampler,
+        });
+    }
+    pub fn bind_texture_array(
+        &mut self,
+        slot: u8,
+        texture_array: Arc<TextureArray>,
+        sampler: Sampler,
+    ) {
+        self.commands.push(Command::BindTextureArray {
+            slot,
+            texture_array,
+            sampler,
+        });
+    }
+    pub fn bind_texture3d(&mut self, slot: u8, texture: Arc<Texture3D>, sampler: Sampler) {
+        self.commands.push(Command::BindTexture3D {
             slot,
             texture,
             sampler,
@@ -617,6 +690,24 @@ impl CommandBuffer {
                     texture.validate()?;
                     image_kinds[*slot as usize] = Some(ImageKind::Texture2D);
                 }
+                Command::BindTextureArray {
+                    slot,
+                    texture_array,
+                    ..
+                } => {
+                    if *slot >= 16 {
+                        return Err(error("texture slot exceeds 15").into());
+                    }
+                    texture_array.validate()?;
+                    image_kinds[*slot as usize] = Some(ImageKind::TextureArray);
+                }
+                Command::BindTexture3D { slot, texture, .. } => {
+                    if *slot >= 16 {
+                        return Err(error("texture slot exceeds 15").into());
+                    }
+                    texture.validate()?;
+                    image_kinds[*slot as usize] = Some(ImageKind::Texture3D);
+                }
                 Command::BindCubeMap { slot, cube_map, .. } => {
                     if *slot >= 16 {
                         return Err(error("texture slot exceeds 15").into());
@@ -641,6 +732,14 @@ impl CommandBuffer {
                             Instruction::Sample { texture, .. }
                             | Instruction::SampleImplicit { texture, .. } => {
                                 (*texture, ImageKind::Texture2D)
+                            }
+                            Instruction::SampleArray { texture, .. }
+                            | Instruction::SampleArrayImplicit { texture, .. } => {
+                                (*texture, ImageKind::TextureArray)
+                            }
+                            Instruction::Sample3D { texture, .. }
+                            | Instruction::Sample3DImplicit { texture, .. } => {
+                                (*texture, ImageKind::Texture3D)
                             }
                             Instruction::SampleCube { texture, .. }
                             | Instruction::SampleCubeImplicit { texture, .. } => {

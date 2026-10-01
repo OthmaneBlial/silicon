@@ -374,6 +374,33 @@ impl Program {
                         }),
                     )
                 }
+                SampleArray { dst, uv, texture } | SampleArrayImplicit { dst, uv, texture } => {
+                    let mut values = [Vec4::ZERO; 4];
+                    for i in 0..4 {
+                        if enabled(i) {
+                            let mut coordinate = lane(regs[uv as usize], i);
+                            if matches!(op, SampleArrayImplicit { .. }) {
+                                coordinate.w = *implicit_lods[i].get(texture as usize).ok_or_else(|| {
+                                    format!("SIR instruction {pc}, lane {i}: missing implicit LOD for texture {texture}")
+                                })?;
+                                if !coordinate.w.is_finite() {
+                                    return Err(format!(
+                                        "SIR instruction {pc}, lane {i}: non-finite implicit LOD"
+                                    ));
+                                }
+                            }
+                            results[i].samples += 1;
+                            values[i] = sample(i, texture as usize, coordinate)
+                                .map_err(|e| format!("SIR instruction {pc}, lane {i}: {e}"))?;
+                        }
+                    }
+                    (
+                        Some(dst),
+                        std::array::from_fn(|c| {
+                            Lanes(std::array::from_fn(|i| values[i].to_array()[c]))
+                        }),
+                    )
+                }
                 SampleCube {
                     dst,
                     direction,
@@ -395,6 +422,42 @@ impl Program {
                                 if !coordinate.w.is_finite() {
                                     return Err(format!(
                                         "SIR instruction {pc}, lane {i}: non-finite implicit LOD for cube texture {texture}"
+                                    ));
+                                }
+                            }
+                            results[i].samples += 1;
+                            values[i] = sample(i, texture as usize, coordinate)
+                                .map_err(|e| format!("SIR instruction {pc}, lane {i}: {e}"))?;
+                        }
+                    }
+                    (
+                        Some(dst),
+                        std::array::from_fn(|c| {
+                            Lanes(std::array::from_fn(|i| values[i].to_array()[c]))
+                        }),
+                    )
+                }
+                Sample3D {
+                    dst,
+                    coordinate,
+                    texture,
+                }
+                | Sample3DImplicit {
+                    dst,
+                    coordinate,
+                    texture,
+                } => {
+                    let mut values = [Vec4::ZERO; 4];
+                    for i in 0..4 {
+                        if enabled(i) {
+                            let mut coordinate = lane(regs[coordinate as usize], i);
+                            if matches!(op, Sample3DImplicit { .. }) {
+                                coordinate.w = *implicit_lods[i].get(texture as usize).ok_or_else(|| {
+                                    format!("SIR instruction {pc}, lane {i}: missing implicit LOD for texture {texture}")
+                                })?;
+                                if !coordinate.w.is_finite() {
+                                    return Err(format!(
+                                        "SIR instruction {pc}, lane {i}: non-finite implicit LOD"
                                     ));
                                 }
                             }
