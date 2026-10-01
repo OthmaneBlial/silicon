@@ -106,12 +106,13 @@ unchanged upstream fragment shader run through SILICON. See the
 [source, license, and adaptation notes](docs/third-party-demo.md).
 
 Phase 70 renders Freedoom E1M1 geometry, textures, all 29 normal-skill enemy
-sprites, and the WAD pistol through SILICON. The static capture submits 4,872
-triangles across 171 draws: 4,812 map triangles, 29 enemy billboards, and one
-weapon billboard. The interactive prototype adds first-person movement, basic
-collision, player hitscan, health and ammo, pursuing melee enemies, line-of-sight
-hitscan for humans and shotgunners, and imp fireballs. It remains a limited E1M1
-gameplay slice, not a complete Doom game;
+sprites, nine WAD pickups, and the pistol through SILICON. The static capture
+submits 4,890 triangles across 180 draws: 4,812 map triangles, 29 enemy
+billboards, nine pickup billboards, and one weapon billboard. The interactive
+prototype adds first-person movement, basic collision, player hitscan, health
+and ammo pickups, pursuing melee enemies, line-of-sight hitscan for humans and
+shotgunners, and imp fireballs. It remains
+a limited E1M1 gameplay slice, not a complete Doom game;
 BSP visibility, masked walls, and broader game rules remain. The [WAD source,
 controls, screenshots, license, and limits](docs/freedoom.md) are documented.
 The Freedoom WAD stays external.
@@ -119,7 +120,7 @@ An [enemy sprite verification frame](assets/screenshots/freedoom_e1m1_enemy.png)
 shows a real WAD actor through the same pipeline from a temporary start-only
 capture fixture.
 
-![Freedoom E1M1 geometry rendered from its player start by SILICON](assets/screenshots/freedoom_e1m1.png)
+![Freedoom E1M1 map with the WAD pistol and medikit rendered through SILICON](assets/screenshots/freedoom_e1m1.png)
 
 *Static E1M1 view from the player start; this camera does not show an enemy. WAD flats, walls, and gameplay sprites use SILICON's texture and shader paths.*
 

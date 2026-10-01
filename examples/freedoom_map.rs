@@ -764,10 +764,12 @@ struct PreparedScene {
     sampler: Sampler,
     draws: Vec<Draw>,
     sprites: BTreeMap<[u8; 4], SpriteTexture>,
+    pickup_sprites: BTreeMap<[u8; 4], SpriteTexture>,
     weapon_idle: SpriteTexture,
     weapon_fire: SpriteTexture,
     projectile_sprite: SpriteTexture,
     actors: Vec<Actor>,
+    pickups: Vec<Pickup>,
     start: Player,
     triangles: usize,
 }
@@ -794,6 +796,16 @@ struct Projectile {
     velocity_x: f32,
     velocity_y: f32,
     lifetime: f32,
+}
+
+#[derive(Clone, Copy)]
+struct Pickup {
+    sprite: [u8; 4],
+    x: f32,
+    y: f32,
+    health: i32,
+    ammo: i32,
+    active: bool,
 }
 
 struct WallSection {
@@ -888,11 +900,13 @@ fn billboard_vertices(
     vertices
 }
 
-fn actor_vertices(
-    actor: Actor,
+fn sprite_vertices(
+    x: f32,
+    y: f32,
     sprite: &SpriteTexture,
     camera_angle: f32,
     sector: Sector,
+    bottom: f32,
 ) -> Vec<Vertex> {
     let radians = camera_angle.to_radians();
     let axis = Vertex2 {
@@ -900,17 +914,10 @@ fn actor_vertices(
         y: -radians.cos(),
     };
     let left = Vertex2 {
-        x: actor.x - axis.x * sprite.left_offset,
-        y: actor.y - axis.y * sprite.left_offset,
+        x: x - axis.x * sprite.left_offset,
+        y: y - axis.y * sprite.left_offset,
     };
-    billboard_vertices(
-        left,
-        axis,
-        sprite.width,
-        sector.floor,
-        sprite.height,
-        sector,
-    )
+    billboard_vertices(left, axis, sprite.width, bottom, sprite.height, sector)
 }
 
 fn projectile_vertices(
@@ -919,23 +926,63 @@ fn projectile_vertices(
     camera_angle: f32,
     sector: Sector,
 ) -> Vec<Vertex> {
-    let radians = camera_angle.to_radians();
-    let axis = Vertex2 {
-        x: radians.sin(),
-        y: -radians.cos(),
-    };
-    let left = Vertex2 {
-        x: projectile.x - axis.x * sprite.left_offset,
-        y: projectile.y - axis.y * sprite.left_offset,
-    };
-    billboard_vertices(
-        left,
-        axis,
-        sprite.width,
-        sector.floor + 28.0,
-        sprite.height,
+    sprite_vertices(
+        projectile.x,
+        projectile.y,
+        sprite,
+        camera_angle,
         sector,
+        sector.floor + 28.0,
     )
+}
+
+fn pickup_definition(kind: u16) -> Option<([u8; 4], i32, i32)> {
+    match kind {
+        2011 => Some((*b"STIM", 10, 0)),
+        2012 => Some((*b"MEDI", 25, 0)),
+        2007 => Some((*b"CLIP", 0, 10)),
+        2048 => Some((*b"AMMO", 0, 50)),
+        _ => None,
+    }
+}
+
+fn collect_pickups(
+    map: &Map,
+    pickups: &mut [Pickup],
+    player: Player,
+    health: &mut i32,
+    ammo: &mut i32,
+) -> usize {
+    let mut collected = 0;
+    for pickup in pickups.iter_mut().filter(|pickup| pickup.active) {
+        let dx = pickup.x - player.x;
+        let dy = pickup.y - player.y;
+        if dx * dx + dy * dy > 24.0 * 24.0
+            || !has_line_of_sight(
+                map,
+                Vertex2 {
+                    x: player.x,
+                    y: player.y,
+                },
+                Vertex2 {
+                    x: pickup.x,
+                    y: pickup.y,
+                },
+            )
+        {
+            continue;
+        }
+        let next_health = (*health + pickup.health).min(100);
+        let next_ammo = (*ammo + pickup.ammo).min(200);
+        if next_health == *health && next_ammo == *ammo {
+            continue;
+        }
+        *health = next_health;
+        *ammo = next_ammo;
+        pickup.active = false;
+        collected += 1;
+    }
+    collected
 }
 
 fn weapon_vertices(player: Player, sprite: &SpriteTexture, sector: Sector) -> Vec<Vertex> {
@@ -1490,27 +1537,43 @@ impl PreparedScene {
             mip: MipFilter::None,
         };
         let mut sprites = BTreeMap::new();
+        let mut pickup_sprites = BTreeMap::new();
         let mut actors = Vec::new();
+        let mut pickups = Vec::new();
         for &(x, y, _, kind, flags) in &map.things {
-            let Some((prefix, health)) = monster_sprite(kind) else {
-                continue;
-            };
             if flags & 2 == 0 || flags & 16 != 0 {
                 continue;
             }
             if bsp_sector_at(&map, x as f32, y as f32).is_none() {
                 continue;
             }
-            if let Entry::Vacant(entry) = sprites.entry(prefix) {
-                entry.insert(sprite_texture(&data, prefix)?);
+            if let Some((prefix, health)) = monster_sprite(kind) {
+                if let Entry::Vacant(entry) = sprites.entry(prefix) {
+                    entry.insert(sprite_texture(&data, prefix)?);
+                }
+                actors.push(Actor {
+                    sprite: prefix,
+                    x: x as f32,
+                    y: y as f32,
+                    health,
+                    attack_cooldown: 0.0,
+                });
+            } else if let Some((prefix, health, ammo)) = pickup_definition(kind) {
+                if let Entry::Vacant(entry) = pickup_sprites.entry(prefix) {
+                    let mut name = [0; 8];
+                    name[..4].copy_from_slice(&prefix);
+                    name[4..6].copy_from_slice(b"A0");
+                    entry.insert(sprite_patch_texture(&data, name)?);
+                }
+                pickups.push(Pickup {
+                    sprite: prefix,
+                    x: x as f32,
+                    y: y as f32,
+                    health,
+                    ammo,
+                    active: true,
+                });
             }
-            actors.push(Actor {
-                sprite: prefix,
-                x: x as f32,
-                y: y as f32,
-                health,
-                attack_cooldown: 0.0,
-            });
         }
         let mut draws = Vec::new();
         for (name, vertices) in geometry.flats {
@@ -1558,10 +1621,12 @@ impl PreparedScene {
             sampler,
             draws,
             sprites,
+            pickup_sprites,
             weapon_idle,
             weapon_fire,
             projectile_sprite,
             actors,
+            pickups,
             start: Player {
                 x: x as f32,
                 y: y as f32,
@@ -1576,6 +1641,7 @@ impl PreparedScene {
         player: Player,
         actors: &[Actor],
         projectiles: &[Projectile],
+        pickups: &[Pickup],
         weapon_firing: bool,
         renderer: &mut Renderer,
     ) -> api::Result<api::Submission> {
@@ -1610,12 +1676,34 @@ impl PreparedScene {
             let Some(sprite) = self.sprites.get(&actor.sprite) else {
                 continue;
             };
-            let vertices = actor_vertices(*actor, sprite, player.angle, sector);
+            let vertices =
+                sprite_vertices(actor.x, actor.y, sprite, player.angle, sector, sector.floor);
             if vertices.is_empty() {
                 continue;
             }
             let count = u32::try_from(vertices.len())
                 .map_err(|_| invalid("E1M1 sprite vertex count exceeds SILICON draw range"))?;
+            commands.bind_texture(0, sprite.texture.clone(), self.sampler);
+            commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
+            commands.draw(0, count);
+        }
+        for pickup in pickups.iter().filter(|pickup| pickup.active) {
+            let Some(sector) = bsp_sector_at(&self.map, pickup.x, pickup.y) else {
+                continue;
+            };
+            let Some(sprite) = self.pickup_sprites.get(&pickup.sprite) else {
+                continue;
+            };
+            let vertices = sprite_vertices(
+                pickup.x,
+                pickup.y,
+                sprite,
+                player.angle,
+                sector,
+                sector.floor,
+            );
+            let count = u32::try_from(vertices.len())
+                .map_err(|_| invalid("E1M1 pickup vertex count exceeds SILICON draw range"))?;
             commands.bind_texture(0, sprite.texture.clone(), self.sampler);
             commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
             commands.draw(0, count);
@@ -1666,7 +1754,14 @@ fn frame_triangles(scene: &PreparedScene, draws: u64) -> api::Result<usize> {
 fn render(path: &Path, output: &Path) -> api::Result<()> {
     let scene = PreparedScene::load(path)?;
     let mut renderer = Renderer::new(960, 720)?;
-    let submission = scene.draw(scene.start, &scene.actors, &[], false, &mut renderer)?;
+    let submission = scene.draw(
+        scene.start,
+        &scene.actors,
+        &[],
+        &scene.pickups,
+        false,
+        &mut renderer,
+    )?;
     save_frame(&renderer, output)?;
     let triangles = frame_triangles(&scene, submission.draws)?;
     println!(
@@ -1690,9 +1785,11 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     let mut player = scene.start;
     let mut actors = scene.actors.clone();
     let mut projectiles = Vec::new();
+    let mut pickups = scene.pickups.clone();
     let mut health = 100;
-    let mut ammo = 200;
+    let mut ammo = 50;
     let mut kills = 0;
+    let mut collected = 0;
     let mut shot_cooldown = 0.0f32;
     let mut weapon_flash = 0.0f32;
     let mut last = std::time::Instant::now();
@@ -1722,6 +1819,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 },
                 delta,
             );
+            collected += collect_pickups(&scene.map, &mut pickups, player, &mut health, &mut ammo);
             shot_cooldown = (shot_cooldown - delta).max(0.0);
             weapon_flash = (weapon_flash - delta).max(0.0);
             if window.is_key_pressed(Key::Space, KeyRepeat::No) && shot_cooldown == 0.0 && ammo > 0
@@ -1746,6 +1844,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
             player,
             &actors,
             &projectiles,
+            &pickups,
             weapon_flash > 0.0,
             &mut renderer,
         )?;
@@ -1760,7 +1859,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         };
         let triangles = frame_triangles(&scene, submission.draws)?;
         window.set_title(&format!(
-            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire | HP {health} | ammo {ammo} | kills {kills}/{} | {} triangles, {} draws",
+            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire | HP {health} | ammo {ammo} | items {collected} | kills {kills}/{} | {} triangles, {} draws",
             scene.actors.len(),
             triangles,
             submission.draws
@@ -1770,7 +1869,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     }
     save_frame(&renderer, output)?;
     println!(
-        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, health {health}; saved {}",
+        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, health {health}; saved {}",
         scene.actors.len(),
         output.display()
     );
@@ -2229,5 +2328,85 @@ mod tests {
         update_projectiles(&map, &mut projectiles, player, &mut health, 0.3);
         assert!(projectiles.is_empty());
         assert_eq!(health, 92);
+    }
+
+    #[test]
+    fn health_and_pistol_ammo_pickups_apply_caps_and_stay_when_unneeded() {
+        let mut map = Map {
+            vertices: vec![Vertex2 { x: 12.0, y: -32.0 }, Vertex2 { x: 12.0, y: 32.0 }],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut pickups = [
+            Pickup {
+                sprite: *b"STIM",
+                x: 0.0,
+                y: 0.0,
+                health: 10,
+                ammo: 0,
+                active: true,
+            },
+            Pickup {
+                sprite: *b"CLIP",
+                x: 0.0,
+                y: 0.0,
+                health: 0,
+                ammo: 10,
+                active: true,
+            },
+            Pickup {
+                sprite: *b"MEDI",
+                x: 100.0,
+                y: 0.0,
+                health: 25,
+                ammo: 0,
+                active: true,
+            },
+        ];
+        let mut health = 95;
+        let mut ammo = 195;
+        assert_eq!(
+            collect_pickups(&map, &mut pickups, player, &mut health, &mut ammo),
+            2
+        );
+        assert_eq!((health, ammo), (100, 200));
+        assert!(!pickups[0].active && !pickups[1].active && pickups[2].active);
+        assert_eq!(
+            collect_pickups(&map, &mut pickups, player, &mut health, &mut ammo),
+            0
+        );
+        pickups[2].x = 0.0;
+        assert_eq!(
+            collect_pickups(&map, &mut pickups, player, &mut health, &mut ammo),
+            0
+        );
+        assert!(pickups[2].active);
+
+        map.lines.push([0, 1, 1, u16::MAX, u16::MAX]);
+        let mut hidden = [Pickup {
+            sprite: *b"STIM",
+            x: 20.0,
+            y: 0.0,
+            health: 10,
+            ammo: 0,
+            active: true,
+        }];
+        health = 80;
+        assert_eq!(
+            collect_pickups(&map, &mut hidden, player, &mut health, &mut ammo),
+            0
+        );
+        assert_eq!(health, 80);
+        assert!(hidden[0].active);
     }
 }
