@@ -12,5 +12,6 @@ layout(set = 0, binding = 1, std430) writeonly buffer Output {
 
 void main() {
     uint index = gl_GlobalInvocationID.x;
+    if (index >= 4100u) return;
     output_data.values[index] = vec4(1.0) - input_data.values[index];
 }

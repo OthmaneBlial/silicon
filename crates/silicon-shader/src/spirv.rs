@@ -92,6 +92,10 @@ pub fn name(op: u16) -> &'static str {
         167 => "OpLogicalAnd",
         168 => "OpLogicalNot",
         169 => "OpSelect",
+        172 => "OpUGreaterThan",
+        174 => "OpUGreaterThanEqual",
+        176 => "OpULessThan",
+        178 => "OpULessThanEqual",
         180 => "OpFOrdEqual",
         182 => "OpFOrdNotEqual",
         183 => "OpFUnordNotEqual",
@@ -156,7 +160,7 @@ impl Op {
             27 => (2, 2),
             54 | 81 | 87 | 129 | 131 | 133 | 136 | 142 | 145 | 148 => (4, 4),
             88 => (6, 6),
-            164..=167 | 180 | 182..=184 | 186 | 188 | 190 => (4, 4),
+            164..=167 | 172 | 174 | 176 | 178 | 180 | 182..=184 | 186 | 188 | 190 => (4, 4),
             169 => (5, 5),
             245 => (4, 6),
             62 => (2, 2),
@@ -247,6 +251,10 @@ impl Op {
             | 145
             | 148
             | 164..=167
+            | 172
+            | 174
+            | 176
+            | 178
             | 180
             | 182..=184
             | 186
@@ -595,6 +603,26 @@ impl<'a> Compiler<'a> {
         match v.value {
             Value::Reg(r, uv) => Ok((r, v.ty, uv)),
             _ => Err(format!("value %{id} is not a VM register")),
+        }
+    }
+    // ponytail: float-backed uint comparisons are exact through 2^24;
+    // add integer SIR comparisons if wider values become reachable.
+    fn uint_as_float_reg(&mut self, id: u32) -> Result<u8> {
+        let value = self.value(id)?;
+        if self.ty(value.ty)? != Ty::UInt {
+            return Err("unsigned comparison requires scalar uint32 operands".into());
+        }
+        match value.value {
+            Value::Reg(register, _) => Ok(register),
+            Value::Int(value) if value <= 16_777_216 => {
+                let value = value as f32;
+                self.emit(|dst| Sir::Const {
+                    dst,
+                    value: Vec4::new(value, value, value, value),
+                })
+            }
+            Value::Int(_) => Err("unsigned comparison constants must not exceed 16777216".into()),
+            _ => Err("unsigned comparison requires a register or uint32 constant".into()),
         }
     }
     fn emit(&mut self, f: impl FnOnce(u8) -> Sir) -> Result<u8> {
@@ -1593,6 +1621,40 @@ impl<'a> Compiler<'a> {
                     },
                 );
             }
+            172 | 174 | 176 | 178 => {
+                let x_type = self.value(a[2])?.ty;
+                let y_type = self.value(a[3])?.ty;
+                if self.stage != Stage::Compute
+                    || x_type != y_type
+                    || self.ty(x_type)? != Ty::UInt
+                    || self.ty(a[0])? != Ty::Bool
+                {
+                    return Err(
+                        "unsigned compute comparison requires scalar uint32 operands and a bool result".into(),
+                    );
+                }
+                let x = self.uint_as_float_reg(a[2])?;
+                let y = self.uint_as_float_reg(a[3])?;
+                let kind = match op.opcode {
+                    172 => Comparison::Greater,
+                    174 => Comparison::GreaterEqual,
+                    176 => Comparison::Less,
+                    _ => Comparison::LessEqual,
+                };
+                let r = self.emit(|dst| Sir::Compare {
+                    dst,
+                    a: x,
+                    b: y,
+                    kind,
+                })?;
+                self.values.insert(
+                    a[1],
+                    Typed {
+                        ty: a[0],
+                        value: Value::Reg(r, false),
+                    },
+                );
+            }
             145 => {
                 let m = self.value(a[2])?;
                 let Value::Matrix(uniform) = m.value else {
@@ -1958,7 +2020,10 @@ impl<'a> Compiler<'a> {
                 );
             }
             if !self.written.contains(&0) {
-                return Err("compute main must write its storage output on every live path".into());
+                return Err(
+                    "compute main must write storage output on every path that reaches its end"
+                        .into(),
+                );
             }
         }
         for op in &self.module.instructions {

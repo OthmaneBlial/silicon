@@ -104,9 +104,8 @@ impl Compiler<'_> {
     }
     fn check_return(&self) -> Result<()> {
         if self.stage == Stage::Compute {
-            return self.written.contains(&0).then_some(()).ok_or_else(|| {
-                "compute return must write its storage output on every live path".into()
-            });
+            // Bounds-guarded invocations may return without touching storage.
+            return Ok(());
         }
         if !self.written.contains(&0) {
             return Err(
@@ -269,6 +268,10 @@ impl Compiler<'_> {
                     | 145
                     | 148
                     | 164..=169
+                    | 172
+                    | 174
+                    | 176
+                    | 178
                     | 180
                     | 182..=184
                     | 186

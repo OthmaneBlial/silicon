@@ -445,8 +445,10 @@ impl Device {
                 values[1] = id(local);
                 values[2] = id(group);
                 values[3] = id(workgroups);
-                for (slot, buffer) in inputs.iter().enumerate() {
-                    values[4 + slot] = buffer.values[input_layouts[slot].index(linear)];
+                if !pipeline.storage_only {
+                    for (slot, buffer) in inputs.iter().enumerate() {
+                        values[4 + slot] = buffer.values[input_layouts[slot].index(linear)];
+                    }
                 }
             }
             let input_lanes = [
@@ -605,10 +607,12 @@ fn dispatch_workgroups_scalar(
                             shader_inputs[1] = id([lx, ly, lz]);
                             shader_inputs[2] = id([wx, wy, wz]);
                             shader_inputs[3] = id(workgroups);
-                            for (slot, (buffer, layout)) in
-                                inputs.iter().zip(input_layouts).enumerate()
-                            {
-                                shader_inputs[4 + slot] = buffer.values[layout.index(linear)];
+                            if !pipeline.storage_only {
+                                for (slot, (buffer, layout)) in
+                                    inputs.iter().zip(input_layouts).enumerate()
+                                {
+                                    shader_inputs[4 + slot] = buffer.values[layout.index(linear)];
+                                }
                             }
                             local_inputs.push(shader_inputs);
                             linears.push(linear);
@@ -921,8 +925,10 @@ fn scalar_invocation(
     shader_inputs[1] = id(local);
     shader_inputs[2] = id(group);
     shader_inputs[3] = id(workgroups);
-    for (slot, (buffer, layout)) in inputs.iter().zip(input_layouts).enumerate() {
-        shader_inputs[4 + slot] = buffer.values[layout.index(linear)];
+    if !pipeline.storage_only {
+        for (slot, (buffer, layout)) in inputs.iter().zip(input_layouts).enumerate() {
+            shader_inputs[4 + slot] = buffer.values[layout.index(linear)];
+        }
     }
     let execution = pipeline.program.execute_with_lod_and_storage(
         &shader_inputs[..input_count],
@@ -1040,6 +1046,7 @@ mod tests {
 
     #[test]
     fn dispatches_glsl_spirv_vec4_inversion() {
+        const ELEMENTS: usize = 4100;
         let device = Device::new();
         let pipeline = device
             .create_compute_pipeline_from_spirv(include_bytes!(
@@ -1048,20 +1055,31 @@ mod tests {
             .unwrap();
         let input = device
             .create_storage_buffer(
-                (0..64)
+                (0..ELEMENTS)
                     .map(|i| {
-                        let value = i as f32 / 64.0;
+                        let value = i as f32 / ELEMENTS as f32;
                         Vec4::new(value, value * 0.5, 1.0 - value, 1.0)
                     })
                     .collect(),
             )
             .unwrap();
-        let mut output = device.create_storage_buffer(vec![Vec4::ZERO; 64]).unwrap();
+        let mut output = device
+            .create_storage_buffer(vec![Vec4::ZERO; ELEMENTS])
+            .unwrap();
+        let mut simd_output = device
+            .create_storage_buffer(vec![Vec4::ZERO; ELEMENTS])
+            .unwrap();
 
         let stats = device
-            .dispatch_compute(&pipeline, [1, 1, 1], &[&input], &mut output)
+            .dispatch_compute(&pipeline, [65, 1, 1], &[&input], &mut output)
             .unwrap();
-        assert_eq!(stats.invocations, 64);
+        let simd_stats = device
+            .dispatch_compute_simd(&pipeline, [65, 1, 1], &[&input], &mut simd_output)
+            .unwrap();
+        assert_eq!(stats.invocations, 4160);
+        assert_eq!(stats.workgroups, 65);
+        assert_eq!(simd_stats.invocations, 4160);
+        assert_eq!(simd_output.as_slice(), output.as_slice());
         assert!(
             output
                 .as_slice()
