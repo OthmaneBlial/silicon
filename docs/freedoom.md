@@ -76,7 +76,7 @@ door open. The release WAD has six such lines for tags 5 and 6, targeting closed
 sectors 77 and 145. Trigger lines activate only after accepted player movement;
 the one-shot special clears once crossed. This follows id Software's
 [`P_CrossSpecialLine` open-door action](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_spec.c).
-Player crossings of repeatable special-88 lines trigger the tagged platform to
+Player or living-enemy crossings of repeatable special-88 lines trigger the tagged platform to
 descend at 140 units per second to the lowest neighboring floor, wait 105 tics
 (3 seconds), then return to its starting height. The release WAD has five such
 lines for tags 1 and 2, targeting sectors 98 and 103. Platform floors and their
@@ -106,8 +106,8 @@ and 34 do the same for blue, red, and yellow locks; they require the matching
 card or skull and clear the one-shot line after activation. The open-stay and
 key mapping follow id Software's [`EV_VerticalDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c)
 and [`P_UseSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c).
-Other locked-door action variants, enemy-triggered platforms, and other line
-specials remain unsupported.
+Other locked-door action variants, enemy-triggered platform actions besides
+special 88, and other line specials remain unsupported.
 
 E1M1 contains four secret sectors (sector special 9). Entering one increments
 the secret counter in the window title once and clears its secret flag, matching

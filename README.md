@@ -194,8 +194,8 @@ close with matching map geometry and collision. Its special-117 use door raises
 at four times normal speed, then closes after the same wait. Crossing a WAD
 special-2 line opens sectors with its tag and leaves them open. Normal exits
 advance when the next WAD map exists; special-51 exits route through episode
-secret maps. The player can cross a special-88 line or use a
-special-62 line to move its tagged platform down, wait, then return it to its
+secret maps. The player or a living enemy can cross a special-88 line, or the
+player can use a special-62 line to move its tagged platform down, wait, then return it to its
 starting height. The special-23 use line lowers its three tagged floors to
 their lowest neighboring height once. Matching red, yellow, or blue cards and
 skulls open special-28, special-27, and special-26 doors; use-only specials
