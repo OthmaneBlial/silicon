@@ -256,6 +256,68 @@ fn scalar_simd_and_parallel_frames_are_identical() {
     }
 }
 #[test]
+fn shared_vertex_bands_run_each_vertex_shader_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let vertices = triangle(0.5, Color::new(0.8, 0.2, 0.1, 1.));
+    let pipeline = Pipeline::default();
+    let mut expected = Renderer::new(64, 64).unwrap();
+    expected.clear(Color::BLACK);
+    expected
+        .draw(&vertices, None, pipeline, vertex, |f| Some(f.color()))
+        .unwrap();
+
+    let calls = AtomicUsize::new(0);
+    let mut parallel = Renderer::new(64, 64).unwrap();
+    parallel.clear(Color::BLACK);
+    parallel
+        .render_bands_shared_vertices(4, |band| {
+            band.draw(
+                &vertices,
+                None,
+                pipeline,
+                |v| {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    vertex(v)
+                },
+                |f| Some(f.color()),
+            )
+        })
+        .unwrap();
+
+    assert_eq!(calls.load(Ordering::Relaxed), vertices.len());
+    assert_eq!(parallel.framebuffer.bytes(), expected.framebuffer.bytes());
+    assert_eq!(parallel.stats.vertices, vertices.len() as u64);
+    assert_eq!(parallel.stats.fragments, expected.stats.fragments);
+}
+#[test]
+fn shared_vertex_bands_reject_pipeline_drift() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let vertices = triangle(0.5, Color::WHITE);
+    let calls = AtomicUsize::new(0);
+    let mut parallel = Renderer::new(64, 64).unwrap();
+    let error = parallel
+        .render_bands_shared_vertices(2, |band| {
+            let pipeline = if calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                Pipeline::default()
+            } else {
+                Pipeline {
+                    blend: Blend::Alpha,
+                    ..Default::default()
+                }
+            };
+            band.draw(&vertices, None, pipeline, vertex, |f| Some(f.color()))
+        })
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("different geometry or pipeline state")
+    );
+}
+#[test]
 fn stencil_masks_restrict_color_and_pass_ops() {
     let mut r = Renderer::new(16, 16).unwrap();
     r.clear(Color::BLACK);

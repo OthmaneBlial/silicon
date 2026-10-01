@@ -1,6 +1,6 @@
 use crate::{Color, Vec2, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Vertex {
     pub position: Vec3,
     pub normal: Vec3,

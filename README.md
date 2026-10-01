@@ -315,14 +315,15 @@ flowchart LR
 | Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 graphics subset plus narrow vec4/uint storage-buffer compute subset → SIR; nested selections, Phi, early return/discard |
 | Compute | Experimental SIR dispatch, 3D IDs, up to 12 indexed read buffers, checked record layouts, staged indexed writes, 64 KiB per-workgroup shared memory and barriers, scalar f32 storage atomics, bounded GLSL/SPIR-V vec4 addition, guarded inversion, shared-array broadcast and uint atomics; divergent barriers and shared-memory races fail safely; synchronized kernels use the scalar scheduler |
 | Output merger | Replace, source alpha, additive and multiplicative blending; color/depth write enables |
-| Execution | Scalar reference, optional SIMD coverage4 and NEON/SSE four-fragment SIR, disjoint worker bands |
+| Execution | Scalar reference, optional SIMD coverage4 and NEON/SSE four-fragment SIR, disjoint worker bands with optional shared vertex outputs |
 | Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling, pipeline-cache probe, cargo-fuzz targets |
 
 The opt-in SIMD path processes four coverage lanes and runs recorded SIR fragment
 shaders in masked groups of four. Arithmetic spans fragments; vertex shaders,
-native Rust closures, power and texture callbacks remain scalar. Tiled coverage
-is implemented; full primitive binning and persistent worker pools are future work.
-Parallel bands repeat geometry setup. Tests compare exact scalar/SIMD framebuffer
+native Rust closures, power and texture callbacks remain scalar. Ordered bounded
+triangle bins and shared vertex outputs for matching band draws are implemented;
+primitive setup still repeats per band, and persistent worker pools remain future work.
+Tests compare exact scalar/SIMD framebuffer
 bytes and bitwise VM outputs/traces for all sixteen lane masks. See [SIMD details](docs/simd.md).
 
 ## Measure it

@@ -1,4 +1,5 @@
 use crate::*;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 const SUBPIXEL: i64 = 256;
 const TILE: u32 = 16;
@@ -6,9 +7,80 @@ const TILE: u32 = 16;
 const MAX_BINNED_TILES: usize = 262_144;
 const MAX_BINNED_TRIANGLES: usize = 256;
 const MAX_TILE_REFERENCES: usize = 1_048_576;
+const MAX_SHARED_VERTEX_DRAWS: usize = 4_096;
+// ponytail: bound one render's shared vertex copy to 16 MiB; larger workloads compute per band.
+const MAX_SHARED_VERTEX_CACHE_BYTES: usize = 16 * 1024 * 1024;
 const SAMPLE_2X: [(i64, i64); 2] = [(64, 64), (192, 192)];
 const SAMPLE_4X: [(i64, i64); 4] = [(96, 32), (224, 96), (32, 160), (160, 224)];
 type ColorOutputs = [Option<Color>; MAX_COLOR_ATTACHMENTS];
+struct SharedVertexEntry {
+    vertices: Vec<Vertex>,
+    indices: Option<Vec<u32>>,
+    pipeline: Pipeline,
+    transformed: Arc<[VertexOutput]>,
+}
+#[derive(Default)]
+struct SharedVertexState {
+    entries: Vec<Option<SharedVertexEntry>>,
+    bytes: usize,
+}
+#[derive(Default)]
+struct SharedVertexCache(Mutex<SharedVertexState>);
+impl SharedVertexCache {
+    fn get_or_compute<F: FnOnce() -> Result<Vec<VertexOutput>>>(
+        &self,
+        draw: usize,
+        vertices: &[Vertex],
+        indices: Option<&[u32]>,
+        pipeline: Pipeline,
+        compute: F,
+    ) -> Result<(Arc<[VertexOutput]>, bool)> {
+        if draw >= MAX_SHARED_VERTEX_DRAWS {
+            return Ok((compute()?.into(), true));
+        }
+        let mut entries = self.0.lock().map_err(|_| "shared vertex cache poisoned")?;
+        entries.entries.resize_with(draw + 1, || None);
+        if let Some(entry) = &entries.entries[draw] {
+            if entry.vertices.as_slice() != vertices
+                || entry.indices.as_deref() != indices
+                || entry.pipeline != pipeline
+            {
+                return Err(format!(
+                    "shared vertex cache draw {draw} received different geometry or pipeline state"
+                )
+                .into());
+            }
+            return Ok((Arc::clone(&entry.transformed), false));
+        }
+        let transformed: Arc<[VertexOutput]> = compute()?.into();
+        let entry_bytes = vertices
+            .len()
+            .checked_mul(std::mem::size_of::<Vertex>() + std::mem::size_of::<VertexOutput>())
+            .and_then(|bytes| {
+                indices
+                    .map_or(Some(0), |values| {
+                        values.len().checked_mul(std::mem::size_of::<u32>())
+                    })
+                    .and_then(|index_bytes| bytes.checked_add(index_bytes))
+            });
+        if entry_bytes.is_some_and(|bytes| {
+            entries
+                .bytes
+                .checked_add(bytes)
+                .is_some_and(|total| total <= MAX_SHARED_VERTEX_CACHE_BYTES)
+        }) {
+            let bytes = entry_bytes.unwrap();
+            entries.bytes += bytes;
+            entries.entries[draw] = Some(SharedVertexEntry {
+                vertices: vertices.to_vec(),
+                indices: indices.map(<[u32]>::to_vec),
+                pipeline,
+                transformed: Arc::clone(&transformed),
+            });
+        }
+        Ok((transformed, true))
+    }
+}
 #[derive(Clone, Debug, Default)]
 pub struct Statistics {
     pub command_processing_time: Duration,
@@ -75,6 +147,8 @@ pub struct Renderer {
     pub stats: Statistics,
     pub debug_pixel: Option<(u32, u32)>,
     pub traces: Vec<PixelTrace>,
+    shared_vertices: Option<Arc<SharedVertexCache>>,
+    draw_index: usize,
 }
 #[derive(Clone, Copy)]
 struct ScreenVertex {
@@ -127,6 +201,8 @@ impl Renderer {
             stats: Statistics::default(),
             debug_pixel: None,
             traces: Vec::new(),
+            shared_vertices: None,
+            draw_index: 0,
         })
     }
     /// Select single-sample, 2× or 4× attachments before drawing.
@@ -241,13 +317,30 @@ impl Renderer {
         if indices.is_some_and(|i| i.iter().any(|&n| n as usize >= vertices.len())) {
             return Err("draw index outside vertex buffer".into());
         }
-        let start = Instant::now();
-        let transformed: Vec<_> = vertices.iter().map(vertex).collect::<Result<Vec<_>>>()?;
-        if !transformed.iter().all(VertexOutput::is_finite) {
-            return Err("vertex shader produced a non-finite output".into());
-        }
+        let draw_index = self.draw_index;
+        self.draw_index += 1;
+        let transform = || {
+            let transformed = vertices.iter().map(vertex).collect::<Result<Vec<_>>>()?;
+            if !transformed.iter().all(VertexOutput::is_finite) {
+                return Err("vertex shader produced a non-finite output".into());
+            }
+            Ok(transformed)
+        };
+        let transformed: Arc<[VertexOutput]> = if let Some(cache) = &self.shared_vertices {
+            let start = Instant::now();
+            let (transformed, computed) =
+                cache.get_or_compute(draw_index, vertices, indices, pipeline, transform)?;
+            if computed {
+                self.stats.vertex_time += start.elapsed();
+            }
+            transformed
+        } else {
+            let start = Instant::now();
+            let transformed: Arc<[VertexOutput]> = transform()?.into();
+            self.stats.vertex_time += start.elapsed();
+            transformed
+        };
         self.stats.vertices += vertices.len() as u64;
-        self.stats.vertex_time += start.elapsed();
         let start = Instant::now();
         let render_result = (|| {
             let tiles_x = self.framebuffer.width.div_ceil(TILE);
@@ -858,6 +951,32 @@ impl Renderer {
     where
         F: Fn(&mut Renderer) -> Result<()> + Sync,
     {
+        self.render_bands_inner(threads, render, None)
+    }
+    /// Like `render_bands`, but shares vertex shader results for identical draws.
+    /// The closure must submit the same draw sequence, geometry, pipeline state,
+    /// and vertex shader behavior for every band. Fragment shading remains local.
+    /// The cache retains at most 16 MiB across 4,096 draws; larger draws execute
+    /// locally in each band.
+    pub fn render_bands_shared_vertices<F>(&mut self, threads: usize, render: F) -> Result<()>
+    where
+        F: Fn(&mut Renderer) -> Result<()> + Sync,
+    {
+        self.render_bands_inner(
+            threads,
+            render,
+            Some(Arc::new(SharedVertexCache::default())),
+        )
+    }
+    fn render_bands_inner<F>(
+        &mut self,
+        threads: usize,
+        render: F,
+        shared_vertices: Option<Arc<SharedVertexCache>>,
+    ) -> Result<()>
+    where
+        F: Fn(&mut Renderer) -> Result<()> + Sync,
+    {
         if !(1..=64).contains(&threads) {
             return Err("raster workers must be 1..64".into());
         }
@@ -877,6 +996,8 @@ impl Renderer {
                 stats: Statistics::default(),
                 debug_pixel: self.debug_pixel,
                 traces: Vec::new(),
+                shared_vertices: shared_vertices.clone(),
+                draw_index: 0,
                 row_offset: y,
                 viewport_height: self.framebuffer.height,
             });
@@ -939,5 +1060,33 @@ impl Renderer {
     }
     pub fn surface_size(&self) -> (u32, u32) {
         (self.framebuffer.width, self.viewport_height)
+    }
+}
+
+#[cfg(test)]
+mod shared_vertex_cache_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_draws_are_computed_without_being_cached() {
+        let bytes_per_vertex = std::mem::size_of::<Vertex>() + std::mem::size_of::<VertexOutput>();
+        let count = MAX_SHARED_VERTEX_CACHE_BYTES / bytes_per_vertex + 1;
+        let vertices = vec![Vertex::new(Vec3::ZERO, Color::BLACK); count];
+        let output = VertexOutput {
+            position: Vec4::new(0., 0., 0., 1.),
+            varyings: [Vec4::ZERO; 4],
+        };
+        let cache = SharedVertexCache::default();
+
+        for _ in 0..2 {
+            let (transformed, computed) = cache
+                .get_or_compute(0, &vertices, None, Pipeline::default(), || {
+                    Ok(vec![output; count])
+                })
+                .unwrap();
+            assert!(computed);
+            assert_eq!(transformed.len(), count);
+        }
+        assert_eq!(cache.0.lock().unwrap().bytes, 0);
     }
 }

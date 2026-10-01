@@ -101,9 +101,11 @@ recorded SIR fragment shaders execute surviving lanes as a masked group of four;
 vertex shaders and native closures retain scalar execution. See [SIMD masks](simd.md).
 Parallel rendering assigns disjoint horizontal bands to Rust scoped threads,
 each using local tile bins. Draw order is preserved within every band, including
-depth, stencil and blending. Each band still repeats vertex and primitive setup;
-sharing prepared triangles across workers and persistent workers remain future
-optimization work.
+depth, stencil and blending. `render_bands_shared_vertices` is an opt-in for
+identical per-band draw streams: it validates geometry and pipeline state and
+runs each draw's vertex shader once, then shares the immutable outputs. Primitive
+setup and tile bins remain local to each band; persistent workers remain future
+optimization work. The CLI and offline animation use the shared-vertex path.
 
 See [Khronos rasterization conventions](https://docs.vulkan.org/spec/latest/chapters/primsrast.html)
 for background on pixel coverage and interpolation. These conventions do not

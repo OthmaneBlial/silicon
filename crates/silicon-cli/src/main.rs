@@ -123,7 +123,7 @@ fn frame(r: &mut Renderer, scene: &Scene, threads: usize) -> Result<Option<Submi
         let submission = if threads == 1 {
             Some(Device.submit(&capture.commands, r)?)
         } else {
-            r.render_bands(threads, |band| {
+            r.render_bands_shared_vertices(threads, |band| {
                 Device.submit(&capture.commands, band).map(|_| ())
             })?;
             None
@@ -132,7 +132,7 @@ fn frame(r: &mut Renderer, scene: &Scene, threads: usize) -> Result<Option<Submi
         return Ok(submission);
     }
     if threads > 1 {
-        r.render_bands(threads, |band| frame(band, scene, 1).map(|_| ()))?;
+        r.render_bands_shared_vertices(threads, |band| frame(band, scene, 1).map(|_| ()))?;
         return Ok(None);
     }
     if matches!(
@@ -395,7 +395,7 @@ fn run() -> Result<()> {
         let submission = if o.threads == 1 {
             Some(Device.submit(&c.commands, &mut r)?)
         } else {
-            r.render_bands(o.threads, |band| {
+            r.render_bands_shared_vertices(o.threads, |band| {
                 Device.submit(&c.commands, band).map(|_| ())
             })?;
             None
