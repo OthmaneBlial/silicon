@@ -56,6 +56,12 @@ pub enum UnaryMath {
     Fract,
     Sin,
     Cos,
+    Exp,
+    Log,
+    Exp2,
+    Log2,
+    Sqrt,
+    InverseSqrt,
 }
 impl UnaryMath {
     fn apply(self, value: f32) -> f32 {
@@ -68,6 +74,12 @@ impl UnaryMath {
             Self::Fract => value - value.floor(),
             Self::Sin => value.sin(),
             Self::Cos => value.cos(),
+            Self::Exp => value.exp(),
+            Self::Log => value.ln(),
+            Self::Exp2 => value.exp2(),
+            Self::Log2 => value.log2(),
+            Self::Sqrt => value.sqrt(),
+            Self::InverseSqrt => value.sqrt().recip(),
         }
     }
 }

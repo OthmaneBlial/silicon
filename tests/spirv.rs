@@ -245,22 +245,24 @@ fn glsl_std450_floor_fract_sin_cos_run_in_scalar_and_packet_vm() {
         .unwrap();
     for lane in 0..4 {
         let source = inputs[lane].to_array();
+        let positive = source[0] * source[0] + 1.0;
         let expected = [
             source[0].floor()
                 + source[0].ceil()
                 + source[0].trunc()
                 + source[0].round()
                 + source[0].round_ties_even(),
-            source[1] - source[1].floor(),
-            source[2].sin(),
-            source[3].cos(),
+            source[1] - source[1].floor() + positive.sqrt() + positive.sqrt().recip(),
+            source[2].sin() + source[3].cos(),
+            (source[2] * 0.1).exp() + (source[2] * 0.1).exp2() + positive.ln() + positive.log2(),
         ];
         assert_eq!(packet[lane].outputs[0], scalar[lane]);
         for (actual, expected) in packet[lane].outputs[0].to_array().into_iter().zip(expected) {
             assert!((actual - expected).abs() < 1e-6);
         }
     }
-    assert_eq!(scalar[0].y, 0.75);
+    assert_eq!(scalar[0].x, -12.);
+    assert_eq!(scalar[3].x, 12.);
 }
 #[test]
 fn glsl_unary_math_renders_identically_through_worker_bands() {
