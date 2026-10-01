@@ -96,8 +96,34 @@ most 1,048,576 total invocations. Storage buffers contain at most 1,048,576
 finite vec4 values. Dispatch results are staged and copied to the output only
 after every invocation succeeds, so a failed shader leaves output unchanged.
 
-This is an initial data-parallel SIR path, not general compute compatibility.
-Programs cannot bind uniforms or textures, write multiple map outputs, use
-cross-workgroup barriers, integer/vector atomics, or compute-stage SPIR-V.
+## GLSL compute through SPIR-V
+
+`Device::create_compute_pipeline_from_spirv` accepts one narrow SPIR-V 1.0
+compute path and lowers it into the same SIR dispatcher. It supports a declared
+`LocalSize` up to 1,024 invocations, the `uvec3` global/local/workgroup ID and
+workgroup-count built-ins, and set-0 read-only `vec4[]` storage buffers at
+bindings `0..N-1` followed by one write-only `vec4[]` output at binding `N`.
+The runtime-array stride must be 16 bytes and its block member offset must be
+zero. At most 12 input buffers are accepted. Loads and writes use shader
+indices, and every address is checked during dispatch; explicit writes are
+staged and only modify elements the shader writes.
+
+The checked-in GLSL vector-add kernel is compiled offline with glslang. Run it
+without a GPU or display:
+
+```sh
+glslangValidator -V --target-env vulkan1.0 \
+  assets/shaders/compute_vector_add.comp \
+  -o assets/shaders/compute_vector_add.comp.spv
+cargo run --release --example compute_spirv_vector_add
+```
+
+This proves GLSL → SPIR-V → SIR → CPU storage-buffer execution. The host chooses
+the workgroup count, so this sample dispatches exactly 4,096 invocations for
+4,096 elements; shaders with a partial final workgroup must guard their own
+indices. Compute SPIR-V does not yet support shared memory, barriers, atomics,
+textures, uniforms, general integer arithmetic, loops, or storage images.
+
+This remains an initial data-parallel path, not general compute compatibility.
 Dispatch is synchronous; command-buffer capture/replay and C API support are not
 included yet.

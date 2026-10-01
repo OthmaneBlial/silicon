@@ -107,6 +107,12 @@ atomics. Run the vector-add proof (4,096 checked outputs):
 cargo run --release --example compute_vector_add
 ```
 
+Run the same workload from GLSL compiled to SPIR-V and lowered into SIR:
+
+```sh
+cargo run --release --example compute_spirv_vector_add
+```
+
 Compare scalar and SIMD4 SIR with Rust CPU loops on vector addition and
 4×4 matrix-vector transforms:
 
@@ -126,8 +132,8 @@ Run the cross-workgroup atomic sum and prefix proof (16 verified prefixes):
 cargo run --release --example compute_atomics
 ```
 
-The bounded contract has no cross-workgroup barriers, integer/vector atomics,
-or compute-stage SPIR-V. See the
+The compute SPIR-V path currently accepts a narrow vec4 storage-buffer subset;
+general compute remains unsupported. See the
 [compute limits](docs/compute.md).
 
 Phase 68 adds a separate Rust-only [Vulkan-like subset](docs/vulkan-like.md)
@@ -275,8 +281,8 @@ flowchart LR
 | Shading | Native Lambert/Blinn reference; GLSL Blinn and Cook-Torrance GGX metallic/roughness through SPIR-V |
 | Attachments | RGBA8/BGRA8, depth with 8 compare modes, stencil masks/operations |
 | Texturing | RGBA8/RGB8/R8 2D, array and 3D textures; depth textures and cube maps; nearest/bilinear/trilinear, clamp/repeat/mirror and mip generation/LOD |
-| Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 → SIR; nested selections, Phi, early return/discard |
-| Compute | Experimental SIR dispatch, 3D IDs, up to 12 indexed read buffers, checked record layouts, staged indexed writes, 64 KiB per-workgroup shared memory and barriers, and scalar f32 storage atomics; divergent barriers and shared-memory races fail safely; synchronized kernels use the scalar scheduler |
+| Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 graphics subset plus narrow vec4 storage-buffer compute subset → SIR; nested selections, Phi, early return/discard |
+| Compute | Experimental SIR dispatch, 3D IDs, up to 12 indexed read buffers, checked record layouts, staged indexed writes, 64 KiB per-workgroup shared memory and barriers, scalar f32 storage atomics, and bounded GLSL/SPIR-V vec4 vector add; divergent barriers and shared-memory races fail safely; synchronized kernels use the scalar scheduler |
 | Output merger | Replace, source alpha, additive and multiplicative blending; color/depth write enables |
 | Execution | Scalar reference, optional SIMD coverage4 and NEON/SSE four-fragment SIR, disjoint worker bands |
 | Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling, pipeline-cache probe, cargo-fuzz targets |
@@ -325,10 +331,11 @@ PNG and scalar/SIMD/parallel equivalence. Golden changes require an explicit
 
 ## Boundaries
 
-This is a research software GPU, not a conformant driver. SPIR-V support is
-a narrow graphics subset with acyclic structured selections with a fixed binding contract. **General
+This is a research software GPU, not a conformant driver. Graphics SPIR-V support is
+a narrow subset with acyclic structured selections and a fixed binding contract;
+compute SPIR-V supports only the documented vec4 storage-buffer path. **General
 SPIR-V/GLSL compatibility, WGSL, conformant Vulkan/OpenGL drivers, general compute,
-compute-stage SPIR-V, JIT, and full-game compatibility are not implemented.** Phase 70 is a limited
+JIT, and full-game compatibility are not implemented.** Phase 70 is a limited
 Freedoom E1M1 gameplay slice. The small Rust Vulkan-like subset is documented
 separately; it is not binary compatible with Vulkan. Do not infer support from the long-term roadmap. MSAA and
 GLSL shadow-map samples are implemented within the documented renderer subset. Multiple color

@@ -1,8 +1,9 @@
 # SPIR-V → SIR → CPU pixels
 
-SILICON implements a **strict SPIR-V 1.0 graphics subset**, implemented directly in
-Rust. It parses binary words, validates the supported module and translates it
-into SIR. Both vertex and fragment programs execute through the existing CPU VM.
+SILICON implements a **strict SPIR-V 1.0 graphics subset** plus a narrow
+compute-stage storage-buffer subset, implemented directly in Rust. It parses
+binary words, validates the supported module and translates it into SIR. Vertex,
+fragment and supported compute programs execute through the existing CPU VM.
 No external compiler or GPU is called at runtime. This is not SPIR-V conformance,
 a Vulkan driver, or general GLSL support.
 
@@ -14,7 +15,7 @@ The committed original GLSL sources and their `.spv` fixtures are in
 recompile fixtures, not to build, test or run SILICON:
 
 ```sh
-for shader in textured.vert textured.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag; do
+for shader in textured.vert textured.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag compute_vector_add.comp; do
   glslangValidator -V --target-env vulkan1.0 -o "assets/shaders/$shader.spv" "assets/shaders/$shader"
   spirv-val --target-env vulkan1.0 "assets/shaders/$shader.spv"
 done
@@ -33,6 +34,7 @@ cargo run --release -p silicon-cli -- run spirv_cutout --backend simd
 cargo run --release -p silicon-cli -- run spirv_cube
 cargo run --release -p silicon-cli -- render spirv_cube --capture output/glsl.silicon
 cargo run --release -p silicon-cli -- replay output/glsl.silicon
+cargo run --release --example compute_spirv_vector_add
 ```
 
 `render-shaders` loads the supplied binaries and uses the cube's ordinary vertex,
@@ -61,29 +63,37 @@ faces. This environment term is not split-sum image-based lighting.
 
 ## Accepted subset
 
-- One `main` entry point: Vertex or Fragment, one `void()` function, acyclic structured
-  selection blocks, `OpReturn`, Logical/GLSL450 memory model, Shader capability. Fragment
-  requires OriginUpperLeft. GLSL.std.450 supports `Pow`, `FMin`, `FMax`,
+- One `main` entry point: Vertex, Fragment or the documented narrow Compute
+  subset, one `void()` function, acyclic structured selection blocks, `OpReturn`,
+  Logical/GLSL450 memory model and Shader capability. Fragment requires
+  OriginUpperLeft; compute requires `LocalSize`. GLSL.std.450 supports `Pow`, `FMin`, `FMax`,
   `FClamp`, `FMix`, `Length` and `Normalize` with checked operand counts/types.
-- Float32 scalars, vec2/3/4, mat4 and scalar bool; int32 constants only for member indices;
-  logical input/output/uniform/sampler/Function pointers; one-member structs.
-  Float/vector/bool locals must be declared first in the entry block and initialized
-  on every live path before loading. Stores preserve previous SSA snapshots; component stores require an
+- Float32 scalars, vec2/3/4, mat4 and scalar bool; int32 constants for graphics
+  member indices. Graphics supports logical input/output/uniform/sampler/Function
+  pointers and one-member structs. Float/vector/bool locals must be declared first
+  in the entry block and initialized on every live path before loading. Stores preserve previous SSA snapshots; component stores require an
   initialized vector. Local matrices and guest pointer memory are unsupported.
 - `OpConstant`, `OpConstantTrue/False`, vector `OpConstantComposite`, `OpVariable`, `OpLoad`, `OpStore`,
-  constant-index uniform-member and input/uniform/local vector-component `OpAccessChain`, vector `OpCompositeConstruct`,
+  constant-index uniform-member and input/uniform/local vector-component `OpAccessChain`, plus compute runtime-array accesses, vector `OpCompositeConstruct`,
   `OpCompositeExtract`, `OpVectorShuffle`, float/vector/matrix/sampler `OpCopyObject`.
 - `OpFNegate`, `OpFAdd`, `OpFSub`, `OpFMul`, `OpFDiv`, `OpVectorTimesScalar`,
   uniform `OpMatrixTimesVector`, `OpDot`, combined sampler2D
   `OpImageSampleImplicitLod`, and sampler2D/samplerCube `OpImageSampleExplicitLod`
-  with a scalar LOD and the Lod-only image operand mask. Cube coordinates are vec3.
+  with a scalar LOD and the Lod-only image operand mask. Compute also accepts
+  `OpConvertUToF` for exact dispatch IDs. Cube coordinates are vec3.
 - `OpBranch`, scalar-bool `OpBranchConditional`, `OpSelectionMerge None`,
   float/vector/bool `OpPhi`, fragment `OpKill`, and early `OpReturn`.
   Scalar float ordered comparisons (equal, unequal, less/greater, inclusive forms),
   `OpFUnordNotEqual`, scalar bool logical equal/unequal/and/or/not, and `OpSelect`
   with a scalar bool and matching scalar float/bool alternatives.
-- Location, Binding, DescriptorSet, Block, BuiltIn Position, ColMajor,
+- Location, Binding, DescriptorSet, Block, BufferBlock, ArrayStride, NonReadable,
+  NonWritable, BuiltIn Position, WorkgroupSize/invocation IDs, ColMajor,
   MatrixStride and Offset decorations, checked against the binding contract.
+- Compute adds uvec3 `GlobalInvocationId`, `LocalInvocationId`, `WorkgroupId`
+  and `NumWorkgroups` inputs plus set-0 vec4 storage buffers. Read-only bindings
+  are contiguous from 0; one write-only output follows them. Each buffer must be
+  one runtime vec4 array at offset 0 with stride 16. The shader supplies the
+  element indices; the dispatcher checks every load and staged store.
   Debug names and source-language metadata are read without executing them.
 
 The public binary parser checks framing, string padding, supported instruction
@@ -111,6 +121,10 @@ approximation even in divergent branches, not hardware derivative conformance.
 | Fragment output location 0 | RGBA vec4 |
 | Set 0, binding B | One float/vector/mat4 member at offset 0; float/vector uses SIR uniform 4B, col-major mat4 with stride 16 uses rows 4B..4B+3 |
 | Set 1, binding B | Combined sampler2D or samplerCube at matching texture slot B |
+| Compute `LocalSize` | `ComputePipeline::local_size`; host supplies the workgroup count |
+| Compute invocation BuiltIns | `GlobalInvocationId`, `LocalInvocationId`, `WorkgroupId` and `NumWorkgroups` map to SIR inputs 0..3 |
+| Set 0, bindings 0..N-1 | Read-only `vec4[]` buffers with 16-byte stride and member offset 0, passed to `dispatch_compute` in binding order |
+| Set 0, binding N | One write-only `vec4[]` output with the same layout; only shader-written elements are committed |
 
 The shadow shader binds the single-level 32-bit float depth texture at set 1,
 binding 1, and supplies its light matrix and bias at uniform bindings 6 and 7.
@@ -148,11 +162,15 @@ gradients, and other image operands remain unsupported.
 
 At most 1 MiB per module, ID bound 65536, 256 virtual SSA temporaries, 64
 simultaneously live runtime registers and 4096 SIR instructions. Dead temporaries
-are recycled after their last use, without increasing VM storage. Selection nesting is bounded to 64 and main to 4096 SPIR-V instructions. There are no
-loops, switches, function calls, integer arithmetic, specialization constants,
-SSBOs, storage images, implicit samples from transformed coordinates, explicit
-sample offsets/gradients, compute,
-WGSL or GLSL compiler. Unreachable blocks are accepted only as isolated `OpUnreachable` merge blocks.
+are recycled after their last use, without increasing VM storage. Selection
+nesting is bounded to 64 and main to 4096 SPIR-V instructions. There are no
+loops, switches, function calls, general integer arithmetic, specialization
+constants, arbitrary SSBO layouts, storage images, implicit samples from
+transformed coordinates, explicit sample offsets/gradients, shared-memory
+compute-SPIR-V, WGSL or GLSL compiler. The compute subset accepts up to 12
+read-only vec4 arrays at bindings 0..N-1 and exactly one write-only vec4 output
+at N; it does not support barriers, atomics, textures or uniforms. Unreachable
+blocks are accepted only as isolated `OpUnreachable` merge blocks.
 Conditional targets must be distinct; overlapping regions, back edges and branches
 outside their structured region fail. Phi pairs must match all predecessors,
 with values available on the named paths. General arbitrary CFGs and vector bool
@@ -161,6 +179,8 @@ returns zero; undefined GLSL inputs do not establish a conformance guarantee.
 
 Tests compare compiled GLSL with an independent hand-written SIR reference at
 exact framebuffer bytes, then capture/replay and SIMD/four-band rendering.
+The compute fixture dispatches the checked-in GLSL vec4 vector-add shader over
+64 workgroups and checks every output against Rust's scalar result.
 A second GLSL fixture checks vector shuffle, add/sub/divide, dot, scalar multiply
 and implicit sampling against numeric expectations. The lit scene matches native
 coverage/depth exactly and colors within one RGBA8 quantization unit; captures

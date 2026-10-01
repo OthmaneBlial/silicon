@@ -19,9 +19,10 @@ Values are f32 vec4s, including scalar splats and boolean 0/1 components. There
 are no loops, integer types, shader depth writes or JIT compilation. Compute
 supports scalar f32 storage atomics on vec4 x components. Bounded scalar and
 SIMD4 [SIR compute dispatch](compute.md)
-are separate from the graphics shader path; compute-stage SPIR-V and general
-SPIR-V compatibility remain unsupported. A [strict SPIR-V 1.0 subset](spirv.md)
-translates externally compiled GLSL into these instructions.
+are separate from the graphics shader path. A narrow SPIR-V 1.0 compute
+storage-buffer subset also translates externally compiled GLSL into these
+instructions; general SPIR-V compatibility remains unsupported. See the
+[accepted SPIR-V subset](spirv.md).
 
 Selections nest at most 64 levels and require an `Else` (possibly empty). `If` tests
 condition.x for nonzero. The scalar VM skips the untaken branch; packet execution
