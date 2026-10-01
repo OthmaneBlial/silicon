@@ -31,6 +31,9 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
     if !time.is_finite() {
         return Err("scene time must be finite".into());
     }
+    if name == "anisotropy_showcase" {
+        return anisotropy_showcase(r);
+    }
     if name == "shadow_showcase" {
         let (width, height) = r.surface_size();
         let (capture, shadow_stats) = shadow_showcase(width, height, time)?;
@@ -220,6 +223,78 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
         time,
         draw,
     )
+}
+
+fn anisotropy_showcase(r: &mut Renderer) -> Result<()> {
+    static TEXTURE: OnceLock<Texture> = OnceLock::new();
+    let texture = TEXTURE.get_or_init(|| {
+        let mut pixels = Vec::with_capacity(128 * 128 * 4);
+        for _ in 0..128 {
+            for x in 0usize..128 {
+                pixels.extend(if (x / 8).is_multiple_of(2) {
+                    [32, 194, 224, 255]
+                } else {
+                    [244, 166, 50, 255]
+                });
+            }
+        }
+        let mut texture = Texture::new(128, 128, TextureFormat::Rgba8, &pixels)
+            .expect("valid anisotropy texture");
+        texture.generate_mips();
+        texture
+    });
+    let (width, height) = r.surface_size();
+    let view = Mat4::look_at(
+        Vec3::new(0., 7., 9.),
+        Vec3::new(0., 0., -12.),
+        Vec3::new(0., 1., 0.),
+    );
+    let projection = Mat4::perspective(0.88, width as f32 / height as f32, 0.1, 60.);
+    let mvp = projection * view;
+    r.clear(Color::new(0.018, 0.026, 0.04, 1.));
+    for (min_x, max_x, anisotropic) in [(-10., 0., false), (0., 10., true)] {
+        let vertices = [
+            (min_x, 1., 2., 0., 0.),
+            (max_x, 1., 2., 8., 0.),
+            (max_x, 1., -36., 8., 96.),
+            (min_x, 1., -36., 0., 96.),
+        ]
+        .map(|(x, y, z, u, v)| Vertex {
+            position: Vec3::new(x, y, z),
+            normal: Vec3::new(0., 1., 0.),
+            uv: Vec2::new(u, v),
+            color: Color::WHITE.0,
+        });
+        r.try_draw(
+            &vertices,
+            Some(&[0, 1, 2, 0, 2, 3]),
+            Pipeline {
+                cull: Cull::None,
+                ..Default::default()
+            },
+            |v| {
+                Ok(VertexOutput {
+                    position: mvp.transform(v.position.extend(1.)),
+                    varyings: [
+                        Vec4::new(1., 1., 1., 1.),
+                        Vec4::new(v.uv.x, v.uv.y, 0., 0.),
+                        v.normal.extend(0.),
+                        v.position.extend(1.),
+                    ],
+                })
+            },
+            |f| {
+                let sampler = Sampler::default();
+                let color = if anisotropic {
+                    texture.sample_anisotropic(f.uv(), f.uv_dx, f.uv_dy, sampler, MAX_ANISOTROPY)?
+                } else {
+                    texture.sample(f.uv(), texture.lod(f.uv_dx, f.uv_dy), sampler)?
+                };
+                Ok(Some(color))
+            },
+        )?;
+    }
+    Ok(())
 }
 
 fn environment_cubemap() -> Result<CubeMap> {
@@ -497,7 +572,7 @@ fn visit_scene(
         }
         _ => {
             return Err(format!(
-                "unknown scene {name}; choose cube, textured_cube, triangle_3d, showcase or pbr_showcase"
+                "unknown scene {name}; choose cube, textured_cube, triangle_3d, showcase, pbr_showcase or anisotropy_showcase"
             )
             .into());
         }

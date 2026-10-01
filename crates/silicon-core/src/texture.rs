@@ -1,5 +1,6 @@
 use crate::{Color, Result, Vec2, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
+pub const MAX_ANISOTROPY: u8 = 16;
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub enum TextureFormat {
     Rgba8,
@@ -358,6 +359,51 @@ impl Texture {
         };
         Ok(Color(c))
     }
+    /// Samples along the larger UV derivative and chooses mip detail from the smaller one.
+    pub fn sample_anisotropic(
+        &self,
+        uv: Vec2,
+        dx: Vec2,
+        dy: Vec2,
+        sampler: Sampler,
+        max_anisotropy: u8,
+    ) -> Result<Color> {
+        if !uv.is_finite() || !dx.is_finite() || !dy.is_finite() {
+            return Err("texture coordinates and derivatives must be finite".into());
+        }
+        if !(1..=MAX_ANISOTROPY).contains(&max_anisotropy) {
+            return Err(format!("maximum anisotropy must be 1..={MAX_ANISOTROPY}").into());
+        }
+        let base = &self.levels[0];
+        let dx_texels = Vec2::new(dx.x * base.width as f32, dx.y * base.height as f32);
+        let dy_texels = Vec2::new(dy.x * base.width as f32, dy.y * base.height as f32);
+        let dx_length = dx_texels.length();
+        let dy_length = dy_texels.length();
+        let (major, major_length, minor_length) = if dx_length >= dy_length {
+            (dx, dx_length, dy_length)
+        } else {
+            (dy, dy_length, dx_length)
+        };
+        let lod = minor_length
+            .max(major_length / max_anisotropy as f32)
+            .max(1.)
+            .log2();
+        let footprint = if matches!(sampler.mip, MipFilter::None) {
+            1.
+        } else {
+            lod.exp2().max(1.)
+        };
+        let taps = ((major_length / footprint).ceil() as usize).clamp(1, max_anisotropy as usize);
+        if taps == 1 {
+            return self.sample(uv, lod, sampler);
+        }
+        let mut color = Vec4::ZERO;
+        for tap in 0..taps {
+            let offset = (tap as f32 + 0.5) / taps as f32 - 0.5;
+            color = color + self.sample(uv + major * offset, lod, sampler)?.0;
+        }
+        Ok(Color(color / taps as f32))
+    }
     fn at(&self, uv: Vec2, level: usize, sampler: Sampler) -> Color {
         let mip = &self.levels[level];
         let wrap = |v: f32| match sampler.address {
@@ -478,6 +524,41 @@ mod tests {
         let mut odd = Texture::new(3, 1, TextureFormat::R8, &[0, 0, 255]).unwrap();
         odd.generate_mips();
         assert_eq!(odd.mip_bytes(1).unwrap(), [85, 85, 85, 255]);
+    }
+    #[test]
+    fn anisotropic_sampling_preserves_minor_axis_detail() {
+        let mut pixels = Vec::new();
+        for y in 0..32 {
+            for _ in 0..32 {
+                let value = if y % 2 == 0 { 255 } else { 0 };
+                pixels.extend([value, value, value, 255]);
+            }
+        }
+        let mut texture = Texture::new(32, 32, TextureFormat::Rgba8, &pixels).unwrap();
+        texture.generate_mips();
+        let uv = |row: f32| Vec2::new(0.5, row / 32.);
+        let dx = Vec2::new(0.25, 0.);
+        let dy = Vec2::new(0., 0.001);
+        let sampler = Sampler::default();
+        let lod = texture.lod(dx, dy);
+        let filtered = texture.sample(uv(8.5), lod, sampler).unwrap().0.x;
+        let bright = texture
+            .sample_anisotropic(uv(8.5), dx, dy, sampler, 16)
+            .unwrap()
+            .0
+            .x;
+        let dark = texture
+            .sample_anisotropic(uv(9.5), dx, dy, sampler, 16)
+            .unwrap()
+            .0
+            .x;
+        assert!((filtered - 0.5).abs() < 0.01);
+        assert!(bright > 0.99 && dark < 0.01);
+        assert!(
+            texture
+                .sample_anisotropic(uv(8.5), dx, dy, sampler, MAX_ANISOTROPY + 1)
+                .is_err()
+        );
     }
 
     #[test]

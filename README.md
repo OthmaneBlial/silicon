@@ -28,6 +28,8 @@ stencil and blending generate scene pixels entirely on the CPU.
 
 *The same CPU scene with 4× multisample coverage and a resolved color buffer.*
 
+![Side-by-side trilinear and 16x anisotropic filtering on a steeply viewed stripe plane](assets/screenshots/anisotropy_showcase.png)
+
 [Watch the CPU-rendered animation](assets/demos/spirv_showcase.mp4) ·
 [Architecture](docs/architecture.md) · [Pipeline](docs/graphics-pipeline.md) ·
 [Shader VM](docs/sir.md) · [SIMD](docs/simd.md) · [SPIR-V subset](docs/spirv.md) · [Roadmap](docs/roadmap.md)
@@ -53,6 +55,7 @@ cargo run --release -p silicon-cli -- render assets/scenes/showcase.json --outpu
 cargo run --release -p silicon-cli -- render assets/scenes/pbr_showcase.json --backend simd --threads 4 --output output/pbr.png
 cargo run --release -p silicon-cli -- render assets/scenes/cubemap_showcase.json --backend simd --threads 4 --output output/cubemap.png
 cargo run --release -p silicon-cli -- render cubemap_showcase --samples 4 --backend simd --threads 4 --output output/cubemap-msaa4.png
+cargo run --release -p silicon-cli -- render anisotropy_showcase --output output/anisotropy.png
 cargo run --release -p silicon-cli -- render showcase --width 640 --height 400 --threads 4
 cargo run --release -p silicon-cli -- render stencil --backend simd --threads 4 --output output/stencil.png
 cargo run --release --example triangle
@@ -90,6 +93,9 @@ translucent overlay.
 The renderer also supports deterministic 2× and 4× multisampling with
 per-sample color, depth and stencil attachments; `--samples 1` keeps the
 single-sample default.
+Native Rust fragment shaders can opt into anisotropic texture sampling with
+actual UV derivatives and a bounded 1×–16× tap count. `anisotropy_showcase`
+compares trilinear filtering on the left with 16× anisotropy on the right.
 
 ```sh
 cargo run --release -p silicon-cli -- run spirv_showcase --threads 4
