@@ -1,5 +1,26 @@
 # Performance measurements
 
+## SIR compute workloads
+
+The [recorded compute sample](../benchmarks/compute-apple-m2-2026-10-01.json)
+uses `cargo run --release --example compute_bench` at source commit
+`3291b715ba445591cd7b57eec2edaf700aa4ae96` and records the executable hash,
+host, warm-up, sample count, repetition counts, and full observed timing ranges.
+The benchmark checks exact output equality before timing 65,536-element vec4
+addition and 4×4 matrix-vector transforms. It compares the release Rust loop,
+scalar SIR dispatch, and four-lane SIR dispatch. Each operation reports the
+median of 11 samples; CPU samples average 64 operations and SIR samples average
+five dispatches.
+
+On an Apple M2 / macOS 26.6 with Rust 1.95.0, median vector-add times were
+0.110 ms for the Rust reference, 4.598 ms for scalar SIR, and 3.578 ms for
+SIMD4 SIR. Matrix-vector times were 0.168 ms, 6.906 ms, and 5.006 ms. SIMD4
+was 1.28× and 1.38× the scalar SIR rate for these two workloads in this run.
+The ranges were narrow, but this is one host and two map kernels only; it does
+not establish general compute or rendering speedups and contains no physical
+GPU comparison. The SIMD path remains optional because workload arithmetic and
+packet setup affect its benefit.
+
 ## Pipeline-cache probe
 
 `silicon pipeline-cache vertex.spv fragment.spv` compiles and links one cold

@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-01",
+  "source_commit": "3291b715ba445591cd7b57eec2edaf700aa4ae96",
+  "binary_sha256": "69a02a261f59eaef35e8d46f971b4fb3fca58d5f66aceab7c904a50c1eab29d0",
+  "host": {
+    "cpu": "Apple M2",
+    "architecture": "aarch64",
+    "logical_cpus": 8,
+    "simd": "NEON",
+    "os": "macOS 26.6",
+    "rustc": "1.95.0"
+  },
+  "method": {
+    "command": "cargo run --release --example compute_bench",
+    "elements": 65536,
+    "local_size": [64, 1, 1],
+    "workgroups": [1024, 1, 1],
+    "warmups": 1,
+    "samples": 11,
+    "repeats_per_sample": {
+      "rust_cpu_reference": 64,
+      "sir_dispatch": 5
+    },
+    "verification": "Exact Vec4 outputs checked against Rust CPU references before timing.",
+    "scope": "Wall time includes compute dispatch, invocation ID setup, SIR execution, same-index storage reads, and output commit. Buffer creation and result comparison are outside the timed region."
+  },
+  "results_ms": [
+    { "workload": "vec4_add", "backend": "rust_cpu_reference", "median": 0.110, "min": 0.109, "max": 0.111 },
+    { "workload": "vec4_add", "backend": "sir_scalar", "median": 4.598, "min": 4.537, "max": 4.659 },
+    { "workload": "vec4_add", "backend": "sir_simd4", "median": 3.578, "min": 3.567, "max": 3.620 },
+    { "workload": "mat4_vec4", "backend": "rust_cpu_reference", "median": 0.168, "min": 0.167, "max": 0.170 },
+    { "workload": "mat4_vec4", "backend": "sir_scalar", "median": 6.906, "min": 6.890, "max": 6.959 },
+    { "workload": "mat4_vec4", "backend": "sir_simd4", "median": 5.006, "min": 4.987, "max": 5.058 }
+  ],
+  "limits": [
+    "Single-host microbenchmark; it does not predict scene rendering performance.",
+    "No physical GPU backend or GPU comparison is involved.",
+    "SIMD4 improves these two kernels in this run; this is not evidence of a general compute speedup."
+  ]
+}

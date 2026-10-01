@@ -31,6 +31,8 @@ ID setup, interpreter execution, storage reads and output commit; buffer setup
 and result checking are outside the timed region. It has no physical-GPU
 comparison. SIMD4 reuses SIR's existing NEON/SSE packet executor, and a final
 partial packet falls back to scalar execution.
+See the [recorded Apple M2 sample](../benchmarks/compute-apple-m2-2026-10-01.json)
+and [measurement notes](performance.md#sir-compute-workloads).
 
 Dispatch dimensions are three-dimensional, with x varying fastest. A workgroup
 can contain at most 1,024 local invocations, and one dispatch can contain at
