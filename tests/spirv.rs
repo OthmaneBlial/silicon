@@ -6,6 +6,7 @@ use shader::{
 use silicon::*;
 const VERTEX: &[u8] = include_bytes!("../assets/shaders/textured.vert.spv");
 const FRAGMENT: &[u8] = include_bytes!("../assets/shaders/textured.frag.spv");
+const MATH_FRAGMENT: &[u8] = include_bytes!("../assets/shaders/math.frag.spv");
 #[test]
 fn pipeline_cache_reuses_linked_programs_and_keys_pipeline_state() {
     let mut cache = PipelineCache::default();
@@ -214,7 +215,7 @@ fn vector_padding_and_implicit_lod_do_not_change_glsl_arithmetic() {
 }
 #[test]
 fn glsl_std450_floor_fract_sin_cos_run_in_scalar_and_packet_vm() {
-    let fragment = compiled(include_bytes!("../assets/shaders/math.frag.spv"));
+    let fragment = compiled(MATH_FRAGMENT);
     let inputs = [
         Vec4::new(-1.25, -0.25, 0.25, 1.2),
         Vec4::new(2.75, 1.25, -0.5, -1.1),
@@ -256,6 +257,29 @@ fn glsl_std450_floor_fract_sin_cos_run_in_scalar_and_packet_vm() {
         }
     }
     assert_eq!(scalar[0].y, 0.75);
+}
+#[test]
+fn glsl_unary_math_renders_identically_through_worker_bands() {
+    let device = Device::new();
+    let vertex = device.create_shader(VERTEX).unwrap();
+    let fragment = device.create_shader(MATH_FRAGMENT).unwrap();
+    let pipeline = device
+        .create_pipeline(&vertex, &fragment, Pipeline::default())
+        .unwrap();
+    let capture = demo::shader_cube_with_pipeline(64, 48, 0.25, pipeline).unwrap();
+    let scalar = capture.replay().unwrap().framebuffer.bytes().to_vec();
+    let mut packet = Renderer::new(64, 48).unwrap();
+    packet.backend = Backend::Simd;
+    device.submit(&capture.commands, &mut packet).unwrap();
+    assert_eq!(packet.framebuffer.bytes(), scalar);
+    let mut bands = Renderer::new(64, 48).unwrap();
+    bands.backend = Backend::Simd;
+    bands
+        .render_bands(4, |renderer| {
+            device.submit(&capture.commands, renderer).map(|_| ())
+        })
+        .unwrap();
+    assert_eq!(bands.framebuffer.bytes(), scalar);
 }
 #[test]
 fn float_negate_preserves_sign_bits_in_scalar_and_packet_execution() {
