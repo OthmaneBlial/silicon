@@ -26,8 +26,11 @@ const ACTOR_TARGET_THRESHOLD: f32 = 100.0 / 35.0;
 const ACTOR_IDLE_CYCLE: f32 = 20.0 / 35.0;
 const LINE_TWO_SIDED: u16 = 4;
 const LINE_SOUND_BLOCK: u16 = 64;
+const LINE_DOOR_RAISE: u16 = 1;
 const LINE_EXIT_USE: u16 = 11;
 const USE_RANGE: f32 = 64.0;
+const DOOR_SPEED: f32 = 70.0;
+const DOOR_WAIT: f32 = 150.0 / 35.0;
 
 #[derive(Clone, Copy)]
 struct Lump {
@@ -987,6 +990,13 @@ struct Player {
     angle: f32,
 }
 
+struct Door {
+    sector: u16,
+    top: f32,
+    wait: f32,
+    direction: i8,
+}
+
 #[derive(Clone, Copy)]
 struct Controls {
     forward: f32,
@@ -1006,6 +1016,8 @@ struct Draw {
 
 struct PreparedScene {
     map: Map,
+    flat_textures: BTreeMap<[u8; 8], Arc<Texture>>,
+    wall_textures: BTreeMap<[u8; 8], Arc<Texture>>,
     device: Device,
     pipeline: Arc<ShaderPipeline>,
     sprite_pipeline: Arc<ShaderPipeline>,
@@ -1464,6 +1476,80 @@ fn geometry(
     Ok(all)
 }
 
+fn build_draws(
+    geometry: Vec<Geometry>,
+    flat_textures: &BTreeMap<[u8; 8], Arc<Texture>>,
+    wall_textures: &BTreeMap<[u8; 8], Arc<Texture>>,
+) -> api::Result<Vec<Vec<Draw>>> {
+    geometry
+        .into_iter()
+        .map(|leaf| {
+            let mut draws = Vec::new();
+            for (name, vertices) in leaf.flats {
+                let texture = flat_textures
+                    .get(&name)
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "flat {} was not decoded",
+                            String::from_utf8_lossy(&name)
+                        ))
+                    })?
+                    .clone();
+                let bounds = geometry_bounds(&vertices);
+                draws.push(Draw {
+                    name,
+                    wall: false,
+                    masked: false,
+                    texture,
+                    vertices,
+                    bounds,
+                });
+            }
+            for (name, vertices) in leaf.walls {
+                let texture = wall_textures
+                    .get(&name)
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "wall texture {} was not decoded",
+                            String::from_utf8_lossy(&name)
+                        ))
+                    })?
+                    .clone();
+                let bounds = geometry_bounds(&vertices);
+                draws.push(Draw {
+                    name,
+                    wall: true,
+                    masked: false,
+                    texture,
+                    vertices,
+                    bounds,
+                });
+            }
+            for (name, vertices) in leaf.masked {
+                let texture = wall_textures
+                    .get(&name)
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "masked wall texture {} was not decoded",
+                            String::from_utf8_lossy(&name)
+                        ))
+                    })?
+                    .clone();
+                let bounds = geometry_bounds(&vertices);
+                draws.push(Draw {
+                    name,
+                    wall: true,
+                    masked: true,
+                    texture,
+                    vertices,
+                    bounds,
+                });
+            }
+            Ok(draws)
+        })
+        .collect()
+}
+
 fn flat_uv(point: Vertex2) -> Vec2 {
     Vec2::new(point.x / 64.0, point.y / 64.0)
 }
@@ -1649,6 +1735,20 @@ fn portal_is_walkable(map: &Map, line: [u16; 6], from: u16, to: u16) -> bool {
             >= from_sector.floor.max(to_sector.floor) + ACTOR_HEIGHT
 }
 
+fn line_has_walkable_opening(map: &Map, line: [u16; 6]) -> bool {
+    if line[2] & 1 != 0 {
+        return false;
+    }
+    let (Some(side0), Some(side1)) = (
+        map.sides.get(line[3] as usize),
+        map.sides.get(line[4] as usize),
+    ) else {
+        return false;
+    };
+    portal_is_walkable(map, line, side0.sector, side1.sector)
+        || portal_is_walkable(map, line, side1.sector, side0.sector)
+}
+
 fn sector_routes(map: &Map) -> Vec<Vec<(u16, usize)>> {
     let mut routes = vec![Vec::new(); map.sectors.len()];
     for (line_index, &line) in map.lines.iter().enumerate() {
@@ -1779,7 +1879,7 @@ fn segment_distance_squared(a: Vertex2, b: Vertex2, c: Vertex2, d: Vertex2) -> f
 
 fn actor_path_clear(map: &Map, from: Vertex2, to: Vertex2) -> bool {
     map.lines.iter().all(|line| {
-        if line[2] & 1 == 0 && line[4] != u16::MAX {
+        if line_has_walkable_opening(map, *line) {
             return true;
         }
         let a = map.vertices[line[0] as usize];
@@ -1829,7 +1929,7 @@ fn move_player(map: &Map, player: &mut Player, controls: Controls, delta: f32) {
     }
 }
 
-fn use_exit_line(map: &Map, player: Player) -> bool {
+fn use_line(map: &Map, player: Player) -> Option<(usize, u16)> {
     let origin = Vertex2 {
         x: player.x,
         y: player.y,
@@ -1842,48 +1942,131 @@ fn use_exit_line(map: &Map, player: Player) -> bool {
     let mut intersections = map
         .lines
         .iter()
-        .filter_map(|line| {
+        .enumerate()
+        .filter_map(|(index, line)| {
             let distance = ray_segment_distance(
                 origin,
                 direction,
                 map.vertices[line[0] as usize],
                 map.vertices[line[1] as usize],
             )?;
-            (distance <= USE_RANGE).then_some((distance, line))
+            (distance <= USE_RANGE).then_some((distance, index))
         })
         .collect::<Vec<_>>();
     intersections.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    for (_, line) in intersections {
+    for (_, index) in intersections {
+        let line = map.lines[index];
         if line[5] != 0 {
-            if line[5] == LINE_EXIT_USE {
-                let a = map.vertices[line[0] as usize];
-                let b = map.vertices[line[1] as usize];
-                let side = (b.x - a.x) * (player.y - a.y) - (b.y - a.y) * (player.x - a.x);
-                return side < 0.0;
-            }
-            return false;
+            let a = map.vertices[line[0] as usize];
+            let b = map.vertices[line[1] as usize];
+            let side = (b.x - a.x) * (player.y - a.y) - (b.y - a.y) * (player.x - a.x);
+            return (side < 0.0).then_some((index, line[5]));
         }
         if line[4] == u16::MAX {
-            return false;
+            return None;
         }
         let (Some(side0), Some(side1)) = (
             map.sides.get(line[3] as usize),
             map.sides.get(line[4] as usize),
         ) else {
-            return false;
+            return None;
         };
         let (Some(sector0), Some(sector1)) = (
             map.sectors.get(side0.sector as usize),
             map.sectors.get(side1.sector as usize),
         ) else {
-            return false;
+            return None;
         };
         if sector0.ceiling.min(sector1.ceiling) <= sector0.floor.max(sector1.floor) {
-            return false;
+            return None;
         }
     }
-    false
+    None
+}
+
+fn manual_door(map: &Map, line_index: usize) -> Option<Door> {
+    let line = *map.lines.get(line_index)?;
+    if line[5] != LINE_DOOR_RAISE || line[4] == u16::MAX {
+        return None;
+    }
+    let door_sector = map.sides.get(line[4] as usize)?.sector;
+    let sector = map.sectors.get(door_sector as usize)?;
+    let top = map
+        .lines
+        .iter()
+        .filter_map(|adjacent| {
+            let side0 = map.sides.get(adjacent[3] as usize)?;
+            let side1 = map.sides.get(adjacent[4] as usize)?;
+            if side0.sector == door_sector {
+                Some(map.sectors.get(side1.sector as usize)?.ceiling)
+            } else if side1.sector == door_sector {
+                Some(map.sectors.get(side0.sector as usize)?.ceiling)
+            } else {
+                None
+            }
+        })
+        .min_by(f32::total_cmp)?
+        - 4.0;
+    (top >= sector.floor + ACTOR_HEIGHT && sector.ceiling < top).then_some(Door {
+        sector: door_sector,
+        top,
+        wait: DOOR_WAIT,
+        direction: 1,
+    })
+}
+
+fn update_doors(
+    map: &mut Map,
+    doors: &mut Vec<Door>,
+    player: Player,
+    actors: &[Actor],
+    delta: f32,
+) -> bool {
+    let mut changed = false;
+    let mut index = 0;
+    while index < doors.len() {
+        if doors[index].direction == 0 {
+            doors[index].wait -= delta;
+            if doors[index].wait <= 0.0 {
+                doors[index].direction = -1;
+            }
+        }
+        let sector_index = doors[index].sector;
+        if doors[index].direction < 0
+            && (bsp_sector_index_at(map, player.x, player.y) == Some(sector_index)
+                || actors.iter().any(|actor| {
+                    actor.health > 0
+                        && bsp_sector_index_at(map, actor.x, actor.y) == Some(sector_index)
+                }))
+        {
+            doors[index].direction = 1;
+        }
+        let target = if doors[index].direction < 0 {
+            map.sectors[sector_index as usize].floor
+        } else {
+            doors[index].top
+        };
+        let direction = doors[index].direction;
+        let top = doors[index].top;
+        let sector = &mut map.sectors[sector_index as usize];
+        let previous = sector.ceiling;
+        sector.ceiling = if direction < 0 {
+            (previous - DOOR_SPEED * delta).max(target)
+        } else {
+            (previous + DOOR_SPEED * delta).min(target)
+        };
+        changed |= sector.ceiling != previous;
+        if direction > 0 && sector.ceiling >= top {
+            doors[index].direction = 0;
+            doors[index].wait = DOOR_WAIT;
+        } else if direction < 0 && sector.ceiling <= sector.floor {
+            doors.remove(index);
+            continue;
+        }
+        index += 1;
+    }
+    changed
 }
 
 fn cross2(a: Vertex2, b: Vertex2) -> f32 {
@@ -1916,7 +2099,7 @@ fn ray_segment_distance(
 fn nearest_blocking_wall(map: &Map, origin: Vertex2, direction: Vertex2) -> f32 {
     map.lines
         .iter()
-        .filter(|line| line[2] & 1 != 0 || line[4] == u16::MAX)
+        .filter(|line| !line_has_walkable_opening(map, **line))
         .filter_map(|line| {
             ray_segment_distance(
                 origin,
@@ -2357,73 +2540,11 @@ impl PreparedScene {
                 });
             }
         }
-        let mut draws = Vec::with_capacity(geometry.len());
-        for leaf in geometry {
-            let mut leaf_draws = Vec::new();
-            for (name, vertices) in leaf.flats {
-                let texture = flat_textures
-                    .get(&name)
-                    .ok_or_else(|| {
-                        invalid(format!(
-                            "flat {} was not decoded",
-                            String::from_utf8_lossy(&name)
-                        ))
-                    })?
-                    .clone();
-                let bounds = geometry_bounds(&vertices);
-                leaf_draws.push(Draw {
-                    name,
-                    wall: false,
-                    masked: false,
-                    texture,
-                    vertices,
-                    bounds,
-                });
-            }
-            for (name, vertices) in leaf.walls {
-                let texture = wall_textures
-                    .get(&name)
-                    .ok_or_else(|| {
-                        invalid(format!(
-                            "wall texture {} was not decoded",
-                            String::from_utf8_lossy(&name)
-                        ))
-                    })?
-                    .clone();
-                let bounds = geometry_bounds(&vertices);
-                leaf_draws.push(Draw {
-                    name,
-                    wall: true,
-                    masked: false,
-                    texture,
-                    vertices,
-                    bounds,
-                });
-            }
-            for (name, vertices) in leaf.masked {
-                let texture = wall_textures
-                    .get(&name)
-                    .ok_or_else(|| {
-                        invalid(format!(
-                            "masked wall texture {} was not decoded",
-                            String::from_utf8_lossy(&name)
-                        ))
-                    })?
-                    .clone();
-                let bounds = geometry_bounds(&vertices);
-                leaf_draws.push(Draw {
-                    name,
-                    wall: true,
-                    masked: true,
-                    texture,
-                    vertices,
-                    bounds,
-                });
-            }
-            draws.push(leaf_draws);
-        }
+        let draws = build_draws(geometry, &flat_textures, &wall_textures)?;
         Ok(Self {
             map,
+            flat_textures,
+            wall_textures,
             device,
             pipeline,
             sprite_pipeline,
@@ -2444,6 +2565,15 @@ impl PreparedScene {
                 angle: angle as f32,
             },
         })
+    }
+
+    fn rebuild_draws(&mut self) -> api::Result<()> {
+        self.draws = build_draws(
+            geometry(&self.map, &self.wall_textures)?,
+            &self.flat_textures,
+            &self.wall_textures,
+        )?;
+        Ok(())
     }
 
     fn draw(
@@ -2673,7 +2803,7 @@ fn render(path: &Path, output: &Path) -> api::Result<()> {
 }
 
 fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
-    let scene = PreparedScene::load(path)?;
+    let mut scene = PreparedScene::load(path)?;
     let mut renderer = Renderer::new(960, 720)?;
     let mut window = Window::new(
         "SILICON | Freedoom E1M1",
@@ -2686,11 +2816,13 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     let mut player = scene.start;
     let mut actors = scene.actors.clone();
     let mut projectiles = Vec::new();
+    let mut doors = Vec::new();
     let mut pickups = scene.pickups.clone();
     let mut health = 100;
     let mut ammo = 50;
     let mut kills = 0;
     let mut collected = 0;
+    let mut opened_doors = 0;
     let mut shot_cooldown = 0.0f32;
     let mut weapon_flash = 0.0f32;
     let mut exited = false;
@@ -2701,6 +2833,9 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         let now = std::time::Instant::now();
         let delta = now.duration_since(last).as_secs_f32().min(0.05);
         last = now;
+        if update_doors(&mut scene.map, &mut doors, player, &actors, delta) {
+            scene.rebuild_draws()?;
+        }
         if health > 0 && !exited {
             let axis = |positive, negative| {
                 (window.is_key_down(positive) as i8 - window.is_key_down(negative) as i8) as f32
@@ -2722,8 +2857,20 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 },
                 delta,
             );
-            if window.is_key_pressed(Key::E, KeyRepeat::No) {
-                exited = use_exit_line(&scene.map, player);
+            if window.is_key_pressed(Key::E, KeyRepeat::No)
+                && let Some((line, special)) = use_line(&scene.map, player)
+            {
+                if special == LINE_EXIT_USE {
+                    exited = true;
+                } else if special == LINE_DOOR_RAISE
+                    && let Some(door) = manual_door(&scene.map, line)
+                    && !doors
+                        .iter()
+                        .any(|active: &Door| active.sector == door.sector)
+                {
+                    doors.push(door);
+                    opened_doors += 1;
+                }
             }
             if !exited {
                 collected +=
@@ -2776,7 +2923,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_subsector_order(&scene.map, player).len();
         window.set_title(&format!(
-            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire, E use | HP {health} | ammo {ammo} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.actors.len(),
             triangles,
             submission.draws,
@@ -2787,7 +2934,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     }
     save_frame(&renderer, output)?;
     println!(
-        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, health {health}, exited {exited}; saved {}",
+        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, {opened_doors} doors used, health {health}, exited {exited}; saved {}",
         scene.actors.len(),
         output.display()
     );
@@ -3331,22 +3478,109 @@ mod tests {
             y: 0.0,
             angle: 0.0,
         };
-        assert!(use_exit_line(&map, player));
-        assert!(!use_exit_line(
-            &map,
-            Player {
-                x: 80.0,
-                angle: 180.0,
-                ..player
-            }
-        ));
+        assert_eq!(use_line(&map, player), Some((1, LINE_EXIT_USE)));
+        assert_eq!(
+            use_line(
+                &map,
+                Player {
+                    x: 80.0,
+                    angle: 180.0,
+                    ..player
+                }
+            ),
+            None
+        );
         map.vertices[2].x = 100.0;
         map.vertices[3].x = 100.0;
-        assert!(!use_exit_line(&map, player));
+        assert_eq!(use_line(&map, player), None);
         map.lines[0][4] = u16::MAX;
         map.vertices[2].x = 40.0;
         map.vertices[3].x = 40.0;
-        assert!(!use_exit_line(&map, player));
+        assert_eq!(use_line(&map, player), None);
+    }
+
+    #[test]
+    fn manual_doors_raise_reopen_the_portal_and_close_after_waiting() {
+        let sector = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+        };
+        let closed_door = Sector {
+            ceiling: 0.0,
+            ..sector
+        };
+        let side = |sector| SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper: [0; 8],
+            lower: [0; 8],
+            middle: [0; 8],
+            sector,
+        };
+        let mut map = Map {
+            vertices: vec![Vertex2 { x: 0.0, y: -32.0 }, Vertex2 { x: 0.0, y: 32.0 }],
+            sectors: vec![sector, closed_door],
+            sides: vec![side(0), side(1)],
+            lines: vec![[0, 1, LINE_TWO_SIDED, 0, 1, LINE_DOOR_RAISE]],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        assert_eq!(
+            use_line(
+                &map,
+                Player {
+                    x: 32.0,
+                    y: 0.0,
+                    angle: 180.0,
+                }
+            ),
+            Some((0, LINE_DOOR_RAISE))
+        );
+        assert_eq!(
+            use_line(
+                &map,
+                Player {
+                    x: -32.0,
+                    y: 0.0,
+                    angle: 0.0,
+                }
+            ),
+            None
+        );
+        let point = Vertex2 { x: 0.0, y: 0.0 };
+        assert!(!actor_path_clear(&map, point, point));
+        let mut doors = vec![manual_door(&map, 0).unwrap()];
+        assert!(update_doors(
+            &mut map,
+            &mut doors,
+            Player {
+                x: 200.0,
+                y: 0.0,
+                angle: 0.0
+            },
+            &[],
+            2.0,
+        ));
+        assert_eq!(map.sectors[1].ceiling, 124.0);
+        assert!(actor_path_clear(&map, point, point));
+        assert!(update_doors(
+            &mut map,
+            &mut doors,
+            Player {
+                x: 200.0,
+                y: 0.0,
+                angle: 0.0
+            },
+            &[],
+            DOOR_WAIT + 2.0,
+        ));
+        assert_eq!(map.sectors[1].ceiling, 0.0);
+        assert!(doors.is_empty());
     }
 
     #[test]
