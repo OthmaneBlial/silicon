@@ -1,0 +1,12 @@
+[package]
+name = "silicon-c-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Stable C ABI for SILICON's synchronous software graphics API"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+silicon = { path = "../.." }

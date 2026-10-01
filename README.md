@@ -70,6 +70,7 @@ headless renderer works without X11 at runtime. Other platforms are unverified.
 
 ## Use the Rust API
 
+The supported Rust integration surface is [`silicon::api`](docs/rust-api.md).
 `Device` creates bounded SPIR-V shader modules, links them into an immutable
 pipeline, creates owned typed buffers and command buffers, and submits commands
 into an explicit `Renderer`. The renderer owns the output size and framebuffer.
@@ -82,6 +83,14 @@ cargo run --release --example rust_api
 It writes `output/rust_api.png`. Shader modules currently accept SILICON's
 documented SPIR-V 1.0 graphics subset; this is not a general-purpose shader
 compiler or Vulkan API.
+
+The versioned C ABI is documented in [docs/c-api.md](docs/c-api.md), with its
+public header in `crates/silicon-c-api/include/silicon.h`. Its standalone C
+smoke test renders and reads back a triangle:
+
+```sh
+sh crates/silicon-c-api/scripts/test.sh
+```
 
 ## Programmable, observable, reproducible
 
@@ -154,6 +163,7 @@ flowchart LR
 
 | Stage | Implemented |
 | --- | --- |
+| API | Supported Rust API v1 and versioned C ABI v1; synchronous command submission and CPU framebuffer readback |
 | Memory | Owned typed vertex/index/uniform buffers; reference-counted command lifetimes |
 | Geometry | Indexed/non-indexed triangles, homogeneous six-plane clipping, CW/CCW culling |
 | Raster | Pixel-center top-left coverage, 8-bit subpixel precision, 16×16 tiles |

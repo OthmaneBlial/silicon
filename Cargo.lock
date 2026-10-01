@@ -446,6 +446,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "silicon-c-api"
+version = "0.7.0"
+dependencies = [
+ "silicon",
+]
+
+[[package]]
 name = "silicon-cli"
 version = "0.7.0"
 dependencies = [
