@@ -1136,6 +1136,65 @@ mod tests {
     }
 
     #[test]
+    fn dispatches_glsl_spirv_multiple_shared_arrays_without_aliasing() {
+        const ELEMENTS: usize = 64;
+        let device = Device::new();
+        let pipeline = device
+            .create_compute_pipeline_from_spirv(include_bytes!(
+                "../../../assets/shaders/compute_shared_multi.comp.spv"
+            ))
+            .unwrap();
+        assert_eq!(pipeline.shared_memory_vec4s(), 128);
+
+        let input = device
+            .create_storage_buffer(
+                (0..ELEMENTS)
+                    .map(|i| Vec4::new(i as f32, 2.0, -1.0, 1.0))
+                    .collect(),
+            )
+            .unwrap();
+        let mut output = device
+            .create_storage_buffer(vec![Vec4::ZERO; ELEMENTS])
+            .unwrap();
+        device
+            .dispatch_compute(&pipeline, [1, 1, 1], &[&input], &mut output)
+            .unwrap();
+
+        let first = input.as_slice()[0];
+        assert_eq!(
+            output.as_slice(),
+            vec![first + first + first; ELEMENTS].as_slice()
+        );
+    }
+
+    #[test]
+    fn rejects_glsl_spirv_shared_arrays_over_the_combined_limit() {
+        let mut bytes =
+            include_bytes!("../../../assets/shaders/compute_shared_multi.comp.spv").to_vec();
+        let module = silicon_shader::spirv::Module::parse(&bytes).unwrap();
+        let array = module
+            .instructions()
+            .iter()
+            .find(|op| op.opcode == 28)
+            .unwrap();
+        let length_id = array.operands[2];
+        let length = module
+            .instructions()
+            .iter()
+            .find(|op| op.opcode == 43 && op.operands[1] == length_id)
+            .unwrap();
+        let literal = (length.word + 3) * 4;
+        bytes[literal..literal + 4].copy_from_slice(&4096u32.to_le_bytes());
+
+        let error = Device::new()
+            .create_compute_pipeline_from_spirv(&bytes)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("workgroup shared memory exceeds 4096 vec4 values"));
+    }
+
+    #[test]
     fn rejects_unsupported_glsl_spirv_workgroup_barrier_semantics() {
         let mut bytes = include_bytes!("../../../assets/shaders/compute_shared.comp.spv").to_vec();
         let module = silicon_shader::spirv::Module::parse(&bytes).unwrap();

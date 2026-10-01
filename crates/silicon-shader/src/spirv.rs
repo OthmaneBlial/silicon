@@ -434,6 +434,7 @@ struct Compiler<'a> {
     storage_inputs: BTreeSet<u8>,
     storage_output: Option<u8>,
     shared_memory_vec4s: usize,
+    shared_memory_offsets: BTreeMap<u32, usize>,
 }
 impl<'a> Compiler<'a> {
     fn new(module: &'a Module) -> Result<Self> {
@@ -578,6 +579,7 @@ impl<'a> Compiler<'a> {
             storage_inputs: BTreeSet::new(),
             storage_output: None,
             shared_memory_vec4s: 0,
+            shared_memory_offsets: BTreeMap::new(),
         })
     }
     fn ty(&self, id: u32) -> Result<Ty> {
@@ -645,16 +647,32 @@ impl<'a> Compiler<'a> {
         self.ops.push(f(r));
         Ok(r)
     }
-    fn shared_index(&mut self, dynamic_index: Option<u8>, path: &[usize]) -> Result<u8> {
+    fn shared_index(&mut self, root: u32, dynamic_index: Option<u8>, path: &[usize]) -> Result<u8> {
+        let offset = *self
+            .shared_memory_offsets
+            .get(&root)
+            .ok_or("workgroup array has no shared-memory allocation")?;
         if let Some(index) = dynamic_index {
-            return Ok(index);
+            if offset == 0 {
+                return Ok(index);
+            }
+            let base = self.emit(|dst| Sir::Const {
+                dst,
+                value: Vec4::new(offset as f32, offset as f32, offset as f32, offset as f32),
+            })?;
+            return self.emit(|dst| Sir::Add {
+                dst,
+                a: index,
+                b: base,
+            });
         }
-        let value = *path
-            .first()
-            .ok_or("workgroup access requires one array index")? as f32;
+        let value = offset
+            + *path
+                .first()
+                .ok_or("workgroup access requires one array index")?;
         self.emit(|dst| Sir::Const {
             dst,
-            value: Vec4::new(value, value, value, value),
+            value: Vec4::new(value as f32, value as f32, value as f32, value as f32),
         })
     }
     fn decoration(&self, id: u32, member: Option<usize>) -> Decoration {
@@ -910,15 +928,19 @@ impl<'a> Compiler<'a> {
             }
             4 => {
                 let Ty::Array(element, length) = t else {
-                    return Err("workgroup storage supports one fixed vec4 array".into());
+                    return Err("workgroup storage supports fixed vec4 arrays".into());
                 };
-                if self.stage != Stage::Compute
-                    || self.ty(element)? != Ty::Vector(4)
-                    || self.shared_memory_vec4s != 0
-                {
-                    return Err("compute supports one fixed vec4 workgroup array".into());
+                if self.stage != Stage::Compute || self.ty(element)? != Ty::Vector(4) {
+                    return Err("compute supports fixed vec4 workgroup arrays".into());
                 }
-                self.shared_memory_vec4s = length as usize;
+                let end = self
+                    .shared_memory_vec4s
+                    .checked_add(length as usize)
+                    .filter(|&end| end <= 4096)
+                    .ok_or("compute workgroup shared memory exceeds 4096 vec4 values")?;
+                self.shared_memory_offsets
+                    .insert(a[1], self.shared_memory_vec4s);
+                self.shared_memory_vec4s = end;
             }
             7 => {
                 self.value_lanes(base)?;
@@ -1341,7 +1363,7 @@ impl<'a> Compiler<'a> {
                         && self.ty(base)? == Ty::Vector(4)
                         && (dynamic_index.is_some() || path.len() == 1) =>
                     {
-                        let index = self.shared_index(dynamic_index, &path)?;
+                        let index = self.shared_index(root, dynamic_index, &path)?;
                         let r = self.emit(|dst| Sir::SharedLoad { dst, index })?;
                         Value::Reg(r, false)
                     }
@@ -1429,7 +1451,7 @@ impl<'a> Compiler<'a> {
                         && self.ty(base)? == Ty::Vector(4)
                         && (dynamic_index.is_some() || path.len() == 1) =>
                     {
-                        let index = self.shared_index(dynamic_index, &path)?;
+                        let index = self.shared_index(root, dynamic_index, &path)?;
                         self.ops.push(Sir::SharedStore { index, src: r });
                     }
                     7 if path.is_empty() => {
