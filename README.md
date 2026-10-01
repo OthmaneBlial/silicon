@@ -153,8 +153,10 @@ hitscan, health and ammo pickups, Doom-timed enemy idle and chance-based pain
 poses, sight-based wake-up with a 100-tic target timeout, sector-portal enemy
 pursuit around blocked corridors, pistol-noise alerts that wake enemies through
 open sectors even when a shot misses, melee attacks, line-of-sight hitscan for
-humans and shotgunners, and imp fireballs. Moving
-enemies cycle four WAD walk frames, play attack and death poses, leave corpses,
+humans and shotgunners, and imp fireballs. The player can trigger E1M1's WAD
+exit line with `E`; the session reports `EXITED` without loading another map.
+Missing dynamic doors can still block the route to it. Enemies cycle four
+WAD walk frames, play attack and death poses, leave corpses,
 and select among eight camera-relative sprite views; fireballs show WAD impact
 frames. It remains
 a limited E1M1 gameplay slice, not a complete Doom game;

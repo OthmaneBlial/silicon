@@ -23,14 +23,17 @@ cargo run --release --example freedoom_map -- /path/to/freedoom1.wad --interacti
 ```
 
 The first command writes `output/freedoom_map.png`. The interactive view uses
-WASD to move and strafe, arrow keys to turn, Shift to run, Space to fire, and
-Escape to exit. Each frame submits the scene again through SILICON. Movement
-stays inside a BSP-leaf floor, keeps a 16-unit margin from one-sided or
-explicitly blocking lines, limits steps to 24 units, and requires 56 units of
-ceiling clearance. In interactive mode, the WAD's stim packs, medikits, clips,
+WASD to move and strafe, arrow keys to turn, Shift to run, Space to fire, `E`
+to use, and Escape to exit. Every frame submits the scene again through
+SILICON; movement stays inside a BSP-leaf floor, keeps a 16-unit margin from
+one-sided or explicitly blocking lines, limits steps to 24 units, and requires
+56 units of ceiling clearance. In interactive mode, the WAD's stim packs, medikits, clips,
 and ammo boxes render as cutout billboards and can be collected within 24 units
 when health or pistol ammo is below its 100 or 200 cap. The player starts with
-50 pistol rounds.
+50 pistol rounds. Pressing `E` within 64 units while facing the front of E1M1's
+one-sided S1 exit linedef (special 11) stops gameplay and reports `EXITED`; the
+prototype does not load the next map, and missing dynamic doors can block
+access to the exit.
 
 The combat slice loads four normal-skill enemy types from WAD things and their
 classic `A1`–`D1` walk and `E1`–`G1` attack sprite patches: former humans (20
@@ -102,9 +105,9 @@ that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
-gib states, Doom's detailed actor navigation, other sound events, keys, exits,
-other weapons and their ammunition, and full weapon animation beyond the brief
-idle/fire pose remain unimplemented.
+gib states, Doom's detailed actor navigation, other sound events, keys, dynamic
+doors, level progression after E1M1, other weapons and their ammunition, and
+full weapon animation beyond the brief idle/fire pose remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in
 [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was rendered from
 the unmodified release WAD. The WAD itself is not included. The release archive
@@ -121,6 +124,8 @@ The upstream project and contributors do not endorse SILICON. See the
 [Freedoom 0.13.0 release](https://github.com/freedoom/freedoom/releases/tag/v0.13.0),
 [license source](https://raw.githubusercontent.com/freedoom/freedoom/v0.13.0/COPYING.adoc),
 [id Software's item, ammo, damage and target-threshold handling](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c),
+[64-unit linedef use tracing](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_map.c),
+[special 11's level-exit action](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c),
 [100-tic target threshold](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_local.h),
 and id Software's [WAD](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/w_wad.h),
 [map and BSP record](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/doomdata.h),

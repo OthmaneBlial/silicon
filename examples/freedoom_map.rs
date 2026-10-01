@@ -26,6 +26,8 @@ const ACTOR_TARGET_THRESHOLD: f32 = 100.0 / 35.0;
 const ACTOR_IDLE_CYCLE: f32 = 20.0 / 35.0;
 const LINE_TWO_SIDED: u16 = 4;
 const LINE_SOUND_BLOCK: u16 = 64;
+const LINE_EXIT_USE: u16 = 11;
+const USE_RANGE: f32 = 64.0;
 
 #[derive(Clone, Copy)]
 struct Lump {
@@ -71,7 +73,7 @@ struct Map {
     vertices: Vec<Vertex2>,
     sectors: Vec<Sector>,
     sides: Vec<SideDef>,
-    lines: Vec<[u16; 5]>, // endpoints, flags, side 0, side 1
+    lines: Vec<[u16; 6]>, // endpoints, flags, side 0, side 1, special
     segs: Vec<[u16; 5]>,  // endpoints, linedef, side, texture offset
     subsectors: Vec<[u16; 2]>,
     nodes: Vec<Node>,
@@ -230,7 +232,7 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
             })
         })
         .collect::<Result<_, io::Error>>()?;
-    let lines: Vec<[u16; 5]> = records(2, 14)?
+    let lines: Vec<[u16; 6]> = records(2, 14)?
         .into_iter()
         .map(|r| {
             Ok([
@@ -239,6 +241,7 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
                 u16_at(r, 4)?,
                 u16_at(r, 10)?,
                 u16_at(r, 12)?,
+                u16_at(r, 6)?,
             ])
         })
         .collect::<Result<_, io::Error>>()?;
@@ -1631,7 +1634,7 @@ fn bsp_sector_index_at(map: &Map, x: f32, y: f32) -> Option<u16> {
         .map(|_| sidedef.sector)
 }
 
-fn portal_is_walkable(map: &Map, line: [u16; 5], from: u16, to: u16) -> bool {
+fn portal_is_walkable(map: &Map, line: [u16; 6], from: u16, to: u16) -> bool {
     if line[2] & 1 != 0 || line[4] == u16::MAX {
         return false;
     }
@@ -1824,6 +1827,63 @@ fn move_player(map: &Map, player: &mut Player, controls: Controls, delta: f32) {
             *player = candidate;
         }
     }
+}
+
+fn use_exit_line(map: &Map, player: Player) -> bool {
+    let origin = Vertex2 {
+        x: player.x,
+        y: player.y,
+    };
+    let angle = player.angle.to_radians();
+    let direction = Vertex2 {
+        x: angle.cos(),
+        y: angle.sin(),
+    };
+    let mut intersections = map
+        .lines
+        .iter()
+        .filter_map(|line| {
+            let distance = ray_segment_distance(
+                origin,
+                direction,
+                map.vertices[line[0] as usize],
+                map.vertices[line[1] as usize],
+            )?;
+            (distance <= USE_RANGE).then_some((distance, line))
+        })
+        .collect::<Vec<_>>();
+    intersections.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    for (_, line) in intersections {
+        if line[5] != 0 {
+            if line[5] == LINE_EXIT_USE {
+                let a = map.vertices[line[0] as usize];
+                let b = map.vertices[line[1] as usize];
+                let side = (b.x - a.x) * (player.y - a.y) - (b.y - a.y) * (player.x - a.x);
+                return side < 0.0;
+            }
+            return false;
+        }
+        if line[4] == u16::MAX {
+            return false;
+        }
+        let (Some(side0), Some(side1)) = (
+            map.sides.get(line[3] as usize),
+            map.sides.get(line[4] as usize),
+        ) else {
+            return false;
+        };
+        let (Some(sector0), Some(sector1)) = (
+            map.sectors.get(side0.sector as usize),
+            map.sectors.get(side1.sector as usize),
+        ) else {
+            return false;
+        };
+        if sector0.ceiling.min(sector1.ceiling) <= sector0.floor.max(sector1.floor) {
+            return false;
+        }
+    }
+    false
 }
 
 fn cross2(a: Vertex2, b: Vertex2) -> f32 {
@@ -2595,8 +2655,14 @@ fn render(path: &Path, output: &Path) -> api::Result<()> {
     save_frame(&renderer, output)?;
     let triangles = frame_triangles(&scene, scene.start, static_draws, submission.draws)?;
     let visible = visible_subsector_order(&scene.map, scene.start).len();
+    let exits = scene
+        .map
+        .lines
+        .iter()
+        .filter(|line| line[5] == LINE_EXIT_USE)
+        .count();
     println!(
-        "E1M1: {triangles} triangles, {} SILICON draw(s), {visible}/{} horizontal BSP leaves, player start ({}, {}, {}°)",
+        "E1M1: {triangles} triangles, {} SILICON draw(s), {visible}/{} horizontal BSP leaves, {exits} use-exit line(s), player start ({}, {}, {}°)",
         submission.draws,
         scene.map.subsectors.len(),
         scene.start.x,
@@ -2627,6 +2693,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     let mut collected = 0;
     let mut shot_cooldown = 0.0f32;
     let mut weapon_flash = 0.0f32;
+    let mut exited = false;
     let mut pain_rng = 0x5349_4c49u32;
     let mut last = std::time::Instant::now();
     let mut frames = 0u64;
@@ -2634,7 +2701,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         let now = std::time::Instant::now();
         let delta = now.duration_since(last).as_secs_f32().min(0.05);
         last = now;
-        if health > 0 {
+        if health > 0 && !exited {
             let axis = |positive, negative| {
                 (window.is_key_down(positive) as i8 - window.is_key_down(negative) as i8) as f32
             };
@@ -2655,26 +2722,37 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 },
                 delta,
             );
-            collected += collect_pickups(&scene.map, &mut pickups, player, &mut health, &mut ammo);
-            shot_cooldown = (shot_cooldown - delta).max(0.0);
-            weapon_flash = (weapon_flash - delta).max(0.0);
-            if window.is_key_pressed(Key::Space, KeyRepeat::No) && shot_cooldown == 0.0 && ammo > 0
-            {
-                ammo -= 1;
-                shot_cooldown = 0.35;
-                weapon_flash = 0.16;
-                kills += usize::from(fire_weapon(&scene.map, &mut actors, player, &mut pain_rng));
+            if window.is_key_pressed(Key::E, KeyRepeat::No) {
+                exited = use_exit_line(&scene.map, player);
+            }
+            if !exited {
+                collected +=
+                    collect_pickups(&scene.map, &mut pickups, player, &mut health, &mut ammo);
+                shot_cooldown = (shot_cooldown - delta).max(0.0);
+                weapon_flash = (weapon_flash - delta).max(0.0);
+                if window.is_key_pressed(Key::Space, KeyRepeat::No)
+                    && shot_cooldown == 0.0
+                    && ammo > 0
+                {
+                    ammo -= 1;
+                    shot_cooldown = 0.35;
+                    weapon_flash = 0.16;
+                    kills +=
+                        usize::from(fire_weapon(&scene.map, &mut actors, player, &mut pain_rng));
+                }
             }
         }
-        update_actors(
-            &scene.map,
-            &mut actors,
-            &mut projectiles,
-            player,
-            &mut health,
-            delta,
-        );
-        update_projectiles(&scene.map, &mut projectiles, player, &mut health, delta);
+        if !exited {
+            update_actors(
+                &scene.map,
+                &mut actors,
+                &mut projectiles,
+                player,
+                &mut health,
+                delta,
+            );
+            update_projectiles(&scene.map, &mut projectiles, player, &mut health, delta);
+        }
         health = health.max(0);
         let (submission, static_draws) = scene.draw(
             player,
@@ -2688,6 +2766,8 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         let remaining = actors.iter().filter(|actor| actor.health > 0).count();
         let state = if health == 0 {
             "DEAD"
+        } else if exited {
+            "EXITED"
         } else if remaining == 0 {
             "CLEAR"
         } else {
@@ -2696,7 +2776,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_subsector_order(&scene.map, player).len();
         window.set_title(&format!(
-            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire | HP {health} | ammo {ammo} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire, E use | HP {health} | ammo {ammo} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.actors.len(),
             triangles,
             submission.draws,
@@ -2707,7 +2787,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     }
     save_frame(&renderer, output)?;
     println!(
-        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, health {health}; saved {}",
+        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, health {health}, exited {exited}; saved {}",
         scene.actors.len(),
         output.display()
     );
@@ -2814,7 +2894,7 @@ mod tests {
             vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
             sectors: vec![],
             sides: vec![],
-            lines: vec![[0, 1, 1, u16::MAX, u16::MAX]],
+            lines: vec![[0, 1, 1, u16::MAX, u16::MAX, 0]],
             segs: vec![],
             subsectors: vec![],
             nodes: vec![],
@@ -3081,7 +3161,7 @@ mod tests {
                 },
             ],
             sides: vec![side(0), side(1)],
-            lines: vec![[0, 1, 4, 0, 1]],
+            lines: vec![[0, 1, 4, 0, 1, 0]],
             segs: vec![[0, 1, 0, 0, 7], [0, 1, 0, 1, 7]],
             subsectors: vec![[1, 0], [1, 1]],
             nodes: vec![],
@@ -3144,7 +3224,7 @@ mod tests {
             ],
             sectors: vec![sector, raised],
             sides: vec![side(0), side(1)],
-            lines: vec![[0, 1, 1, 0, u16::MAX], [2, 3, 1, 1, u16::MAX]],
+            lines: vec![[0, 1, 1, 0, u16::MAX, 0], [2, 3, 1, 1, u16::MAX, 0]],
             segs: vec![[0, 1, 0, 0, 0], [2, 3, 1, 0, 0]],
             subsectors: vec![[1, 0], [1, 1]],
             nodes: vec![Node {
@@ -3212,6 +3292,64 @@ mod tests {
     }
 
     #[test]
+    fn use_activates_the_front_of_an_exit_line_through_open_space() {
+        let sector = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+        };
+        let side = SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper: [0; 8],
+            lower: [0; 8],
+            middle: [0; 8],
+            sector: 0,
+        };
+        let mut map = Map {
+            vertices: vec![
+                Vertex2 { x: 20.0, y: 16.0 },
+                Vertex2 { x: 20.0, y: -16.0 },
+                Vertex2 { x: 40.0, y: 16.0 },
+                Vertex2 { x: 40.0, y: -16.0 },
+            ],
+            sectors: vec![sector],
+            sides: vec![side; 2],
+            lines: vec![
+                [0, 1, LINE_TWO_SIDED, 0, 1, 0],
+                [2, 3, 1, 0, u16::MAX, LINE_EXIT_USE],
+            ],
+            segs: vec![[0, 1, 0, 0, 0]],
+            subsectors: vec![[1, 0]],
+            nodes: vec![],
+            things: vec![],
+        };
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        assert!(use_exit_line(&map, player));
+        assert!(!use_exit_line(
+            &map,
+            Player {
+                x: 80.0,
+                angle: 180.0,
+                ..player
+            }
+        ));
+        map.vertices[2].x = 100.0;
+        map.vertices[3].x = 100.0;
+        assert!(!use_exit_line(&map, player));
+        map.lines[0][4] = u16::MAX;
+        map.vertices[2].x = 40.0;
+        map.vertices[3].x = 40.0;
+        assert!(!use_exit_line(&map, player));
+    }
+
+    #[test]
     fn enemy_routes_use_open_sector_portals_and_respect_steps_and_clearance() {
         let open = Sector {
             floor: 0.0,
@@ -3245,11 +3383,11 @@ mod tests {
             ],
             sides: (0..5).map(side).collect(),
             lines: vec![
-                [0, 1, 0, 0, 1], // sector 0 -> 1
-                [0, 1, 0, 1, 2], // sector 1 -> 2
-                [0, 1, 1, 0, 2], // blocked shortcut
-                [0, 1, 0, 0, 3], // too little actor clearance
-                [0, 1, 0, 0, 4], // step exceeds the limit
+                [0, 1, 0, 0, 1, 0], // sector 0 -> 1
+                [0, 1, 0, 1, 2, 0], // sector 1 -> 2
+                [0, 1, 1, 0, 2, 0], // blocked shortcut
+                [0, 1, 0, 0, 3, 0], // too little actor clearance
+                [0, 1, 0, 0, 4, 0], // step exceeds the limit
             ],
             segs: vec![],
             subsectors: vec![],
@@ -3298,10 +3436,10 @@ mod tests {
                 side(4),
             ],
             lines: vec![
-                [0, 1, LINE_TWO_SIDED, 0, 1],
-                [2, 3, LINE_TWO_SIDED | LINE_SOUND_BLOCK, 2, 3],
-                [4, 5, LINE_TWO_SIDED | LINE_SOUND_BLOCK, 4, 5],
-                [6, 7, LINE_TWO_SIDED, 6, 7],
+                [0, 1, LINE_TWO_SIDED, 0, 1, 0],
+                [2, 3, LINE_TWO_SIDED | LINE_SOUND_BLOCK, 2, 3, 0],
+                [4, 5, LINE_TWO_SIDED | LINE_SOUND_BLOCK, 4, 5, 0],
+                [6, 7, LINE_TWO_SIDED, 6, 7, 0],
             ],
             segs: vec![
                 [0, 1, 0, 0, 0],
@@ -3410,7 +3548,11 @@ mod tests {
             ],
             sectors: vec![sector; 3],
             sides: vec![side(0), side(1), side(1), side(2), side(0)],
-            lines: vec![[0, 1, 0, 0, 1], [2, 3, 0, 2, 3], [4, 5, 1, 4, u16::MAX]],
+            lines: vec![
+                [0, 1, 0, 0, 1, 0],
+                [2, 3, 0, 2, 3, 0],
+                [4, 5, 1, 4, u16::MAX, 0],
+            ],
             segs: vec![[0, 1, 0, 0, 0], [0, 1, 0, 1, 0], [2, 3, 1, 1, 0]],
             subsectors: vec![[1, 0], [1, 1], [1, 2]],
             nodes: vec![
@@ -3712,7 +3854,7 @@ mod tests {
 
         let map = Map {
             vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
-            lines: vec![[0, 1, 1, u16::MAX, u16::MAX]],
+            lines: vec![[0, 1, 1, u16::MAX, u16::MAX, 0]],
             ..map
         };
         assert!(!fire_weapon(&map, &mut actors, player, &mut pain_rng));
@@ -3769,7 +3911,7 @@ mod tests {
                 middle: [0; 8],
                 sector: 0,
             }],
-            lines: vec![[0, 1, 1, 0, u16::MAX]],
+            lines: vec![[0, 1, 1, 0, u16::MAX, 0]],
             segs: vec![[0, 1, 0, 0, 0]],
             subsectors: vec![[1, 0]],
             nodes: vec![],
@@ -3861,7 +4003,7 @@ mod tests {
             vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
             sectors: vec![],
             sides: vec![],
-            lines: vec![[0, 1, 1, u16::MAX, u16::MAX]],
+            lines: vec![[0, 1, 1, u16::MAX, u16::MAX, 0]],
             segs: vec![],
             subsectors: vec![],
             nodes: vec![],
@@ -3962,7 +4104,7 @@ mod tests {
             ],
             sectors: vec![sector, raised],
             sides: vec![side(0), side(1)],
-            lines: vec![[0, 1, 0, 0, 1], [2, 3, 0, 1, 0], [4, 5, 1, 0, 1]],
+            lines: vec![[0, 1, 0, 0, 1, 0], [2, 3, 0, 1, 0, 0], [4, 5, 1, 0, 1, 0]],
             segs: vec![[0, 1, 0, 0, 0], [2, 3, 1, 0, 0]],
             subsectors: vec![[1, 0], [1, 1]],
             nodes: vec![Node {
@@ -4118,7 +4260,7 @@ mod tests {
         );
         assert!(pickups[2].active);
 
-        map.lines.push([0, 1, 1, u16::MAX, u16::MAX]);
+        map.lines.push([0, 1, 1, u16::MAX, u16::MAX, 0]);
         let mut hidden = [Pickup {
             sprite: *b"STIM",
             x: 20.0,
