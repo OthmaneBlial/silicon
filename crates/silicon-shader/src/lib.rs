@@ -46,6 +46,23 @@ impl Logic {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum UnaryMath {
+    Floor,
+    Fract,
+    Sin,
+    Cos,
+}
+impl UnaryMath {
+    fn apply(self, value: f32) -> f32 {
+        match self {
+            Self::Floor => value.floor(),
+            Self::Fract => value - value.floor(),
+            Self::Sin => value.sin(),
+            Self::Cos => value.cos(),
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Instruction {
     Compare {
@@ -129,6 +146,11 @@ pub enum Instruction {
         dst: u8,
         a: u8,
         b: u8,
+    },
+    Math {
+        dst: u8,
+        src: u8,
+        operation: UnaryMath,
     },
     Min {
         dst: u8,
@@ -337,6 +359,7 @@ impl Instruction {
             | Not { dst, src }
             | Neg { dst, src }
             | Saturate { dst, src }
+            | Math { dst, src, .. }
             | Normalize { dst, src, .. }
             | Length { dst, src, .. }
             | Swizzle { dst, src, .. }
@@ -718,6 +741,10 @@ impl Program {
                 | Instruction::Pow { dst, a, b } => {
                     source(a)?;
                     source(b)?;
+                    Some(dst)
+                }
+                Instruction::Math { dst, src, .. } => {
+                    source(src)?;
                     Some(dst)
                 }
                 Instruction::Compare { dst, a, b, .. } | Instruction::Logical { dst, a, b, .. } => {
@@ -1261,6 +1288,14 @@ impl Program {
                             .map(|v| f32::from_bits(v.to_bits() ^ 0x8000_0000)),
                     ),
                 ),
+                Instruction::Math {
+                    dst,
+                    src,
+                    operation,
+                } => (
+                    Some(dst),
+                    Vec4::from_array(regs[src as usize].to_array().map(|v| operation.apply(v))),
+                ),
                 Instruction::Add { dst, a, b } => (Some(dst), regs[a as usize] + regs[b as usize]),
                 Instruction::Sub { dst, a, b } => (Some(dst), regs[a as usize] - regs[b as usize]),
                 Instruction::Mul { dst, a, b } => {
@@ -1620,5 +1655,85 @@ mod tests {
                 .unwrap_err()
                 .contains("require scalar execution")
         );
+    }
+
+    #[test]
+    fn unary_math_matches_scalar_and_packet_execution() {
+        let program = Program::new(vec![
+            Instruction::Input { dst: 0, slot: 0 },
+            Instruction::Math {
+                dst: 1,
+                src: 0,
+                operation: UnaryMath::Floor,
+            },
+            Instruction::Math {
+                dst: 2,
+                src: 0,
+                operation: UnaryMath::Fract,
+            },
+            Instruction::Math {
+                dst: 3,
+                src: 0,
+                operation: UnaryMath::Sin,
+            },
+            Instruction::Math {
+                dst: 4,
+                src: 0,
+                operation: UnaryMath::Cos,
+            },
+            Instruction::Output { slot: 0, src: 1 },
+            Instruction::Output { slot: 1, src: 2 },
+            Instruction::Output { slot: 2, src: 3 },
+            Instruction::Output { slot: 3, src: 4 },
+        ])
+        .unwrap();
+        let inputs = [
+            Vec4::new(-1.25, -0.25, 0.25, 1.2),
+            Vec4::new(2.75, 1.25, -0.5, -1.1),
+            Vec4::new(0.9, -3.75, 2.0, 0.3),
+            Vec4::new(-2.1, 4.5, -2.5, 0.7),
+        ];
+        let scalar: Vec<_> = inputs
+            .iter()
+            .map(|&input| {
+                program
+                    .execute(&[input], &[], |_, _| Err("no textures".into()), false)
+                    .unwrap()
+                    .outputs
+            })
+            .collect();
+        let packet = program
+            .execute4(
+                std::array::from_fn(|lane| std::slice::from_ref(&inputs[lane])),
+                &[],
+                [&[], &[], &[], &[]],
+                0b1111,
+                |_, _, _| Err("no textures".into()),
+                [false; 4],
+            )
+            .unwrap();
+        for lane in 0..4 {
+            let source = inputs[lane].to_array();
+            let expected = [
+                source.map(f32::floor),
+                source.map(|value| value - value.floor()),
+                source.map(f32::sin),
+                source.map(f32::cos),
+            ];
+            for output in 0..4 {
+                assert_eq!(
+                    packet[lane].outputs[output].to_array(),
+                    scalar[lane][output].to_array()
+                );
+                for (actual, expected) in packet[lane].outputs[output]
+                    .to_array()
+                    .into_iter()
+                    .zip(expected[output])
+                {
+                    assert!((actual - expected).abs() < 1e-6);
+                }
+            }
+        }
+        assert_eq!(scalar[0][1].x, 0.75);
     }
 }
