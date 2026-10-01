@@ -27,8 +27,13 @@ Map selection defaults to E1M1; `--map` accepts another marker in the WAD, such
 as E1M2, for either rendering or interactive play. Each map uses its own
 player-1 start and the same SILICON pipeline. Using E1M1's special-11 exit
 shows `EXITED` for a frame, then loads E1M2 when it exists. Normal maps advance
-within the current episode when the next marker exists,
-matching id Software's [`G_DoCompleted`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/g_game.c). Health, ammo, and keys carry forward while map-local counters reset. Episode-ending map exits stop at `EXITED` because the prototype has no finale. Secret-map routing remains unsupported. The first command writes
+within the current episode when the next marker exists, matching id Software's
+[`G_DoCompleted`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/g_game.c).
+Health, ammo, and keys carry forward while map-local counters reset.
+Episode-ending map exits stop at `EXITED` because the prototype has no finale.
+Secret-map routing remains unsupported. The E1M2 render was smoke-tested, but
+its start view still has large clear-color regions; visual completeness beyond
+E1M1 is unverified. The first command writes
 `output/freedoom_map.png`. The interactive view uses
 WASD to move and strafe, arrow keys to turn, Shift to run, Space to fire, `E`
 to open ordinary doors, operate manual lifts, or use the exit, and Escape to
