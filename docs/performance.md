@@ -47,6 +47,17 @@ worker-stage time. These worker sums overlap; the instrumentation adds clock
 overhead, so they identify shader work as a profiling target without defining
 exclusive stage shares.
 
+## Normal-map PBR shader-work sample
+
+The [raw post-normal-map record](../benchmarks/apple-m2-pbr-normal-map-2026-10-01.json)
+uses commit `23959a2015923135c4fe4c2a67fa35490bcfb716`, 640×400, four-worker
+NEON coverage, three warmups and 30 timed frames. Its counter totals correspond
+to about 207 SIR instructions and 1.06 texture samples per shaded fragment,
+compared with about 190 instructions and 1.00 sample in the earlier direct-light
+record. The wall-clock median was 395.60 ms, but frames ranged from 215.98 to
+772.71 ms while the host showed heavy external CPU activity. Treat this as a
+shader-work sample only; rerun on an idle host before using its timing values.
+
 ## 0.5 control-flow checkpoint
 
 The [pre-optimization alternating record](../benchmarks/apple-m2-control-before-counters-2026-10-01.json)
