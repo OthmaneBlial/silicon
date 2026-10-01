@@ -17,6 +17,7 @@ const MAP_LUMPS: [&str; 11] = [
     "REJECT", "BLOCKMAP",
 ];
 const MAX_WAD_BYTES: u64 = 128 * 1024 * 1024;
+const DEPTH_BUCKET_SIZE: f32 = 2048.0;
 
 #[derive(Clone, Copy)]
 struct Lump {
@@ -1506,6 +1507,20 @@ fn bounds3_in_view(bounds: Bounds3, player: Player, eye_height: f32) -> bool {
     minimum.into_iter().all(|distance| distance <= 0.0)
 }
 
+fn depth_bucket(bounds: Bounds3, player: Player) -> u32 {
+    let (sin, cos) = player.angle.to_radians().sin_cos();
+    let nearest = [bounds.min.x, bounds.max.x]
+        .into_iter()
+        .flat_map(|x| {
+            [bounds.min.z, bounds.max.z]
+                .into_iter()
+                .map(move |z| (x - player.x) * cos + (-z - player.y) * sin)
+        })
+        .fold(f32::INFINITY, f32::min)
+        .max(0.0);
+    (nearest / DEPTH_BUCKET_SIZE) as u32
+}
+
 fn visible_subsector_order(map: &Map, player: Player) -> Vec<usize> {
     if map.nodes.is_empty() {
         return (map.subsectors.len() == 1)
@@ -2080,7 +2095,7 @@ impl PreparedScene {
         pickups: &[Pickup],
         weapon_firing: bool,
         renderer: &mut Renderer,
-    ) -> api::Result<api::Submission> {
+    ) -> api::Result<(api::Submission, usize)> {
         let sector = bsp_sector_at(&self.map, player.x, player.y)
             .ok_or_else(|| invalid("player is outside every E1M1 BSP leaf"))?;
         let visible_order = visible_subsector_order(&self.map, player);
@@ -2116,13 +2131,18 @@ impl PreparedScene {
                 {
                     continue;
                 }
+                let depth = draw
+                    .bounds
+                    .map(|bounds| depth_bucket(bounds, player))
+                    .unwrap_or_default();
                 let batch = batches
-                    .entry((draw.wall, draw.masked, draw.name))
+                    .entry((depth, draw.wall, draw.masked, draw.name))
                     .or_insert_with(|| (Arc::clone(&draw.texture), Vec::new()));
                 batch.1.extend_from_slice(&draw.vertices);
             }
         }
-        for ((_, masked, _), (texture, vertices)) in batches {
+        let static_draws = batches.len();
+        for ((_, _, masked, _), (texture, vertices)) in batches {
             commands.bind_pipeline(if masked {
                 self.sprite_pipeline.clone()
             } else {
@@ -2220,7 +2240,7 @@ impl PreparedScene {
         commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
         commands.draw(0, count);
         commands.end_render_pass();
-        self.device.submit(&commands, renderer)
+        Ok((self.device.submit(&commands, renderer)?, static_draws))
     }
 }
 
@@ -2231,24 +2251,18 @@ fn save_frame(renderer: &Renderer, output: &Path) -> api::Result<()> {
     renderer.framebuffer.save_png(output)
 }
 
-fn frame_triangles(scene: &PreparedScene, player: Player, draws: u64) -> api::Result<usize> {
+fn frame_triangles(
+    scene: &PreparedScene,
+    player: Player,
+    static_draws: usize,
+    draws: u64,
+) -> api::Result<usize> {
     let draws =
         usize::try_from(draws).map_err(|_| invalid("SILICON draw count exceeds host range"))?;
     let sector = bsp_sector_at(&scene.map, player.x, player.y)
         .ok_or_else(|| invalid("player is outside every E1M1 BSP leaf"))?;
     let eye_height = sector.floor + 41.0;
     let visible = visible_subsector_order(&scene.map, player);
-    let mut static_draws = BTreeMap::new();
-    for &leaf in &visible {
-        for draw in &scene.draws[leaf] {
-            if draw
-                .bounds
-                .is_some_and(|bounds| bounds3_in_view(bounds, player, eye_height))
-            {
-                static_draws.insert((draw.wall, draw.masked, draw.name), ());
-            }
-        }
-    }
     let static_triangles = visible
         .iter()
         .flat_map(|&leaf| &scene.draws[leaf])
@@ -2258,13 +2272,13 @@ fn frame_triangles(scene: &PreparedScene, player: Player, draws: u64) -> api::Re
         })
         .map(|draw| draw.vertices.len() / 3)
         .sum::<usize>();
-    Ok(static_triangles + draws.saturating_sub(static_draws.len()) * 2)
+    Ok(static_triangles + draws.saturating_sub(static_draws) * 2)
 }
 
 fn render(path: &Path, output: &Path) -> api::Result<()> {
     let scene = PreparedScene::load(path)?;
     let mut renderer = Renderer::new(960, 720)?;
-    let submission = scene.draw(
+    let (submission, static_draws) = scene.draw(
         scene.start,
         &scene.actors,
         &[],
@@ -2273,7 +2287,7 @@ fn render(path: &Path, output: &Path) -> api::Result<()> {
         &mut renderer,
     )?;
     save_frame(&renderer, output)?;
-    let triangles = frame_triangles(&scene, scene.start, submission.draws)?;
+    let triangles = frame_triangles(&scene, scene.start, static_draws, submission.draws)?;
     let visible = visible_subsector_order(&scene.map, scene.start).len();
     println!(
         "E1M1: {triangles} triangles, {} SILICON draw(s), {visible}/{} horizontal BSP leaves, player start ({}, {}, {}°)",
@@ -2355,7 +2369,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         );
         update_projectiles(&scene.map, &mut projectiles, player, &mut health, delta);
         health = health.max(0);
-        let submission = scene.draw(
+        let (submission, static_draws) = scene.draw(
             player,
             &actors,
             &projectiles,
@@ -2372,7 +2386,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         } else {
             "PLAYING"
         };
-        let triangles = frame_triangles(&scene, player, submission.draws)?;
+        let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_subsector_order(&scene.map, player).len();
         window.set_title(&format!(
             "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire | HP {health} | ammo {ammo} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
@@ -2425,6 +2439,34 @@ fn main() -> api::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batches_order_by_nearest_view_depth() {
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let bounds = |min_x, max_x| Bounds3 {
+            min: Vec3::new(min_x, 0.0, -16.0),
+            max: Vec3::new(max_x, 128.0, 16.0),
+        };
+        assert_eq!(depth_bucket(bounds(256.0, 512.0), player), 0);
+        assert_eq!(depth_bucket(bounds(2048.0, 2304.0), player), 1);
+        assert_eq!(
+            depth_bucket(
+                Bounds3 {
+                    min: Vec3::new(-16.0, 0.0, -2560.0),
+                    max: Vec3::new(16.0, 128.0, -2304.0),
+                },
+                Player {
+                    angle: 90.0,
+                    ..player
+                }
+            ),
+            1
+        );
+    }
 
     #[test]
     fn rejects_truncated_and_out_of_range_wads() {

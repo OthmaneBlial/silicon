@@ -63,13 +63,18 @@ cull map subsectors whose node bounds lie wholly outside the horizontal view
 cone and near/far interval. Traversal visits child nodes near-to-far; each
 static material mesh also uses its vertex bounds to reject geometry outside any
 of the six camera-frustum planes, then surviving geometry is batched by
-texture and cutout mode. This does not implement Doom's BSP wall occlusion or
-per-column portal clipping. At the checked-in 960×720 start view, 567 of 682
-subsectors remain in the horizontal BSP view and SILICON submits 4,046
-triangles across 172 draws, including the newly rendered masked middle
-textures. Earlier opaque-only counts were 3,896 triangles and 164 draws for
-this view. The screenshot shows the player start,
-pistol, and a medikit; enemies are outside that camera view. A temporary WAD
+texture and cutout mode within coarse 2,048-unit view-depth bands, so nearby
+bands reach the depth test first. This can reject hidden fragments before the
+fragment shader runs, while preserving the framebuffer; it does not implement
+Doom's BSP wall occlusion or per-column portal clipping. At the checked-in
+960×720 start view, 567 of 682 subsectors remain in the horizontal BSP view and
+SILICON submits 4,046 triangles across 208 draws, including the newly rendered
+masked middle textures. Five alternating release renders on Apple M2 measured
+median process CPU time of 0.62 s with depth bands and 0.69 s at the preceding
+revision; both produced the same RGBA pixels at this view. This fixed-pose
+measurement is not an engine-wide benchmark. Earlier opaque-only counts were
+3,896 triangles and 164 draws for this view. The screenshot shows the player
+start, pistol, and a medikit; enemies are outside that camera view. A temporary WAD
 with only its player start moved was used to capture an enemy sprite in view;
 that test fixture is not included.
 
