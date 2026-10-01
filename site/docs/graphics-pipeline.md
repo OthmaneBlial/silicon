@@ -34,6 +34,16 @@ also tests the mask; its fragments outside the portal leave the clear color
 untouched. `tests/stencil.rs` checks that boundary and exact framebuffer, depth,
 and stencil results between scalar and four-band SIMD rendering.
 
+SPIR-V fragment outputs at locations 0–3 write to matching RGBA8 color targets.
+`CommandBuffer::begin_render_pass_with_colors` takes one clear color per target;
+depth, stencil, sample count, blend mode and color-write enable are shared across
+the pass. `Framebuffer::color_attachment_pixel` and
+`Framebuffer::color_attachment_bytes` read each result; the existing `pixel`,
+`bytes` and PNG methods still address target 0. The renderer caps a pass at four
+targets and 512 MiB for color, depth and stencil storage including MSAA samples.
+Multi-target command captures use version 3; version 1 and 2 captures retain
+their existing format.
+
 Textures own RGBA-expanded texels from RGBA8, RGB8 or R8 input. Nearest and
 bilinear filters support clamp, repeat and mirror addressing. Bilinear samples
 texel centers and wraps each neighbor, including at seams. Mips average source
@@ -43,7 +53,7 @@ uses both UV derivatives, samples along the larger texel-space direction, and
 chooses its mip level from the smaller footprint. Its explicit tap cap is 1×–16×;
 `anisotropy_showcase` compares 16× filtering against ordinary trilinear sampling
 on a steeply viewed stripe plane. Filtering is in stored numeric color space;
-sRGB decoding and multiple color attachments remain future work. Anisotropy is
+sRGB decoding remains future work. Anisotropy is
 currently exposed to native Rust fragment shaders; the SIR/SPIR-V sampling path
 continues to use isotropic LOD.
 
@@ -77,7 +87,8 @@ each sample. Fragment varyings are shaded once per primitive/pixel using the
 first covered sample; depth tests and attachment writes remain per sample.
 Resolve averages the stored color bytes, reports the
 nearest sample depth, and exposes sample zero's stencil value through the
-single-sample framebuffer. Multisample attachments are capped at 512 MiB.
+single-sample framebuffer. The combined color/depth/stencil storage is capped at
+512 MiB.
 The CLI accepts `--samples 2` or `--samples 4`. Frame captures preserve the
 sample count and replay the same per-sample color, depth and stencil state.
 

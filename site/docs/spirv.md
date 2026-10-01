@@ -15,7 +15,7 @@ The committed original GLSL sources and their `.spv` fixtures are in
 recompile fixtures, not to build, test or run SILICON:
 
 ```sh
-for shader in textured.vert textured.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag compute_vector_add.comp compute_invert.comp compute_shared.comp compute_shared_multi.comp; do
+for shader in textured.vert textured.frag mrt.vert mrt.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag compute_vector_add.comp compute_invert.comp compute_shared.comp compute_shared_multi.comp; do
   glslangValidator -V --target-env vulkan1.0 -o "assets/shaders/$shader.spv" "assets/shaders/$shader"
   spirv-val --target-env vulkan1.0 "assets/shaders/$shader.spv"
 done
@@ -88,6 +88,14 @@ faces. This environment term is not split-sum image-based lighting.
   Scalar float ordered comparisons (equal, unequal, less/greater, inclusive forms),
   `OpFUnordNotEqual`, scalar bool logical equal/unequal/and/or/not, and `OpSelect`
   with a scalar bool and matching scalar float/bool alternatives.
+- Compute also accepts scalar unsigned `OpUGreaterThan`, `OpUGreaterThanEqual`,
+  `OpULessThan` and `OpULessThanEqual`. Dispatch IDs are bounded to 1,048,576;
+  unsigned constants used by comparisons are limited to 16,777,216 so their
+  float-backed SIR values remain exact. General integer arithmetic is unsupported.
+- Compute accepts uint32 `OpAtomicIAdd`, `OpAtomicExchange` and
+  `OpAtomicCompareExchange` on indexed storage-buffer elements, with Device
+  scope and Relaxed semantics only. Atomic uint values and operands must remain
+  exact in SIR's float-backed representation, from 0 through 16,777,216.
 - Location, Binding, DescriptorSet, Block, BufferBlock, ArrayStride, NonReadable,
   NonWritable, BuiltIn Position, WorkgroupSize/invocation IDs, ColMajor,
   MatrixStride and Offset decorations, checked against the binding contract.
@@ -99,15 +107,9 @@ faces. This environment term is not split-sum image-based lighting.
   Workgroup `OpTypeArray` vec4 values are accepted up to 4,096 total elements,
   along with `OpControlBarrier` only for Workgroup execution/memory scope and
   AcquireRelease WorkgroupMemory semantics (`barrier()` in GLSL).
-  Scalar unsigned comparisons support `>`, `>=`, `<` and `<=`; IDs are bounded
-  to 1,048,576 and comparison constants to 16,777,216 for exact float-backed SIR.
-  Compute also accepts uint32 `OpAtomicIAdd`, `OpAtomicExchange` and
-  `OpAtomicCompareExchange` on indexed storage-buffer elements, with Device
-  scope and Relaxed semantics only. Values and operands are bounded to the exact
-  float-backed integer range, 0 through 16,777,216.
-  Up to 12 uint runtime arrays may follow the write-only vec4 output at
-  contiguous set-0 bindings; they require 4-byte stride and offset 0. The host
-  maps values to vec4 x components and preserves yzw.
+  After the write-only vec4 output, up to 12 uint runtime arrays can use
+  contiguous set-0 bindings; they require 4-byte stride and offset 0. Their
+  host atomic buffers map integer values to vec4 x components and preserve yzw.
   Debug names and source-language metadata are read without executing them.
 
 The public binary parser checks framing, string padding, supported instruction
@@ -132,7 +134,7 @@ approximation even in divergent branches, not hardware derivative conformance.
 | Vertex Position | SIR output 0, homogeneous clip position |
 | Vertex outputs locations 0..3 | SIR outputs 1..4, perspective varyings |
 | Fragment inputs locations 0..3 | SIR inputs 0..3 |
-| Fragment output location 0 | RGBA vec4 |
+| Fragment output locations 0..3 | RGBA vec4, mapped to matching color targets |
 | Set 0, binding B | One float/vector/mat4 member at offset 0; float/vector uses SIR uniform 4B, col-major mat4 with stride 16 uses rows 4B..4B+3 |
 | Set 1, binding B | Combined sampler2D or samplerCube at matching texture slot B |
 | Compute `LocalSize` | `ComputePipeline::local_size`; host supplies the workgroup count |
@@ -201,8 +203,8 @@ returns zero; undefined GLSL inputs do not establish a conformance guarantee.
 Tests compare compiled GLSL with an independent hand-written SIR reference at
 exact framebuffer bytes, then capture/replay and SIMD/four-band rendering.
 The compute fixtures dispatch the checked-in GLSL vec4 add shader over 64
-workgroups and the guarded inversion shader over 65; it skips 60 out-of-range
-invocations and checks all 4,100 outputs against Rust's scalar result.
+workgroups and the guarded inversion shader over 65; the latter skips 60
+out-of-range invocations and checks all 4,100 outputs against Rust's scalar result.
 A shared-memory fixture broadcasts one value across each 64-invocation group;
 its integration test checks the 128 outputs across two groups in scalar and
 SIMD-requested dispatch, and the runnable example verifies 4,096 outputs over

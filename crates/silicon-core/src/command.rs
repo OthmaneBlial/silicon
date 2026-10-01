@@ -149,6 +149,9 @@ pub enum Command {
     BeginRenderPass {
         clear: Color,
     },
+    BeginRenderPassWithColors {
+        clear: Vec<Color>,
+    },
     EndRenderPass,
     BindPipeline(Arc<ShaderPipeline>),
     BindVertices(Buffer<Vertex>),
@@ -277,7 +280,14 @@ impl Device {
             let mut command_start = r.profile_shaders.then(Instant::now);
             let is_draw = matches!(command, Command::Draw { .. });
             match command {
-                Command::BeginRenderPass { clear } => r.clear(*clear),
+                Command::BeginRenderPass { clear } => {
+                    r.framebuffer.set_color_attachment_count(1)?;
+                    r.clear(*clear);
+                }
+                Command::BeginRenderPassWithColors { clear } => {
+                    r.framebuffer.set_color_attachment_count(clear.len())?;
+                    r.clear_color_attachments(clear)?;
+                }
                 Command::EndRenderPass => {}
                 Command::BindPipeline(p) => pipeline = Some(p.as_ref()),
                 Command::BindVertices(b) => vertices = Some(b.mapped()),
@@ -371,7 +381,14 @@ impl Device {
                     if let Some(start) = command_start.take() {
                         command_processing_time += start.elapsed();
                     }
-                    r.try_draw_packets(
+                    let fragment_outputs: [bool; MAX_COLOR_ATTACHMENTS] = std::array::from_fn(
+                        |slot| {
+                            p.fragment.instructions().iter().any(
+                                |instruction| matches!(instruction, Instruction::Output { slot: output, .. } if *output as usize == slot),
+                            )
+                        },
+                    );
+                    r.try_draw_packets_with_outputs(
                         v,
                         ind,
                         p.state,
@@ -478,7 +495,12 @@ impl Device {
                                             .borrow_mut()
                                             .push((fragments[i].primitive, e.trace));
                                     }
-                                    colors[i] = (!e.discarded).then_some(Color(e.outputs[0]));
+                                    colors[i] = (!e.discarded).then_some(std::array::from_fn(
+                                        |slot| {
+                                            fragment_outputs[slot]
+                                                .then_some(Color(e.outputs[slot]))
+                                        },
+                                    ));
                                 }
                             } else {
                                 for i in 0..4 {
@@ -503,7 +525,12 @@ impl Device {
                                             .borrow_mut()
                                             .push((fragments[i].primitive, e.trace));
                                     }
-                                    colors[i] = (!e.discarded).then_some(Color(e.outputs[0]));
+                                    colors[i] = (!e.discarded).then_some(std::array::from_fn(
+                                        |slot| {
+                                            fragment_outputs[slot]
+                                                .then_some(Color(e.outputs[slot]))
+                                        },
+                                    ));
                                 }
                             }
                             Ok(colors)
@@ -532,6 +559,11 @@ impl Device {
 impl CommandBuffer {
     pub fn begin_render_pass(&mut self, clear: Color) {
         self.commands.push(Command::BeginRenderPass { clear });
+    }
+    /// Begin a pass with one clear color for each of up to four color targets.
+    pub fn begin_render_pass_with_colors(&mut self, clear: Vec<Color>) {
+        self.commands
+            .push(Command::BeginRenderPassWithColors { clear });
     }
     pub fn end_render_pass(&mut self) {
         self.commands.push(Command::EndRenderPass);
@@ -604,6 +636,7 @@ impl CommandBuffer {
         }
         let mut pass = false;
         let mut begins = 0;
+        let mut color_attachments = 1usize;
         let mut bound_pipeline: Option<&ShaderPipeline> = None;
         let mut image_kinds = [None; 16];
         let mut vertex: Option<&[Vertex]> = None;
@@ -623,6 +656,27 @@ impl CommandBuffer {
                     }
                     pass = true;
                     begins += 1;
+                    color_attachments = 1;
+                }
+                Command::BeginRenderPassWithColors { clear } => {
+                    if pass || begins > 0 {
+                        return Err(error(
+                            "only one non-nested render pass is currently supported",
+                        )
+                        .into());
+                    }
+                    if !(1..=MAX_COLOR_ATTACHMENTS).contains(&clear.len()) {
+                        return Err(format!(
+                            "command {number}: color attachment count must be 1..={MAX_COLOR_ATTACHMENTS}"
+                        )
+                        .into());
+                    }
+                    if clear.iter().any(|color| !color.0.is_finite()) {
+                        return Err(error("clear colors must be finite").into());
+                    }
+                    pass = true;
+                    begins += 1;
+                    color_attachments = clear.len();
                 }
                 Command::EndRenderPass => {
                     if !pass {
@@ -724,6 +778,14 @@ impl CommandBuffer {
                 } => {
                     let v = vertex.ok_or_else(|| error("draw has no vertex buffer"))?;
                     let bound = bound_pipeline.ok_or_else(|| error("draw has no pipeline"))?;
+                    if bound.fragment.instructions().iter().any(
+                        |instruction| matches!(instruction, Instruction::Output { slot, .. } if *slot as usize >= color_attachments),
+                    ) {
+                        return Err(error(
+                            "fragment shader output has no matching color attachment",
+                        )
+                        .into());
+                    }
                     for instruction in bound
                         .vertex
                         .instructions()
@@ -785,11 +847,21 @@ impl CommandBuffer {
 impl FrameCapture {
     fn validate_version(&self) -> Result<()> {
         match self.version {
-            1 if self.sample_count == SampleCount::One => Ok(()),
-            1 => Err("version 1 captures only support single-sample rendering".into()),
-            2 => Ok(()),
-            _ => Err("unsupported capture version".into()),
+            1 if self.sample_count == SampleCount::One => {}
+            1 => return Err("version 1 captures only support single-sample rendering".into()),
+            2 | 3 => {}
+            _ => return Err("unsupported capture version".into()),
         }
+        if self.version < 3
+            && self
+                .commands
+                .commands
+                .iter()
+                .any(|command| matches!(command, Command::BeginRenderPassWithColors { .. }))
+        {
+            return Err("multiple color attachments require capture version 3".into());
+        }
+        Ok(())
     }
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         self.validate_version()?;

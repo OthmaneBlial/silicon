@@ -15,7 +15,7 @@ The committed original GLSL sources and their `.spv` fixtures are in
 recompile fixtures, not to build, test or run SILICON:
 
 ```sh
-for shader in textured.vert textured.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag compute_vector_add.comp compute_invert.comp compute_shared.comp compute_shared_multi.comp; do
+for shader in textured.vert textured.frag mrt.vert mrt.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag compute_vector_add.comp compute_invert.comp compute_shared.comp compute_shared_multi.comp; do
   glslangValidator -V --target-env vulkan1.0 -o "assets/shaders/$shader.spv" "assets/shaders/$shader"
   spirv-val --target-env vulkan1.0 "assets/shaders/$shader.spv"
 done
@@ -134,7 +134,7 @@ approximation even in divergent branches, not hardware derivative conformance.
 | Vertex Position | SIR output 0, homogeneous clip position |
 | Vertex outputs locations 0..3 | SIR outputs 1..4, perspective varyings |
 | Fragment inputs locations 0..3 | SIR inputs 0..3 |
-| Fragment output location 0 | RGBA vec4 |
+| Fragment output locations 0..3 | RGBA vec4, mapped to matching color targets |
 | Set 0, binding B | One float/vector/mat4 member at offset 0; float/vector uses SIR uniform 4B, col-major mat4 with stride 16 uses rows 4B..4B+3 |
 | Set 1, binding B | Combined sampler2D or samplerCube at matching texture slot B |
 | Compute `LocalSize` | `ComputePipeline::local_size`; host supplies the workgroup count |

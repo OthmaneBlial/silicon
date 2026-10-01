@@ -1005,7 +1005,7 @@ impl<'a> Compiler<'a> {
                             let loc = d.location.ok_or("output requires Location")?;
                             if d.builtin.is_some()
                                 || loc > 3
-                                || (self.stage == Stage::Fragment && (loc != 0 || n != 4))
+                                || (self.stage == Stage::Fragment && n != 4)
                             {
                                 return Err("output location/type unsupported".into());
                             }

@@ -310,7 +310,7 @@ flowchart LR
 | Raster | Pixel-center top-left coverage, 8-bit subpixel precision, 16×16 tiles |
 | Interpolation | Colors/UV/normals/custom vec4 varyings, perspective reconstruction, affine NDC depth |
 | Shading | Native Lambert/Blinn reference; GLSL Blinn and Cook-Torrance GGX metallic/roughness through SPIR-V |
-| Attachments | RGBA8/BGRA8, depth with 8 compare modes, stencil masks/operations |
+| Attachments | Up to four RGBA8 fragment outputs, shared depth/stencil, RGBA8/BGRA8 framebuffer storage, 8 depth compare modes |
 | Texturing | RGBA8/RGB8/R8 2D, array and 3D textures; depth textures and cube maps; nearest/bilinear/trilinear, clamp/repeat/mirror and mip generation/LOD |
 | Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 graphics subset plus narrow vec4/uint storage-buffer compute subset → SIR; nested selections, Phi, early return/discard |
 | Compute | Experimental SIR dispatch, 3D IDs, up to 12 indexed read buffers, checked record layouts, staged indexed writes, 64 KiB per-workgroup shared memory and barriers, scalar f32 storage atomics, bounded GLSL/SPIR-V vec4 addition, guarded inversion, shared-array broadcast and uint atomics; divergent barriers and shared-memory races fail safely; synchronized kernels use the scalar scheduler |
@@ -355,9 +355,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 Tests cover math, framebuffer bytes, shared-edge ownership, clipping, depth and
 discard, perspective interpolation, texture addressing/mips, OBJ bounds, stencil,
-shader validation/tracing, GLSL/SPIR-V translation and malformed modules,
-command validation, exact capture replay, an approved
-PNG and scalar/SIMD/parallel equivalence. Golden changes require an explicit
+four-output SPIR-V rendering, shader validation/tracing, GLSL/SPIR-V translation
+and malformed modules, command validation, exact capture replay, an approved PNG
+and scalar/SIMD/parallel equivalence. Golden changes require an explicit
 `cargo run --release --example shader_cube -- --bless` and image review.
 
 ## Boundaries
@@ -369,8 +369,8 @@ SPIR-V/GLSL compatibility, WGSL, conformant Vulkan/OpenGL drivers, general compu
 JIT, and full-game compatibility are not implemented.** Phase 70 is a limited
 Freedoom E1M1 gameplay slice. The small Rust Vulkan-like subset is documented
 separately; it is not binary compatible with Vulkan. Do not infer support from the long-term roadmap. MSAA and
-GLSL shadow-map samples are implemented within the documented renderer subset. Multiple color
-attachments and asynchronous queues are also future work.
+GLSL shadow-map samples are implemented within the documented renderer subset.
+Asynchronous queues remain future work.
 
 No Mesa, LLVMpipe, SwiftShader, ANGLE, wgpu backend or existing rasterizer
 produces these pixels. Image encoding and native window presentation are the

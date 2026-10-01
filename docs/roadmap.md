@@ -24,6 +24,7 @@ long-term. This repository ships working stages and labels the remaining work.
 | Cube-map sampling and visual reflections | Six-face `CubeMap` sampler, mip-selected roughness approximation, explicit and direct-input implicit GLSL sampling, scalar/SIMD pixel equivalence; transformed direction derivatives remain unsupported |
 | Advanced textures (phase 50) | Bounded 2D texture arrays and color 3D volumes with checked construction, nearest/bilinear spatial filtering, mip selection/generation and explicit/implicit SIR samples; command binding is exercised through scalar and SIMD-requested renders. Cube maps and single-level depth textures are covered above. SPIR-V remains limited to its documented 2D/cube subset |
 | MSAA | Deterministic 2×/4× coverage with separate color/depth/stencil samples, resolved framebuffer, CLI control, scalar/SIMD band equivalence |
+| Multiple render targets (phase 24) | Up to four SPIR-V fragment outputs write matching RGBA8 targets; shared depth/stencil and sample state, per-target clears/resolves, capture version 3, and exact 4× scalar/SIMD-band replay |
 | Anisotropic texture filtering | Derivative-aware 1×–16× sampling, minor-axis mip selection, focused unit test and side-by-side steep-angle scene |
 | GPU profiler | Command, vertex, primitive setup, coverage/depth, shader, and blend/write timing with render counters; headless presentation is marked unmeasured |
 | Stencil / transparency integration | Circular stencil portal constrains a textured cube and translucent overlay; scalar and SIMD four-band color/depth/stencil match |
@@ -50,7 +51,7 @@ Cube maps use cross-face bilinear filtering; implicit SPIR-V sampling is limited
 to an unmodified fragment input direction, and anisotropic SPIR-V sampling
 remains future work.
 
-Future research: multiple targets, full tile binning, loops and broader control flow,
+Future research: full tile binning, loops and broader control flow,
 cross-workgroup barriers, other integer/vector atomics and broader compute-stage SPIR-V, transformed implicit sampling,
 anisotropic SPIR-V sampling, JIT, DOOM BSP wall occlusion and per-column portal
 clipping, advanced enemy states and full gameplay rules, and

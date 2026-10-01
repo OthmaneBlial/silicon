@@ -18,6 +18,7 @@ tangent-space normal map on the sculpture. Split-sum image-based lighting is not
 implemented.
 `cubemap_implicit.vert` and `.frag` exercise GLSL `texture()` on a direct vec3
 cube direction through the scalar and SIMD command paths.
+`mrt.vert` and `mrt.frag` write four independently checked fragment outputs.
 
 `khronos_hello_triangle.vert` is a documented Apache-2.0 adaptation of the
 Khronos Vulkan-Samples `hello_triangle` vertex shader; its fragment shader is

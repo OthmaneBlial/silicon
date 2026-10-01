@@ -4,6 +4,7 @@ const SUBPIXEL: i64 = 256;
 const TILE: u32 = 16;
 const SAMPLE_2X: [(i64, i64); 2] = [(64, 64), (192, 192)];
 const SAMPLE_4X: [(i64, i64); 4] = [(96, 32), (224, 96), (32, 160), (160, 224)];
+type ColorOutputs = [Option<Color>; MAX_COLOR_ATTACHMENTS];
 #[derive(Clone, Debug, Default)]
 pub struct Statistics {
     pub command_processing_time: Duration,
@@ -124,6 +125,14 @@ impl Renderer {
         self.stats = Statistics::default();
         self.traces.clear();
     }
+    pub(crate) fn clear_color_attachments(&mut self, colors: &[Color]) -> Result<()> {
+        self.framebuffer.clear_attachments(colors)?;
+        self.framebuffer.clear_depth(1.);
+        self.framebuffer.clear_stencil(0);
+        self.stats = Statistics::default();
+        self.traces.clear();
+        Ok(())
+    }
     fn record_primitive_setup(&mut self, start: Option<Instant>) {
         if let Some(start) = start {
             self.stats.primitive_setup_time += start.elapsed();
@@ -185,6 +194,28 @@ impl Renderer {
         V: Fn(&Vertex) -> Result<VertexOutput>,
         F: Fn(&[Fragment; 4], u8) -> Result<[Option<Color>; 4]>,
     {
+        self.try_draw_packets_with_outputs(vertices, indices, pipeline, vertex, |inputs, mask| {
+            Ok(fragment(inputs, mask)?.map(|color| {
+                color.map(|color| {
+                    let mut outputs = [None; MAX_COLOR_ATTACHMENTS];
+                    outputs[0] = Some(color);
+                    outputs
+                })
+            }))
+        })
+    }
+    pub(crate) fn try_draw_packets_with_outputs<V, F>(
+        &mut self,
+        vertices: &[Vertex],
+        indices: Option<&[u32]>,
+        pipeline: Pipeline,
+        vertex: V,
+        fragment: F,
+    ) -> Result<()>
+    where
+        V: Fn(&Vertex) -> Result<VertexOutput>,
+        F: Fn(&[Fragment; 4], u8) -> Result<[Option<ColorOutputs>; 4]>,
+    {
         let count = indices.map_or(vertices.len(), |i| i.len());
         if !count.is_multiple_of(3) {
             return Err("triangle list draw requires a multiple of 3 vertices/indices".into());
@@ -231,7 +262,7 @@ impl Renderer {
         self.stats.raster_time += start.elapsed();
         render_result
     }
-    fn triangle<F: Fn(&[Fragment; 4], u8) -> Result<[Option<Color>; 4]>>(
+    fn triangle<F: Fn(&[Fragment; 4], u8) -> Result<[Option<ColorOutputs>; 4]>>(
         &mut self,
         v: [VertexOutput; 3],
         primitive: u32,
@@ -525,7 +556,7 @@ impl Renderer {
     fn finish_fragment(
         &mut self,
         prepared: PreparedFragment,
-        output: Option<Color>,
+        output: Option<ColorOutputs>,
         state: Pipeline,
     ) -> Result<()> {
         let PreparedFragment {
@@ -544,15 +575,15 @@ impl Renderer {
         if debug {
             self.traces.push(PixelTrace {
                 fragment: input,
-                output,
+                output: output.and_then(|outputs| outputs[0]),
                 previous_depth: old_depth,
                 depth_pass,
                 stencil_pass,
             });
         }
         let blend_start = self.profile_shaders.then(Instant::now);
-        if let Some(color) = output {
-            if !color.0.is_finite() {
+        if let Some(colors) = output {
+            if colors.iter().flatten().any(|color| !color.0.is_finite()) {
                 return Err("fragment shader produced a non-finite color".into());
             }
             for (sample, &sample_depth) in sample_depths
@@ -568,15 +599,25 @@ impl Renderer {
                     self.framebuffer
                         .write_sample_depth(index, sample, sample_depth);
                 }
-                let color = if state.blend == Blend::Replace {
-                    color
-                } else {
-                    state
-                        .blend
-                        .apply(color, self.framebuffer.read_sample_color(index, sample))
-                };
-                if state.color_write {
-                    self.framebuffer.write_sample_color(index, sample, color);
+                for (attachment, source) in colors
+                    .iter()
+                    .take(self.framebuffer.color_attachment_count())
+                    .enumerate()
+                {
+                    let Some(source) = source else { continue };
+                    let color = if state.blend == Blend::Replace {
+                        *source
+                    } else {
+                        state.blend.apply(
+                            *source,
+                            self.framebuffer
+                                .read_sample_color(attachment, index, sample),
+                        )
+                    };
+                    if state.color_write {
+                        self.framebuffer
+                            .write_sample_color(attachment, index, sample, color);
+                    }
                 }
             }
         }
@@ -708,6 +749,10 @@ impl Renderer {
                 })
                 .collect::<Result<Vec<_>>>()
         })?;
+        if let Some(first) = outputs.first() {
+            self.framebuffer
+                .set_color_attachment_count(first.framebuffer.color_attachment_count())?;
+        }
         self.stats = Statistics::default();
         self.traces.clear();
         for (i, band) in outputs.into_iter().enumerate() {

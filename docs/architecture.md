@@ -19,9 +19,10 @@ flowchart TD
   G --> H[Stencil and early depth rejection]
   H --> I[Perspective correct varyings]
   I --> J[Rust fragment shader or SIR VM]
-  J --> K[Depth and stencil writes, blending]
-  K --> L[CPU framebuffer]
-  L --> M[PNG or pixel presentation]
+  J --> K[Per-location color outputs]
+  K --> L[Depth, stencil, and blending]
+  L --> M[CPU color targets and framebuffer]
+  M --> N[PNG or pixel presentation]
 ```
 
 The workspace groups real responsibilities rather than one crate for each GPU
