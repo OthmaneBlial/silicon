@@ -7,6 +7,7 @@ mod packet;
 pub mod spirv;
 pub type Result<T> = std::result::Result<T, String>;
 const MAX_WORKGROUP_INVOCATIONS: usize = 1024;
+const MAX_DYNAMIC_INSTRUCTIONS: usize = 65_536;
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum Comparison {
     Equal,
@@ -118,6 +119,11 @@ pub enum Instruction {
         a: u8,
         b: u8,
     },
+    /// Repeat the enclosed instruction range while `condition.x` is nonzero.
+    LoopStart {
+        condition: u8,
+    },
+    LoopEnd,
     Return,
     Discard,
     Input {
@@ -370,11 +376,11 @@ impl Instruction {
                 *b = f(*b, false)?;
                 dst
             }
-            If { condition } => {
+            If { condition } | LoopStart { condition } => {
                 *condition = f(*condition, false)?;
                 return Ok(());
             }
-            Else | EndIf | Return | Discard => return Ok(()),
+            Else | EndIf | LoopEnd | Return | Discard => return Ok(()),
             Normalize3 { dst, src }
             | Not { dst, src }
             | Neg { dst, src }
@@ -467,6 +473,7 @@ impl Instruction {
 #[serde(try_from = "Vec<Instruction>", into = "Vec<Instruction>")]
 pub struct Program {
     ops: Vec<Instruction>,
+    loop_pairs: Vec<Option<usize>>,
 }
 impl TryFrom<Vec<Instruction>> for Program {
     type Error = String;
@@ -511,6 +518,8 @@ struct ExecutionState {
     live: bool,
     choice: bool,
     selections: Vec<(bool, bool)>,
+    loops: Vec<(usize, usize)>,
+    dynamic_instructions: usize,
     pc: usize,
 }
 
@@ -523,6 +532,8 @@ impl ExecutionState {
             live: true,
             choice: false,
             selections: Vec::new(),
+            loops: Vec::new(),
+            dynamic_instructions: 0,
             pc: 0,
         }
     }
@@ -594,6 +605,32 @@ impl Definitions {
         }
     }
 }
+
+fn pair_loops(ops: &[Instruction]) -> Result<Vec<Option<usize>>> {
+    let mut pairs = vec![None; ops.len()];
+    let mut starts = Vec::new();
+    for (pc, op) in ops.iter().enumerate() {
+        match op {
+            Instruction::LoopStart { .. } => {
+                if starts.len() == 64 {
+                    return Err("SIR loop nesting exceeds 64".into());
+                }
+                starts.push(pc);
+            }
+            Instruction::LoopEnd => {
+                let start = starts.pop().ok_or("SIR LoopEnd without LoopStart")?;
+                pairs[start] = Some(pc);
+                pairs[pc] = Some(start);
+            }
+            _ => {}
+        }
+    }
+    if !starts.is_empty() {
+        return Err("SIR unclosed loop".into());
+    }
+    Ok(pairs)
+}
+
 impl Program {
     pub fn new(ops: Vec<Instruction>) -> Result<Self> {
         Self::validate(ops, true)
@@ -608,12 +645,15 @@ impl Program {
         if ops.is_empty() || ops.len() > 4096 {
             return Err("SIR requires 1..4096 instructions".into());
         }
+        let loop_pairs = pair_loops(&ops)?;
         let mut state = Definitions {
             registers: [false; 64],
             outputs: [false; 8],
             live: true,
         };
         let mut selections: Vec<(Definitions, Option<Definitions>)> = Vec::new();
+        let mut selection_ids = Vec::new();
+        let mut loops: Vec<(Definitions, Vec<(usize, bool)>)> = Vec::new();
         let mut merging: Option<(Definitions, Definitions)> = None;
         for (pc, op) in ops.iter().enumerate() {
             if !matches!(op, Instruction::Merge { .. }) {
@@ -633,6 +673,7 @@ impl Program {
                         return Err("SIR selection nesting exceeds 64".into());
                     }
                     selections.push((state, None));
+                    selection_ids.push(pc);
                     None
                 }
                 Instruction::Else => {
@@ -647,6 +688,7 @@ impl Program {
                 Instruction::EndIf => {
                     let (_, branch) = selections.pop().ok_or("SIR EndIf without If")?;
                     let branch = branch.ok_or("SIR If requires Else before EndIf")?;
+                    selection_ids.pop();
                     merging = Some((branch, state));
                     state = branch.join(state);
                     None
@@ -662,6 +704,35 @@ impl Program {
                         return Err(format!("SIR instruction {pc}: undefined selection input"));
                     }
                     Some(dst)
+                }
+                Instruction::LoopStart { condition } => {
+                    source(condition)?;
+                    loops.push((
+                        state,
+                        selection_ids
+                            .iter()
+                            .zip(&selections)
+                            .map(|(&id, (_, branch))| (id, branch.is_some()))
+                            .collect(),
+                    ));
+                    None
+                }
+                Instruction::LoopEnd => {
+                    let (entry, selection_path) =
+                        loops.pop().ok_or("SIR LoopEnd without LoopStart")?;
+                    if selection_path
+                        != selection_ids
+                            .iter()
+                            .zip(&selections)
+                            .map(|(&id, (_, branch))| (id, branch.is_some()))
+                            .collect::<Vec<_>>()
+                    {
+                        return Err(format!(
+                            "SIR instruction {pc}: loop crosses a selection boundary"
+                        ));
+                    }
+                    state = entry.join(state);
+                    None
                 }
                 Instruction::Return => {
                     if requires_output && state.live && !state.outputs[0] {
@@ -900,10 +971,13 @@ impl Program {
         if !selections.is_empty() {
             return Err("SIR unclosed selection".into());
         }
+        if !loops.is_empty() {
+            return Err("SIR unclosed loop".into());
+        }
         if requires_output && state.live && !state.outputs[0] {
             return Err("SIR must write output slot 0 on every live path".into());
         }
-        Ok(Self { ops })
+        Ok(Self { ops, loop_pairs })
     }
     pub fn instructions(&self) -> &[Instruction] {
         &self.ops
@@ -1098,8 +1172,16 @@ impl Program {
         let mut result = std::mem::replace(&mut state.result, empty_execution());
         let (mut active, mut live, mut choice) = (state.active, state.live, state.choice);
         let mut selections = std::mem::take(&mut state.selections);
+        let mut loops = std::mem::take(&mut state.loops);
+        let mut dynamic_instructions = state.dynamic_instructions;
         let mut next_pc = state.pc;
         while next_pc < self.ops.len() {
+            if dynamic_instructions == MAX_DYNAMIC_INSTRUCTIONS {
+                return Err(format!(
+                    "SIR dynamic instruction limit ({MAX_DYNAMIC_INSTRUCTIONS}) exceeded"
+                ));
+            }
+            dynamic_instructions += 1;
             let pc = next_pc;
             next_pc += 1;
             let op = &self.ops[pc];
@@ -1147,6 +1229,27 @@ impl Program {
                 }
                 Instruction::Merge { dst, a, b } => {
                     (Some(dst), regs[if choice { a } else { b } as usize])
+                }
+                Instruction::LoopStart { condition } => {
+                    let end = self.loop_pairs[pc].expect("validated loop pair");
+                    let value = regs[condition as usize];
+                    if value.x == 0. {
+                        if loops.last().is_some_and(|&(start, _)| start == pc) {
+                            loops.pop();
+                        }
+                        next_pc = end + 1;
+                    } else if loops.last().is_none_or(|&(start, _)| start != pc) {
+                        loops.push((pc, end));
+                    }
+                    (None, value)
+                }
+                Instruction::LoopEnd => {
+                    let (start, end) = *loops.last().ok_or("SIR LoopEnd without active loop")?;
+                    if end != pc {
+                        return Err(format!("SIR instruction {pc}: mismatched LoopEnd"));
+                    }
+                    next_pc = start;
+                    (None, Vec4::ZERO)
                 }
                 Instruction::Return | Instruction::Discard => {
                     result.discarded = matches!(op, Instruction::Discard);
@@ -1562,6 +1665,8 @@ impl Program {
                 state.live = live;
                 state.choice = choice;
                 state.selections = selections;
+                state.loops = loops;
+                state.dynamic_instructions = dynamic_instructions;
                 state.pc = next_pc;
                 return Ok(ExecutionStatus::Barrier(pc));
             }
@@ -1572,6 +1677,8 @@ impl Program {
         state.live = live;
         state.choice = choice;
         state.selections = selections;
+        state.loops = loops;
+        state.dynamic_instructions = dynamic_instructions;
         state.pc = next_pc;
         Ok(ExecutionStatus::Complete)
     }

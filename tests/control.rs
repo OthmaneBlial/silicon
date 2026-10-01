@@ -243,6 +243,226 @@ fn selections_validate_definitions_and_skip_inactive_resources() {
 }
 
 #[test]
+fn bounded_loops_match_scalar_for_divergent_packet_lanes() {
+    let program = Program::new(vec![
+        Input { dst: 0, slot: 0 },
+        Input { dst: 5, slot: 1 },
+        Const {
+            dst: 1,
+            value: Vec4::ZERO,
+        },
+        Const {
+            dst: 2,
+            value: Vec4::new(1., 1., 1., 1.),
+        },
+        Const {
+            dst: 3,
+            value: Vec4::ZERO,
+        },
+        Compare {
+            dst: 4,
+            a: 0,
+            b: 1,
+            kind: Comparison::Greater,
+        },
+        LoopStart { condition: 4 },
+        Add { dst: 3, a: 3, b: 2 },
+        Sample {
+            dst: 7,
+            uv: 5,
+            texture: 0,
+        },
+        Sub { dst: 0, a: 0, b: 2 },
+        Compare {
+            dst: 4,
+            a: 0,
+            b: 1,
+            kind: Comparison::Greater,
+        },
+        LoopEnd,
+        Output { slot: 0, src: 3 },
+    ])
+    .unwrap();
+    let inputs = [
+        [Vec4::ZERO, Vec4::new(0.1, 0.2, 0., 0.)],
+        [Vec4::new(1., 1., 1., 1.), Vec4::new(0.2, 0.3, 0., 0.)],
+        [Vec4::new(3., 3., 3., 3.), Vec4::new(0.3, 0.4, 0., 0.)],
+        [Vec4::new(5., 5., 5., 5.), Vec4::new(0.4, 0.5, 0., 0.)],
+    ];
+    let mut packet_samples = [0; 4];
+    let packet = program
+        .execute4(
+            inputs.each_ref().map(|lane| lane.as_slice()),
+            &[],
+            [&[]; 4],
+            0b1101,
+            |lane, texture, uv| {
+                assert_eq!(texture, 0);
+                assert_eq!(uv, inputs[lane][1]);
+                packet_samples[lane] += 1;
+                Ok(Vec4::new(0.1, 0.2, 0.3, 1.))
+            },
+            [true; 4],
+        )
+        .unwrap();
+    for lane in [0, 2, 3] {
+        let scalar = program
+            .execute(
+                &inputs[lane],
+                &[],
+                |texture, uv| {
+                    assert_eq!(texture, 0);
+                    assert_eq!(uv, inputs[lane][1]);
+                    Ok(Vec4::new(0.1, 0.2, 0.3, 1.))
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(bits(packet[lane].outputs[0]), bits(scalar.outputs[0]));
+        assert_eq!(packet[lane].instructions, scalar.instructions);
+        assert_eq!(packet[lane].samples, scalar.samples);
+        assert_eq!(packet_samples[lane], scalar.samples);
+        assert_eq!(
+            packet[lane]
+                .trace
+                .iter()
+                .map(|trace| (trace.instruction, bits(trace.value)))
+                .collect::<Vec<_>>(),
+            scalar
+                .trace
+                .iter()
+                .map(|trace| (trace.instruction, bits(trace.value)))
+                .collect::<Vec<_>>()
+        );
+    }
+    assert_eq!(packet_samples, [0, 0, 3, 5]);
+    assert_eq!(packet[1].instructions, 0);
+}
+
+#[test]
+fn loops_join_zero_iteration_definitions_and_enforce_the_instruction_budget() {
+    let undefined_after_loop = Program::new(vec![
+        Const {
+            dst: 0,
+            value: Vec4::ZERO,
+        },
+        Const {
+            dst: 1,
+            value: Vec4::new(1., 1., 1., 1.),
+        },
+        LoopStart { condition: 0 },
+        Const {
+            dst: 2,
+            value: Vec4::new(1., 1., 1., 1.),
+        },
+        LoopEnd,
+        Output { slot: 0, src: 2 },
+    ])
+    .unwrap_err();
+    assert!(undefined_after_loop.contains("undefined register r2"));
+
+    let unbounded = Program::new(vec![
+        Const {
+            dst: 0,
+            value: Vec4::new(1., 1., 1., 1.),
+        },
+        LoopStart { condition: 0 },
+        LoopEnd,
+        Output { slot: 0, src: 0 },
+    ])
+    .unwrap();
+    let error = unbounded
+        .execute(&[], &[], |_, _| unreachable!(), false)
+        .unwrap_err();
+    assert!(error.contains("dynamic instruction limit"));
+
+    let crosses_selection = Program::new(vec![
+        Const {
+            dst: 0,
+            value: Vec4::new(1., 1., 1., 1.),
+        },
+        Const {
+            dst: 1,
+            value: Vec4::new(1., 1., 1., 1.),
+        },
+        If { condition: 0 },
+        LoopStart { condition: 1 },
+        Else,
+        EndIf,
+        LoopEnd,
+        Output { slot: 0, src: 0 },
+    ])
+    .unwrap_err();
+    assert!(crosses_selection.contains("loop crosses a selection boundary"));
+}
+
+#[test]
+fn nested_loops_keep_independent_conditions_and_counters() {
+    let program = Program::new(vec![
+        Const {
+            dst: 0,
+            value: Vec4::new(2., 2., 2., 2.),
+        },
+        Const {
+            dst: 1,
+            value: Vec4::ZERO,
+        },
+        Const {
+            dst: 2,
+            value: Vec4::new(1., 1., 1., 1.),
+        },
+        Compare {
+            dst: 3,
+            a: 0,
+            b: 1,
+            kind: Comparison::Greater,
+        },
+        Const {
+            dst: 4,
+            value: Vec4::ZERO,
+        },
+        LoopStart { condition: 3 },
+        Const {
+            dst: 5,
+            value: Vec4::new(3., 3., 3., 3.),
+        },
+        Compare {
+            dst: 6,
+            a: 5,
+            b: 1,
+            kind: Comparison::Greater,
+        },
+        LoopStart { condition: 6 },
+        Add { dst: 4, a: 4, b: 2 },
+        Sub { dst: 5, a: 5, b: 2 },
+        Compare {
+            dst: 6,
+            a: 5,
+            b: 1,
+            kind: Comparison::Greater,
+        },
+        LoopEnd,
+        Sub { dst: 0, a: 0, b: 2 },
+        Compare {
+            dst: 3,
+            a: 0,
+            b: 1,
+            kind: Comparison::Greater,
+        },
+        LoopEnd,
+        Output { slot: 0, src: 4 },
+    ])
+    .unwrap();
+    assert_eq!(
+        program
+            .execute(&[], &[], |_, _| unreachable!(), false)
+            .unwrap()
+            .outputs[0],
+        Vec4::new(6., 6., 6., 6.)
+    );
+}
+
+#[test]
 fn glsl_selections_locals_phi_and_early_returns_match_independent_reference() {
     use shader::spirv::{Module, link};
     let vertex = Module::parse(include_bytes!("../assets/shaders/textured.vert.spv"))

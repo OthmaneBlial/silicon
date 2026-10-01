@@ -91,6 +91,23 @@ impl Program {
         if active == 0 {
             return Ok(results);
         }
+        if self.loop_pairs.iter().any(Option::is_some) {
+            for i in 0..4 {
+                if active & (1 << i) == 0 {
+                    continue;
+                }
+                results[i] = self.execute_with_lod_and_storage(
+                    inputs[i],
+                    uniforms,
+                    implicit_lods[i],
+                    |texture, uv| sample(i, texture, uv),
+                    |buffer, index| load_storage(i, buffer, index),
+                    |index, value| store_storage(i, index, value),
+                    tracing[i],
+                )?;
+            }
+            return Ok(results);
+        }
         let mut regs = [[Lanes::splat(0.); 4]; 64];
         let (mut current, mut live, mut choice) = (active, active, 0u8);
         let mut selections = Vec::new();
@@ -120,6 +137,9 @@ impl Program {
                     .ok_or_else(|| format!("SIR instruction {pc}: missing uniform {slot}"))
             };
             let (dst, value) = match *op {
+                LoopStart { .. } | LoopEnd => {
+                    return Err("SIR loops must use the scalar lane executor".into());
+                }
                 If { condition } => {
                     let value = if executing != 0 {
                         regs[condition as usize]
