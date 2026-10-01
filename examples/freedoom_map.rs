@@ -1533,11 +1533,9 @@ fn geometry(
                     .flat_map(|seg| [map.vertices[seg[0] as usize], map.vertices[seg[1] as usize]])
                     .collect(),
             );
-            if polygon.len() < 3 {
-                let cell = &bsp_polygons[leaf_index];
-                if bsp_polygon_belongs_to_sector(map, cell, sector_index) {
-                    polygon.clone_from(cell);
-                }
+            let cell = convex_hull(bsp_polygons[leaf_index].clone());
+            if bsp_polygon_belongs_to_sector(map, &cell, sector_index) {
+                polygon = cell;
             }
             if polygon.len() >= 3 {
                 let root = world(polygon[0], sector.floor);
@@ -4038,13 +4036,15 @@ mod tests {
     }
 
     #[test]
-    fn degenerate_subsector_segs_get_floor_geometry_from_the_bsp_cell() {
+    fn validated_bsp_cells_complete_subsector_flat_geometry() {
         let map = Map {
             vertices: vec![
                 Vertex2 { x: 0.0, y: 0.0 },
                 Vertex2 { x: 10.0, y: 0.0 },
                 Vertex2 { x: 10.0, y: 10.0 },
                 Vertex2 { x: 0.0, y: 10.0 },
+                Vertex2 { x: 0.0, y: 5.0 },
+                Vertex2 { x: 10.0, y: 5.0 },
             ],
             sectors: vec![Sector {
                 floor: 0.0,
@@ -4064,28 +4064,31 @@ mod tests {
                     middle: [0; 8],
                     sector: 0,
                 };
-                4
+                5
             ],
             lines: vec![
                 [0, 1, 0, 0, u16::MAX, 0, 0],
                 [1, 2, 0, 1, u16::MAX, 0, 0],
                 [2, 3, 0, 2, u16::MAX, 0, 0],
-                [3, 0, 0, 3, u16::MAX, 0, 0],
+                [3, 4, 0, 3, u16::MAX, 0, 0],
+                [4, 0, 0, 4, u16::MAX, 0, 0],
+                [4, 5, 0, 0, 0, 0, 0],
             ],
-            segs: vec![[0, 1, 0, 0, 0]],
-            subsectors: vec![[1, 0]],
+            segs: vec![[0, 1, 0, 0, 0], [4, 0, 4, 0, 0], [4, 5, 5, 0, 0]],
+            subsectors: vec![[2, 0], [1, 2]],
             nodes: vec![Node {
                 x: 0,
                 y: 5,
                 dx: 1,
                 dy: 0,
                 child_bounds: [Bounds2::default(); 2],
-                children: [0x8000, 0x8000],
+                children: [0x8000, 0x8001],
             }],
             things: vec![],
         };
         let cell = bsp_subsector_polygons(&map);
         assert!(bsp_polygon_belongs_to_sector(&map, &cell[0], 0));
+        assert!(bsp_polygon_belongs_to_sector(&map, &cell[1], 0));
         assert!(!bsp_polygon_belongs_to_sector(
             &map,
             &[
@@ -4106,6 +4109,8 @@ mod tests {
         let geometry = geometry(&map, &textures).unwrap();
         assert_eq!(geometry[0].flats[b"FLOOR0_1"].len(), 6);
         assert_eq!(geometry[0].flats[b"CEIL0_1\0"].len(), 6);
+        assert_eq!(geometry[1].flats[b"FLOOR0_1"].len(), 6);
+        assert_eq!(geometry[1].flats[b"CEIL0_1\0"].len(), 6);
     }
 
     #[test]
