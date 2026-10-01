@@ -95,6 +95,8 @@ faces. This environment term is not split-sum image-based lighting.
   are contiguous from 0; one write-only output follows them. Each buffer must be
   one runtime vec4 array at offset 0 with stride 16. The shader supplies the
   element indices; the dispatcher checks every load and staged store.
+  Scalar unsigned comparisons support `>`, `>=`, `<` and `<=`; IDs are bounded
+  to 1,048,576 and comparison constants to 16,777,216 for exact float-backed SIR.
   Debug names and source-language metadata are read without executing them.
 
 The public binary parser checks framing, string padding, supported instruction
@@ -180,8 +182,9 @@ returns zero; undefined GLSL inputs do not establish a conformance guarantee.
 
 Tests compare compiled GLSL with an independent hand-written SIR reference at
 exact framebuffer bytes, then capture/replay and SIMD/four-band rendering.
-The compute fixtures dispatch the checked-in GLSL vec4 add and invert shaders
-over 64 workgroups and check every output against Rust's scalar result.
+The compute fixtures dispatch the checked-in GLSL vec4 add shader over 64
+workgroups and the guarded inversion shader over 65; it skips 60 out-of-range
+invocations and checks all 4,100 outputs against Rust's scalar result.
 A second GLSL fixture checks vector shuffle, add/sub/divide, dot, scalar multiply
 and implicit sampling against numeric expectations. The lit scene matches native
 coverage/depth exactly and colors within one RGBA8 quantization unit; captures

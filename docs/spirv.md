@@ -87,6 +87,10 @@ faces. This environment term is not split-sum image-based lighting.
   Scalar float ordered comparisons (equal, unequal, less/greater, inclusive forms),
   `OpFUnordNotEqual`, scalar bool logical equal/unequal/and/or/not, and `OpSelect`
   with a scalar bool and matching scalar float/bool alternatives.
+- Compute also accepts scalar unsigned `OpUGreaterThan`, `OpUGreaterThanEqual`,
+  `OpULessThan` and `OpULessThanEqual`. Dispatch IDs are bounded to 1,048,576;
+  unsigned constants used by comparisons are limited to 16,777,216 so their
+  float-backed SIR values remain exact. General integer arithmetic is unsupported.
 - Location, Binding, DescriptorSet, Block, BufferBlock, ArrayStride, NonReadable,
   NonWritable, BuiltIn Position, WorkgroupSize/invocation IDs, ColMajor,
   MatrixStride and Offset decorations, checked against the binding contract.
@@ -180,8 +184,9 @@ returns zero; undefined GLSL inputs do not establish a conformance guarantee.
 
 Tests compare compiled GLSL with an independent hand-written SIR reference at
 exact framebuffer bytes, then capture/replay and SIMD/four-band rendering.
-The compute fixtures dispatch the checked-in GLSL vec4 add and invert shaders
-over 64 workgroups and check every output against Rust's scalar result.
+The compute fixtures dispatch the checked-in GLSL vec4 add shader over 64
+workgroups and the guarded inversion shader over 65; the latter skips 60
+out-of-range invocations and checks all 4,100 outputs against Rust's scalar result.
 A second GLSL fixture checks vector shuffle, add/sub/divide, dot, scalar multiply
 and implicit sampling against numeric expectations. The lit scene matches native
 coverage/depth exactly and colors within one RGBA8 quantization unit; captures
