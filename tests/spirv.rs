@@ -213,6 +213,51 @@ fn vector_padding_and_implicit_lod_do_not_change_glsl_arithmetic() {
     );
 }
 #[test]
+fn glsl_std450_floor_fract_sin_cos_run_in_scalar_and_packet_vm() {
+    let fragment = compiled(include_bytes!("../assets/shaders/math.frag.spv"));
+    let inputs = [
+        Vec4::new(-1.25, -0.25, 0.25, 1.2),
+        Vec4::new(2.75, 1.25, -0.5, -1.1),
+        Vec4::new(0.9, -3.75, 2.0, 0.3),
+        Vec4::new(-2.1, 4.5, -2.5, 0.7),
+    ];
+    let scalar: Vec<_> = inputs
+        .iter()
+        .map(|&input| {
+            fragment
+                .program
+                .execute(&[input], &[], |_, _| Err("no textures".into()), false)
+                .unwrap()
+                .outputs[0]
+        })
+        .collect();
+    let packet = fragment
+        .program
+        .execute4(
+            std::array::from_fn(|lane| std::slice::from_ref(&inputs[lane])),
+            &[],
+            [&[], &[], &[], &[]],
+            0b1111,
+            |_, _, _| Err("no textures".into()),
+            [false; 4],
+        )
+        .unwrap();
+    for lane in 0..4 {
+        let source = inputs[lane].to_array();
+        let expected = [
+            source[0].floor(),
+            source[1] - source[1].floor(),
+            source[2].sin(),
+            source[3].cos(),
+        ];
+        assert_eq!(packet[lane].outputs[0], scalar[lane]);
+        for (actual, expected) in packet[lane].outputs[0].to_array().into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+    assert_eq!(scalar[0].y, 0.75);
+}
+#[test]
 fn float_negate_preserves_sign_bits_in_scalar_and_packet_execution() {
     let module = Module::parse(include_bytes!("../assets/shaders/negate.frag.spv")).unwrap();
     assert!(module.instructions().iter().any(|op| op.opcode == 127));
