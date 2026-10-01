@@ -108,7 +108,9 @@ unchanged upstream fragment shader run through SILICON. See the
 Phase 70 now reads Freedoom E1M1, palette-decodes its real floor and ceiling
 flats, composes its opaque wall textures from WAD patches, and submits 4,812
 triangles across 141 SILICON draws through the textured SPIR-V pipeline. This
-static view is not playable Doom. The
+scene also has an exploratory first-person walk-through with WASD movement,
+arrow-key turning, and basic wall/step collision. It is not a complete Doom
+game. The
 [WAD source, run command, screenshot, license, and remaining limits](docs/freedoom.md)
 are documented. The Freedoom WAD stays external.
 

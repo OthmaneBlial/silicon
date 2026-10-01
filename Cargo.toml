@@ -24,4 +24,5 @@ lto = "thin"
 codegen-units = 1
 
 [dev-dependencies]
+minifb = { version = "0.28", default-features = false, features = ["x11"] }
 png = "0.18.1"

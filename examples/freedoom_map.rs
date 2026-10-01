@@ -1,7 +1,8 @@
 //! Render Freedoom's E1M1 geometry through SILICON's programmable pipeline.
+use minifb::{Key, Window, WindowOptions};
 use silicon::api::{
-    self, Address, Color, Device, Filter, MipFilter, Pipeline, Renderer, Sampler, Texture,
-    TextureFormat, Vec2, Vec3, Vec4, Vertex,
+    self, Address, Buffer, Color, Device, Filter, MipFilter, Pipeline, Renderer, Sampler,
+    ShaderPipeline, Texture, TextureFormat, Vec2, Vec3, Vec4, Vertex,
 };
 use silicon_math::Mat4;
 use std::{collections::BTreeMap, fs, io, path::Path, sync::Arc};
@@ -628,6 +629,45 @@ fn convex_hull(mut points: Vec<Vertex2>) -> Vec<Vertex2> {
 struct Geometry {
     flats: BTreeMap<[u8; 8], Vec<Vertex>>,
     walls: BTreeMap<[u8; 8], Vec<Vertex>>,
+    regions: Vec<Region>,
+}
+
+#[derive(Clone)]
+struct Region {
+    polygon: Vec<Vertex2>,
+    sector: Sector,
+}
+
+#[derive(Clone, Copy)]
+struct Player {
+    x: f32,
+    y: f32,
+    angle: f32,
+}
+
+#[derive(Clone, Copy)]
+struct Controls {
+    forward: f32,
+    strafe: f32,
+    turn: f32,
+    running: bool,
+}
+
+struct Draw {
+    texture: Arc<Texture>,
+    vertices: Buffer<Vertex>,
+    count: u32,
+}
+
+struct PreparedScene {
+    map: Map,
+    device: Device,
+    pipeline: Arc<ShaderPipeline>,
+    sampler: Sampler,
+    draws: Vec<Draw>,
+    regions: Vec<Region>,
+    start: Player,
+    triangles: usize,
 }
 
 struct WallSection {
@@ -699,6 +739,10 @@ fn geometry(map: &Map, textures: &BTreeMap<[u8; 8], Arc<Texture>>) -> Result<Geo
         if polygon.len() < 3 {
             continue;
         }
+        out.regions.push(Region {
+            polygon: polygon.clone(),
+            sector,
+        });
         let root = world(polygon[0], sector.floor);
         let light = 0.38 + sector.light as f32 / 255.0 * 0.62;
         let floor = Vec4::new(light, light, light, 1.0);
@@ -843,138 +887,265 @@ fn flat_uv(point: Vertex2) -> Vec2 {
     Vec2::new(point.x / 64.0, point.y / 64.0)
 }
 
-fn player_sector(map: &Map, x: i16, y: i16) -> Result<Sector, io::Error> {
-    let point = Vertex2 {
-        x: x as f32,
-        y: y as f32,
-    };
-    let mut nearest: Option<(f32, Sector)> = None;
-    for leaf in &map.subsectors {
-        let segs = &map.segs[leaf[1] as usize..leaf[1] as usize + leaf[0] as usize];
-        if segs.is_empty() {
-            continue;
-        }
-        let polygon = convex_hull(
-            segs.iter()
-                .flat_map(|seg| [map.vertices[seg[0] as usize], map.vertices[seg[1] as usize]])
-                .collect(),
-        );
-        if polygon.is_empty() {
-            continue;
-        }
-        let center = polygon
-            .iter()
-            .fold(Vertex2 { x: 0.0, y: 0.0 }, |sum, point| Vertex2 {
-                x: sum.x + point.x,
-                y: sum.y + point.y,
-            });
-        let center = Vertex2 {
-            x: center.x / polygon.len() as f32,
-            y: center.y / polygon.len() as f32,
-        };
-        let distance = (center.x - point.x).powi(2) + (center.y - point.y).powi(2);
-        let seg = segs[0];
-        let line = map.lines[seg[2] as usize];
-        let side = line[3 + seg[3] as usize];
-        let sector = map.sectors[map.sides[side as usize].sector as usize];
-        // ponytail: nearest leaf centroid can select a neighbor at borders; use NODES traversal if needed.
-        if nearest.is_none_or(|(best, _)| distance < best) {
-            nearest = Some((distance, sector));
-        }
+fn contains(polygon: &[Vertex2], point: Vertex2) -> bool {
+    if polygon.len() < 3 {
+        return false;
     }
-    nearest
-        .map(|(_, sector)| sector)
-        .ok_or_else(|| invalid("E1M1 has no nonempty BSP leaves"))
+    polygon.iter().enumerate().all(|(index, a)| {
+        let b = polygon[(index + 1) % polygon.len()];
+        (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x) >= -0.01
+    })
 }
 
-fn render(path: &Path, output: &Path) -> api::Result<()> {
-    if fs::metadata(path)?.len() > MAX_WAD_BYTES {
-        return Err(invalid("WAD exceeds the 128 MiB sample limit").into());
-    }
-    let data = fs::read(path)?;
-    let map = parse_map(&data)?;
-    let (x, y, angle, _) = map
-        .things
+fn sector_at(regions: &[Region], x: f32, y: f32) -> Option<Sector> {
+    let point = Vertex2 { x, y };
+    regions
         .iter()
-        .copied()
-        .find(|thing| thing.3 == 1)
-        .ok_or_else(|| invalid("E1M1 has no player-1 start"))?;
-    let wall_textures = wall_textures(&data, &map)?;
-    let geometry = geometry(&map, &wall_textures)?;
-    if geometry.walls.is_empty() && geometry.flats.is_empty() {
-        return Err(invalid("E1M1 produced no renderable geometry").into());
-    }
-    let flat_textures = flat_textures(&data, &map)?;
-    let triangle_count = (geometry.walls.values().map(Vec::len).sum::<usize>()
-        + geometry.flats.values().map(Vec::len).sum::<usize>())
-        / 3;
-    let sector = player_sector(&map, x, y)?;
-    let radians = (angle as f32).to_radians();
-    let eye = Vec3::new(x as f32, sector.floor + 41.0, -(y as f32));
-    let forward = Vec3::new(radians.cos(), 0.0, -radians.sin());
-    let view = Mat4::look_at(eye, eye + forward, Vec3::new(0.0, 1.0, 0.0));
-    let projection = Mat4::perspective(1.22, 4.0 / 3.0, 1.0, 8192.0);
-    let transform = projection * view;
+        .find(|region| contains(&region.polygon, point))
+        .map(|region| region.sector)
+}
 
-    let device = Device::new();
-    let vertex_shader =
-        device.create_shader(include_bytes!("../assets/shaders/textured.vert.spv"))?;
-    let fragment_shader =
-        device.create_shader(include_bytes!("../assets/shaders/textured.frag.spv"))?;
-    let pipeline = device.create_pipeline(&vertex_shader, &fragment_shader, Pipeline::default())?;
-    let uniforms = transform.0.into_iter().map(Vec4::from_array).collect();
-    let uniform_buffer = device.create_uniform_buffer(uniforms)?;
-    let sampler = Sampler {
-        filter: Filter::Nearest,
-        address: Address::Repeat,
-        mip: MipFilter::None,
+fn distance_to_segment_squared(point: Vertex2, a: Vertex2, b: Vertex2) -> f32 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let length_squared = dx * dx + dy * dy;
+    let t = if length_squared == 0.0 {
+        0.0
+    } else {
+        (((point.x - a.x) * dx + (point.y - a.y) * dy) / length_squared).clamp(0.0, 1.0)
     };
-    let mut commands = device.commands();
-    commands.begin_render_pass(Color::new(0.12, 0.22, 0.36, 1.0));
-    commands.bind_pipeline(pipeline.clone());
-    commands.bind_uniform_buffer(uniform_buffer);
-    for (name, vertices) in geometry.flats {
-        let texture = flat_textures
-            .get(&name)
-            .ok_or_else(|| {
-                invalid(format!(
-                    "flat {} was not decoded",
-                    String::from_utf8_lossy(&name)
-                ))
-            })?
-            .clone();
-        let count = u32::try_from(vertices.len())
-            .map_err(|_| invalid("E1M1 flat vertex count exceeds SILICON draw range"))?;
-        commands.bind_texture(0, texture, sampler);
-        commands.bind_vertex_buffer(device.create_vertex_buffer(vertices)?);
-        commands.draw(0, count);
+    (point.x - (a.x + t * dx)).powi(2) + (point.y - (a.y + t * dy)).powi(2)
+}
+
+fn can_occupy(map: &Map, regions: &[Region], player: Player, from: Sector) -> bool {
+    let Some(sector) = sector_at(regions, player.x, player.y) else {
+        return false;
+    };
+    if sector.floor > from.floor + 24.0 || sector.ceiling < sector.floor + 56.0 {
+        return false;
     }
-    for (name, vertices) in geometry.walls {
-        let texture = wall_textures
-            .get(&name)
-            .ok_or_else(|| {
-                invalid(format!(
-                    "wall texture {} was not decoded",
-                    String::from_utf8_lossy(&name)
-                ))
-            })?
-            .clone();
-        let count = u32::try_from(vertices.len())
-            .map_err(|_| invalid("E1M1 wall vertex count exceeds SILICON draw range"))?;
-        commands.bind_texture(0, texture, sampler);
-        commands.bind_vertex_buffer(device.create_vertex_buffer(vertices)?);
-        commands.draw(0, count);
+    let point = Vertex2 {
+        x: player.x,
+        y: player.y,
+    };
+    for line in &map.lines {
+        if line[2] & 1 == 0 && line[4] != u16::MAX {
+            continue;
+        }
+        let a = map.vertices[line[0] as usize];
+        let b = map.vertices[line[1] as usize];
+        if distance_to_segment_squared(point, a, b) < 16.0 * 16.0 {
+            return false;
+        }
     }
-    commands.end_render_pass();
-    let mut renderer = Renderer::new(960, 720)?;
-    let submission = device.submit(&commands, &mut renderer)?;
+    true
+}
+
+fn move_player(map: &Map, regions: &[Region], player: &mut Player, controls: Controls, delta: f32) {
+    player.angle = (player.angle + controls.turn * delta).rem_euclid(360.0);
+    let speed = if controls.running { 240.0 } else { 160.0 };
+    let angle = player.angle.to_radians();
+    let dx = (controls.forward * angle.cos() - controls.strafe * angle.sin()) * speed * delta;
+    let dy = (controls.forward * angle.sin() + controls.strafe * angle.cos()) * speed * delta;
+    for (x_axis, amount) in [(true, dx), (false, dy)] {
+        if amount == 0.0 {
+            continue;
+        }
+        let Some(from) = sector_at(regions, player.x, player.y) else {
+            break;
+        };
+        let mut candidate = *player;
+        if x_axis {
+            candidate.x += amount;
+        } else {
+            candidate.y += amount;
+        }
+        if can_occupy(map, regions, candidate, from) {
+            *player = candidate;
+        }
+    }
+}
+
+impl PreparedScene {
+    fn load(path: &Path) -> api::Result<Self> {
+        if fs::metadata(path)?.len() > MAX_WAD_BYTES {
+            return Err(invalid("WAD exceeds the 128 MiB sample limit").into());
+        }
+        let data = fs::read(path)?;
+        let map = parse_map(&data)?;
+        let (x, y, angle, _) = map
+            .things
+            .iter()
+            .copied()
+            .find(|thing| thing.3 == 1)
+            .ok_or_else(|| invalid("E1M1 has no player-1 start"))?;
+        let wall_textures = wall_textures(&data, &map)?;
+        let flat_textures = flat_textures(&data, &map)?;
+        let geometry = geometry(&map, &wall_textures)?;
+        if geometry.walls.is_empty() && geometry.flats.is_empty() {
+            return Err(invalid("E1M1 produced no renderable geometry").into());
+        }
+        let triangles = (geometry.walls.values().map(Vec::len).sum::<usize>()
+            + geometry.flats.values().map(Vec::len).sum::<usize>())
+            / 3;
+        let device = Device::new();
+        let vertex_shader =
+            device.create_shader(include_bytes!("../assets/shaders/textured.vert.spv"))?;
+        let fragment_shader =
+            device.create_shader(include_bytes!("../assets/shaders/textured.frag.spv"))?;
+        let pipeline =
+            device.create_pipeline(&vertex_shader, &fragment_shader, Pipeline::default())?;
+        let sampler = Sampler {
+            filter: Filter::Nearest,
+            address: Address::Repeat,
+            mip: MipFilter::None,
+        };
+        let mut draws = Vec::new();
+        for (name, vertices) in geometry.flats {
+            let texture = flat_textures
+                .get(&name)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "flat {} was not decoded",
+                        String::from_utf8_lossy(&name)
+                    ))
+                })?
+                .clone();
+            let count = u32::try_from(vertices.len())
+                .map_err(|_| invalid("E1M1 flat vertex count exceeds SILICON draw range"))?;
+            draws.push(Draw {
+                texture,
+                vertices: device.create_vertex_buffer(vertices)?,
+                count,
+            });
+        }
+        for (name, vertices) in geometry.walls {
+            let texture = wall_textures
+                .get(&name)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "wall texture {} was not decoded",
+                        String::from_utf8_lossy(&name)
+                    ))
+                })?
+                .clone();
+            let count = u32::try_from(vertices.len())
+                .map_err(|_| invalid("E1M1 wall vertex count exceeds SILICON draw range"))?;
+            draws.push(Draw {
+                texture,
+                vertices: device.create_vertex_buffer(vertices)?,
+                count,
+            });
+        }
+        Ok(Self {
+            map,
+            device,
+            pipeline,
+            sampler,
+            draws,
+            regions: geometry.regions,
+            start: Player {
+                x: x as f32,
+                y: y as f32,
+                angle: angle as f32,
+            },
+            triangles,
+        })
+    }
+
+    fn draw(&self, player: Player, renderer: &mut Renderer) -> api::Result<api::Submission> {
+        let sector = sector_at(&self.regions, player.x, player.y)
+            .ok_or_else(|| invalid("player is outside every E1M1 BSP leaf"))?;
+        let eye = Vec3::new(player.x, sector.floor + 41.0, -player.y);
+        let radians = player.angle.to_radians();
+        let forward = Vec3::new(radians.cos(), 0.0, -radians.sin());
+        let view = Mat4::look_at(eye, eye + forward, Vec3::new(0.0, 1.0, 0.0));
+        let projection = Mat4::perspective(1.22, 4.0 / 3.0, 1.0, 8192.0);
+        let uniforms = (projection * view)
+            .0
+            .into_iter()
+            .map(Vec4::from_array)
+            .collect();
+        let uniform_buffer = self.device.create_uniform_buffer(uniforms)?;
+        let mut commands = self.device.commands();
+        commands.begin_render_pass(Color::new(0.12, 0.22, 0.36, 1.0));
+        commands.bind_pipeline(self.pipeline.clone());
+        commands.bind_uniform_buffer(uniform_buffer);
+        for draw in &self.draws {
+            commands.bind_texture(0, draw.texture.clone(), self.sampler);
+            commands.bind_vertex_buffer(draw.vertices.clone());
+            commands.draw(0, draw.count);
+        }
+        commands.end_render_pass();
+        self.device.submit(&commands, renderer)
+    }
+}
+
+fn save_frame(renderer: &Renderer, output: &Path) -> api::Result<()> {
     if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
-    renderer.framebuffer.save_png(output)?;
+    renderer.framebuffer.save_png(output)
+}
+
+fn render(path: &Path, output: &Path) -> api::Result<()> {
+    let scene = PreparedScene::load(path)?;
+    let mut renderer = Renderer::new(960, 720)?;
+    let submission = scene.draw(scene.start, &mut renderer)?;
+    save_frame(&renderer, output)?;
     println!(
-        "E1M1: {triangle_count} triangles, {} SILICON draw(s), player start ({x}, {y}, {angle}°)",
-        submission.draws
+        "E1M1: {} triangles, {} SILICON draw(s), player start ({}, {}, {}°)",
+        scene.triangles, submission.draws, scene.start.x, scene.start.y, scene.start.angle
+    );
+    Ok(())
+}
+
+fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
+    let scene = PreparedScene::load(path)?;
+    let mut renderer = Renderer::new(960, 720)?;
+    let mut window = Window::new(
+        "SILICON | Freedoom E1M1",
+        960,
+        720,
+        WindowOptions::default(),
+    )?;
+    window.set_target_fps(60);
+    let mut pixels = vec![0; 960 * 720];
+    let mut player = scene.start;
+    let mut last = std::time::Instant::now();
+    let mut frames = 0u64;
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        let now = std::time::Instant::now();
+        let delta = now.duration_since(last).as_secs_f32().min(0.05);
+        last = now;
+        let axis = |positive, negative| {
+            (window.is_key_down(positive) as i8 - window.is_key_down(negative) as i8) as f32
+        };
+        move_player(
+            &scene.map,
+            &scene.regions,
+            &mut player,
+            Controls {
+                forward: axis(Key::W, Key::S),
+                strafe: axis(Key::D, Key::A),
+                turn: axis(Key::Right, Key::Left) * 100.0,
+                running: window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift),
+            },
+            delta,
+        );
+        let submission = scene.draw(player, &mut renderer)?;
+        renderer.framebuffer.present_into(&mut pixels)?;
+        window.set_title(&format!(
+            "SILICON | E1M1 | WASD move, arrows turn, Shift run, Esc quit | {} triangles, {} draws",
+            scene.triangles, submission.draws
+        ));
+        window.update_with_buffer(&pixels, 960, 720)?;
+        frames += 1;
+    }
+    save_frame(&renderer, output)?;
+    println!(
+        "E1M1 interactive session: {frames} SILICON-rendered frames; saved {}",
+        output.display()
     );
     Ok(())
 }
@@ -984,20 +1155,28 @@ fn main() -> api::Result<()> {
     let wad = args.next().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: cargo run --release --example freedoom_map -- <freedoom1.wad> [output.png]",
+            "usage: cargo run --release --example freedoom_map -- <freedoom1.wad> [output.png | --interactive]",
         )
     })?;
-    let output = args
-        .next()
-        .unwrap_or_else(|| "output/freedoom_map.png".into());
+    let output_or_mode = args.next();
+    let interactive = output_or_mode.as_deref() == Some(std::ffi::OsStr::new("--interactive"));
+    let output = if interactive {
+        std::ffi::OsString::from("output/freedoom_map.png")
+    } else {
+        output_or_mode.unwrap_or_else(|| "output/freedoom_map.png".into())
+    };
     if args.next().is_some() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "expected at most a WAD path and an output path",
+            "expected a WAD path and either an output path or --interactive",
         )
         .into());
     }
-    render(Path::new(&wad), Path::new(&output))
+    if interactive {
+        run_interactive(Path::new(&wad), Path::new(&output))
+    } else {
+        render(Path::new(&wad), Path::new(&output))
+    }
 }
 
 #[cfg(test)]
@@ -1068,5 +1247,76 @@ mod tests {
         assert_eq!(texture.patches[0].x, 4);
         assert_eq!(texture.patches[0].y, -2);
         assert_eq!(texture.patches[0].index, 7);
+    }
+
+    #[test]
+    fn selects_the_containing_leaf_and_rejects_solid_wall_overlap() {
+        let sector = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: *b"FLOOR0_1",
+            ceiling_flat: *b"CEIL1_1\0",
+        };
+        let regions = vec![Region {
+            polygon: vec![
+                Vertex2 { x: 0.0, y: 0.0 },
+                Vertex2 { x: 128.0, y: 0.0 },
+                Vertex2 { x: 128.0, y: 128.0 },
+                Vertex2 { x: 0.0, y: 128.0 },
+            ],
+            sector,
+        }];
+        assert!(sector_at(&regions, 64.0, 64.0).is_some());
+        assert!(sector_at(&regions, 129.0, 64.0).is_none());
+
+        let map = Map {
+            vertices: vec![Vertex2 { x: 96.0, y: 0.0 }, Vertex2 { x: 96.0, y: 128.0 }],
+            sectors: vec![sector],
+            sides: vec![],
+            lines: vec![[0, 1, 0, u16::MAX, u16::MAX]],
+            segs: vec![],
+            subsectors: vec![],
+            things: vec![],
+        };
+        assert!(!can_occupy(
+            &map,
+            &regions,
+            Player {
+                x: 104.0,
+                y: 64.0,
+                angle: 0.0,
+            },
+            sector,
+        ));
+        assert!(can_occupy(
+            &map,
+            &regions,
+            Player {
+                x: 64.0,
+                y: 64.0,
+                angle: 0.0,
+            },
+            sector,
+        ));
+        let mut player = Player {
+            x: 80.0,
+            y: 64.0,
+            angle: 0.0,
+        };
+        move_player(
+            &map,
+            &regions,
+            &mut player,
+            Controls {
+                forward: 1.0,
+                strafe: 0.0,
+                turn: 10.0,
+                running: false,
+            },
+            0.05,
+        );
+        assert_eq!(player.x, 80.0);
+        assert_eq!(player.angle, 0.5);
     }
 }
