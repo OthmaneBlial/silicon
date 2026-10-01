@@ -1039,6 +1039,39 @@ mod tests {
     }
 
     #[test]
+    fn dispatches_glsl_spirv_vec4_inversion() {
+        let device = Device::new();
+        let pipeline = device
+            .create_compute_pipeline_from_spirv(include_bytes!(
+                "../../../assets/shaders/compute_invert.comp.spv"
+            ))
+            .unwrap();
+        let input = device
+            .create_storage_buffer(
+                (0..64)
+                    .map(|i| {
+                        let value = i as f32 / 64.0;
+                        Vec4::new(value, value * 0.5, 1.0 - value, 1.0)
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        let mut output = device.create_storage_buffer(vec![Vec4::ZERO; 64]).unwrap();
+
+        let stats = device
+            .dispatch_compute(&pipeline, [1, 1, 1], &[&input], &mut output)
+            .unwrap();
+        assert_eq!(stats.invocations, 64);
+        assert!(
+            output
+                .as_slice()
+                .iter()
+                .zip(input.as_slice())
+                .all(|(actual, source)| *actual == Vec4::new(1.0, 1.0, 1.0, 1.0) - *source)
+        );
+    }
+
+    #[test]
     fn dispatch_maps_vec4_inputs_over_3d_workgroups() {
         let device = Device::new();
         let pipeline = device
