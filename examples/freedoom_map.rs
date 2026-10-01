@@ -1645,6 +1645,14 @@ fn choose_space_weapon(
     }
 }
 
+fn check_weapon_ammo(weapon: SpaceWeapon, ammo: i32) -> SpaceWeapon {
+    if weapon == SpaceWeapon::Pistol && ammo == 0 {
+        SpaceWeapon::Fist
+    } else {
+        weapon
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PistolPose {
     Recoil,
@@ -1682,7 +1690,7 @@ fn fist_pose(remaining_tics: f32) -> Option<FistPose> {
 }
 
 #[test]
-fn weapon_selection_and_berserk_auto_select_are_explicit() {
+fn weapon_selection_and_ammo_fallback_are_explicit() {
     assert_eq!(
         choose_space_weapon(SpaceWeapon::Pistol, false, false, false),
         SpaceWeapon::Pistol
@@ -1699,6 +1707,12 @@ fn weapon_selection_and_berserk_auto_select_are_explicit() {
         choose_space_weapon(SpaceWeapon::Pistol, false, true, false),
         SpaceWeapon::Fist
     );
+    assert_eq!(check_weapon_ammo(SpaceWeapon::Pistol, 0), SpaceWeapon::Fist);
+    assert_eq!(
+        check_weapon_ammo(SpaceWeapon::Pistol, 1),
+        SpaceWeapon::Pistol
+    );
+    assert_eq!(check_weapon_ammo(SpaceWeapon::Fist, 0), SpaceWeapon::Fist);
 }
 
 struct WallSection {
@@ -4545,6 +4559,9 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 punch_cooldown = (punch_cooldown - delta).max(0.0);
                 punch_flash = (punch_flash - delta).max(0.0);
                 let space_down = window.is_key_down(Key::Space);
+                if space_down && shot_cooldown == 0.0 {
+                    selected_weapon = check_weapon_ammo(selected_weapon, ammo);
+                }
                 if space_down
                     && selected_weapon == SpaceWeapon::Pistol
                     && shot_cooldown == 0.0

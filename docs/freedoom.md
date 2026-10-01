@@ -162,7 +162,8 @@ repeats after 19 Doom tics (about 0.54 seconds), and pistol ammo caps at 200.
 Damage follows id Software's [`P_GunShot`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c);
 the refire interval follows its pistol states and [`A_ReFire`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c).
 Press `1` for the pistol or `2` for the fist. A berserk pack selects the fist,
-but you can switch back to the pistol. With the fist selected, Space punches.
+but you can switch back to the pistol. Space falls back to the fist when pistol ammo
+runs out, matching Doom's [`P_CheckAmmo`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c). With the fist selected, Space punches.
 Press or hold `Q` for a fist punch with a 22-tic (about 0.63-second) cooldown,
 no ammo cost, and Doom's randomized 2–20 damage; holding repeats punches when
 ready. This held-attack behavior follows Doom's [`A_ReFire`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c)
