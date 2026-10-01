@@ -101,6 +101,11 @@ types and renders their WAD sprites; cards and skulls grant the same color key.
 E1M1 has one blue-card thing (type 5), drawn with `BKEYA0`; the original engine
 checks for the blue card or skull before opening these doors in
 [`EV_VerticalDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c).
+Use-only special 31 opens a manual door and leaves it open. Specials 32, 33,
+and 34 do the same for blue, red, and yellow locks; they require the matching
+card or skull and clear the one-shot line after activation. The open-stay and
+key mapping follow id Software's [`EV_VerticalDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c)
+and [`P_UseSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c).
 Other locked-door action variants, enemy-triggered platforms, and other line
 specials remain unsupported.
 

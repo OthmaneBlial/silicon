@@ -198,8 +198,10 @@ secret maps. The player can cross a special-88 line or use a
 special-62 line to move its tagged platform down, wait, then return it to its
 starting height. The special-23 use line lowers its three tagged floors to
 their lowest neighboring height once. Matching red, yellow, or blue cards and
-skulls open special-28, special-27, and special-26 doors. Other locked-door
-types and other crossing-triggered specials remain unsupported.
+skulls open special-28, special-27, and special-26 doors; use-only specials
+32/33/34 open and leave their matching blue/red/yellow keyed doors open, and
+special 31 does the same without a key. Other locked-door types and other
+crossing-triggered specials remain unsupported.
 E1M1's four special-9 sectors add to a once-per-sector secret counter in the
 window title. Its three special-7 nukage sectors deal 5 HP every 32 game tics
 spent on them. A collected radiation suit prevents that damage for 60 seconds
