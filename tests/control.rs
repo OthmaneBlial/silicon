@@ -1,5 +1,34 @@
 use shader::{Comparison, Instruction::*, Program};
 use silicon::{SampleCount, Vec4, shader};
+
+fn add_branch_weights(module: &[u8]) -> Vec<u8> {
+    let words: Vec<_> = module
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+        .collect();
+    let mut weighted = words[..5].to_vec();
+    let mut branches = 0;
+    let mut pc = 5;
+    while pc < words.len() {
+        let header = words[pc];
+        let count = (header >> 16) as usize;
+        let opcode = header as u16;
+        assert!(count > 0 && pc + count <= words.len());
+        if opcode == 250 {
+            assert!(matches!(count, 4 | 6));
+            branches += 1;
+        }
+        let added_weights = usize::from(opcode == 250 && count == 4) * 2;
+        weighted.push((((count + added_weights) as u32) << 16) | (header & 0xffff));
+        weighted.extend_from_slice(&words[pc + 1..pc + count]);
+        if added_weights != 0 {
+            weighted.extend([1, 1]);
+        }
+        pc += count;
+    }
+    assert!(branches > 0);
+    weighted.into_iter().flat_map(u32::to_le_bytes).collect()
+}
 fn bits(v: Vec4) -> [u32; 4] {
     v.to_array().map(f32::to_bits)
 }
@@ -222,6 +251,7 @@ fn glsl_selections_locals_phi_and_early_returns_match_independent_reference() {
         .unwrap();
     let source = include_bytes!("../assets/shaders/control.frag.spv");
     let ssa = include_bytes!("../assets/shaders/control.ssa.frag.spv");
+    let weighted = add_branch_weights(ssa);
     assert!(
         Module::parse(ssa)
             .unwrap()
@@ -229,7 +259,7 @@ fn glsl_selections_locals_phi_and_early_returns_match_independent_reference() {
             .iter()
             .any(|op| op.opcode == 245)
     );
-    for bytes in [source.as_slice(), ssa.as_slice()] {
+    for bytes in [source.as_slice(), ssa.as_slice(), weighted.as_slice()] {
         let fragment = Module::parse(bytes).unwrap().translate().unwrap();
         link(&vertex, &fragment).unwrap();
         let p = fragment.program;

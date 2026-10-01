@@ -151,7 +151,7 @@ impl Op {
             self.opcode
         )
     }
-    /// Operand layouts are from Khronos' core grammar; optional forms not supported are rejected.
+    /// Operand layouts follow Khronos' core grammar; only branch weights are optional here.
     fn ids(&self) -> Result<(Option<u32>, Vec<u32>)> {
         let a = &self.operands;
         let n = a.len();
@@ -160,7 +160,8 @@ impl Op {
             19 | 20 | 17 | 248 | 249 => (1, 1),
             14 | 22 | 41 | 42 | 247 => (2, 2),
             16 => (2, 5),
-            21 | 23 | 24 | 28 | 32 | 43 | 61 | 83 | 112 | 127 | 168 | 250 => (3, 3),
+            21 | 23 | 24 | 28 | 32 | 43 | 61 | 83 | 112 | 127 | 168 => (3, 3),
+            250 => (3, 5),
             229 | 234 => (6, 6),
             230 => (8, 8),
             224 => (3, 3),
@@ -187,6 +188,10 @@ impl Op {
             72 => (3, 4),
             _ => return Err(self.error("unsupported instruction in the graphics subset")),
         };
+        if self.opcode == 250 && !matches!(n, 3 | 5) {
+            return Err(self
+                .error("OpBranchConditional expects three operands and optional paired weights"));
+        }
         if !(min..=max).contains(&n) {
             return Err(self.error(format!("expected {min}..{max} operands, found {n}")));
         }
@@ -280,7 +285,7 @@ impl Op {
             | 188
             | 190 => (Some(a[1]), vec![a[0], a[2], a[3]]),
             247 | 249 => (None, vec![a[0]]),
-            250 => (None, a.clone()),
+            250 => (None, a[..3].to_vec()),
             _ => (None, vec![]),
         };
         Ok((result, refs))
@@ -2447,6 +2452,21 @@ pub fn link(vertex: &Compiled, fragment: &Compiled) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn branch_weights_are_optional_paired_literals_not_ids() {
+        let op = |operands| Op {
+            word: 1,
+            opcode: 250,
+            operands,
+        };
+        assert_eq!(op(vec![5, 8, 9]).ids().unwrap(), (None, vec![5, 8, 9]));
+        assert_eq!(
+            op(vec![5, 8, 9, 1, 2]).ids().unwrap(),
+            (None, vec![5, 8, 9])
+        );
+        assert!(op(vec![5, 8, 9, 1]).ids().is_err());
+    }
+
     #[test]
     fn allocator_reuses_dead_values_and_rejects_excess_live_values() {
         let mut ops: Vec<_> = (0..65)

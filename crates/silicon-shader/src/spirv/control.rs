@@ -176,7 +176,7 @@ impl Compiler<'_> {
                 edges.push((id, end.operands[0]));
             }
             if end.opcode == 250 {
-                edges.extend(end.operands[1..].iter().map(|&to| (id, to)));
+                edges.extend(end.operands[1..3].iter().map(|&to| (id, to)));
                 if end.operands[1] == end.operands[2] {
                     return Err(end.error("conditional targets must be distinct"));
                 }
