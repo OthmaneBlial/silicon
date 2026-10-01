@@ -166,7 +166,8 @@ their lowest neighboring height once. The blue keycard can be collected to
 open special-26 blue-locked doors. Other locked-door types, other
 crossing-triggered specials, and level progression remain unsupported.
 E1M1's four special-9 sectors add to a once-per-sector secret counter in the
-window title.
+window title. Its three special-7 nukage sectors deal 5 HP every 32 game tics
+spent on them.
 Enemies cycle four WAD walk frames,
 play attack and death poses, leave corpses,
 and select among eight camera-relative sprite views; fireballs show WAD impact

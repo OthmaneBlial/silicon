@@ -75,6 +75,9 @@ E1M1 contains four secret sectors (sector special 9). Entering one increments
 the secret counter in the window title once and clears its secret flag, matching
 the original engine's
 [`P_PlayerInSpecialSector`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_spec.c).
+The WAD also has three sector-special-7 nukage sectors. They deal 5 HP every
+32 game tics spent on the floor, following the original `P_PlayerInSpecialSector`
+damage rule without suit mitigation.
 
 The combat slice loads four normal-skill enemy types from WAD things and their
 classic `A1`–`D1` walk and `E1`–`G1` attack sprite patches: former humans (20
@@ -136,7 +139,7 @@ Doom's BSP wall occlusion or per-column portal clipping. At the checked-in
 960×720 start view, 567 of 682 subsectors remain in the horizontal BSP view and
 SILICON submits 4,048 triangles across 209 draws, including the newly rendered
 masked middle textures. Five release renders on Apple M2 measured median process
-CPU time of 0.70 s. The earlier depth-band comparison measured 0.62 s against
+CPU time of 0.46 s. The earlier depth-band comparison measured 0.62 s against
 0.69 s at its predecessor. This fixed-pose measurement is not an engine-wide
 benchmark. Earlier opaque-only counts were
 3,896 triangles and 164 draws for this view. The screenshot shows the player
@@ -147,9 +150,8 @@ that test fixture is not included.
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
 gib states, Doom's detailed actor navigation, other sound events, other key
-colors and locked-door types, crossing specials other than special 2 and 88,
-other use specials,
-level progression after E1M1, other weapons and their ammunition, and full weapon
+colors and locked-door types, crossing specials other than 2 and 88, other use
+specials, level progression after E1M1, other weapons and their ammunition, and full weapon
 animation beyond the brief idle/fire pose remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in
 [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was rendered from
