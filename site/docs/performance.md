@@ -351,6 +351,35 @@ This was one sequential pass on a shared desktop, so treat the values as a
 workload baseline rather than a controlled comparison between backends or
 worker counts.
 
+## Shared triangle setup
+
+The shared-band renderer now prepares clipped triangles once for identical
+draws, then clips the prepared screen-space bounds to each worker band. The
+setup cache is bounded to 16 MiB per render; larger draws keep the streaming
+per-band path.
+
+An alternating release comparison used clean commit `aeb5a4a` as baseline and
+`78325ba` as candidate on Apple M2 / macOS 26.6. Each benchmark run used three
+warmups and eight timed frames; both configuration and binary order were
+reversed in round two. `tile_stress` ran at 960×640 and `overdraw` at 160×96.
+The [raw record](../benchmarks/apple-m2-prepared-triangles-2026-10-02.json)
+contains both rounds, all configurations, p95 values, commands, binary hashes,
+and instrumented profiles.
+
+| Scene / backend | Round 1 baseline → candidate ms | Round 2 baseline → candidate ms |
+| --- | ---: | ---: |
+| tile_stress / scalar, 4 workers | 9.8782 → 9.1274 | 12.5450 → 12.0473 |
+| tile_stress / SIMD, 4 workers | 11.2448 → 9.3727 | 12.7400 → 12.5002 |
+| overdraw / scalar, 4 workers | 52.5110 → 44.9171 | 45.1900 → 51.8381 |
+| overdraw / SIMD, 4 workers | 49.9271 → 46.8553 | 47.9747 → 49.5086 |
+
+Both `tile_stress` four-worker medians were lower in each round. Separate
+single-frame scalar/four-worker profiles reduced accumulated primitive-setup
+time from a 7.901 ms baseline mean to 2.206 ms for the candidate. The overdraw
+medians changed direction between rounds, so they remain inconclusive. These
+shared-host measurements characterize the workloads and do not establish a
+general speedup.
+
 ## Reproduce
 
 ```sh
