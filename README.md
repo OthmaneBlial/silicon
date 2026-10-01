@@ -332,7 +332,7 @@ bytes and bitwise VM outputs/traces for all sixteen lane masks. See [SIMD detail
 cargo run --release -p silicon-cli -- benchmark showcase --frames 30 --backend scalar --threads 1
 cargo run --release -p silicon-cli -- benchmark spirv_showcase --frames 30 --backend simd --threads 4 --report output/frames.json
 cargo run --release -p silicon-cli -- benchmark tile_stress --frames 30 --backend simd --threads 4
-cargo run --release -p silicon-cli -- benchmark overdraw --frames 30 --backend simd --threads 4
+cargo run --release -p silicon-cli -- benchmark overdraw --width 160 --height 96 --frames 30 --backend simd --threads 4
 cargo run --release -p silicon-cli -- profile spirv_showcase --threads 4
 cargo run --release -p silicon-cli -- pipeline-cache assets/shaders/textured.vert.spv assets/shaders/textured.frag.spv
 python3 benchmarks/run.py --frames 30

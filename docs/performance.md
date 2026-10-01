@@ -323,6 +323,10 @@ front-to-back full-screen quads (256 triangles) to measure depth rejection.
 Both are included in `benchmarks/run.py` and can also be run individually with
 `silicon benchmark tile_stress` or `silicon benchmark overdraw`. They isolate
 raster workloads; they are not substitutes for the textured showcase scenes.
+The sweep uses 160×96 for `overdraw`: at 960×640 a single SIMD, one-worker
+frame measured 9,993 ms on Apple M2, while four workers at 160×96 measured
+79.5 ms. The full-resolution workload is useful for manual profiling but too
+slow for the routine multi-configuration sweep.
 
 ## Reproduce
 
