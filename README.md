@@ -192,7 +192,8 @@ humans and shotgunners, and imp fireballs. The player can trigger E1M1's WAD
 special-1 doors with `E` and use episode exits; ordinary doors raise, wait, and
 close with matching map geometry and collision. Its special-117 use door raises
 at four times normal speed, then closes after the same wait. Crossing a WAD
-special-2 line opens sectors with its tag and leaves them open. Normal exits
+special-2 line opens sectors with its tag and leaves them open; the one-shot
+special-4 line raises its tagged door, waits, then closes it. Normal exits
 advance when the next WAD map exists; special-51 exits route through episode
 secret maps. The player or a living enemy can cross a one-shot special-10 line
 or a repeatable special-88 line to move its tagged platform down, wait, then
@@ -207,7 +208,7 @@ floors to their lowest neighboring height once. Matching red, yellow, or blue ca
 skulls open special-28, special-27, and special-26 doors; crossing special 38
 also lowers tagged floors once. Use-only specials 32/33/34 open and leave their
 matching blue/red/yellow keyed doors open, and special 31 does the same without
-a key. Other locked-door types and crossing-triggered specials beyond 2, 10,
+a key. Other locked-door types and crossing-triggered specials beyond 2, 4, 10,
 38, and 88 remain unsupported.
 E1M1's four special-9 sectors add to a once-per-sector secret counter in the
 window title. Its three special-7 nukage sectors deal 5 HP every 32 game tics

@@ -102,6 +102,10 @@ door open. The release WAD has six such lines for tags 5 and 6, targeting closed
 sectors 77 and 145. Trigger lines activate only after accepted player movement;
 the one-shot special clears once crossed. This follows id Software's
 [`P_CrossSpecialLine` open-door action](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_spec.c).
+Crossing a special-4 line raises its tagged door, waits 150 tics, then closes
+it and consumes the line. Players or living enemies can activate it, matching
+id Software's [`P_CrossSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_spec.c)
+and [`EV_DoDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c).
 Crossing a special-10 line triggers its tagged platform down, wait, and up once,
 then clears the line. Players and living enemies can activate it, matching id
 Software's [`P_CrossSpecialLine` platform action](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_spec.c).
