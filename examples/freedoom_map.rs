@@ -1215,18 +1215,8 @@ fn ray_segment_distance(
     (distance >= 0.0 && (0.0..=1.0).contains(&along)).then_some(distance)
 }
 
-fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player) -> bool {
-    let origin = Vertex2 {
-        x: player.x,
-        y: player.y,
-    };
-    let radians = player.angle.to_radians();
-    let direction = Vertex2 {
-        x: radians.cos(),
-        y: radians.sin(),
-    };
-    let nearest_wall = map
-        .lines
+fn nearest_blocking_wall(map: &Map, origin: Vertex2, direction: Vertex2) -> f32 {
+    map.lines
         .iter()
         .filter(|line| line[2] & 1 != 0 || line[4] == u16::MAX)
         .filter_map(|line| {
@@ -1237,7 +1227,36 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player) -> bool {
                 map.vertices[line[1] as usize],
             )
         })
-        .fold(f32::INFINITY, f32::min);
+        .fold(f32::INFINITY, f32::min)
+}
+
+fn has_line_of_sight(map: &Map, from: Vertex2, to: Vertex2) -> bool {
+    let direction = Vertex2 {
+        x: to.x - from.x,
+        y: to.y - from.y,
+    };
+    let distance = (direction.x * direction.x + direction.y * direction.y).sqrt();
+    if distance <= 0.001 {
+        return true;
+    }
+    let direction = Vertex2 {
+        x: direction.x / distance,
+        y: direction.y / distance,
+    };
+    nearest_blocking_wall(map, from, direction) >= distance
+}
+
+fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player) -> bool {
+    let origin = Vertex2 {
+        x: player.x,
+        y: player.y,
+    };
+    let radians = player.angle.to_radians();
+    let direction = Vertex2 {
+        x: radians.cos(),
+        y: radians.sin(),
+    };
+    let nearest_wall = nearest_blocking_wall(map, origin, direction);
     let target = actors
         .iter()
         .enumerate()
@@ -1276,6 +1295,24 @@ fn update_actors(map: &Map, actors: &mut [Actor], player: Player, health: &mut i
             if actor.attack_cooldown == 0.0 {
                 *health -= 8;
                 actor.attack_cooldown = 0.85;
+            }
+        } else if (actor.sprite == *b"POSS" || actor.sprite == *b"SPOS")
+            && distance <= 512.0
+            && has_line_of_sight(
+                map,
+                Vertex2 {
+                    x: actor.x,
+                    y: actor.y,
+                },
+                Vertex2 {
+                    x: player.x,
+                    y: player.y,
+                },
+            )
+        {
+            if actor.attack_cooldown == 0.0 {
+                *health -= if actor.sprite == *b"SPOS" { 6 } else { 3 };
+                actor.attack_cooldown = 1.4;
             }
         } else if distance < 640.0 {
             let mut enemy = Player {
@@ -1897,5 +1934,45 @@ mod tests {
         assert_eq!(health, 92);
         update_actors(&map, &mut actors, player, &mut health, 0.02);
         assert_eq!(health, 84);
+    }
+
+    #[test]
+    fn ranged_enemies_attack_only_with_clear_sight_and_respect_cooldown() {
+        let mut map = Map {
+            vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![[0, 1, 1, u16::MAX, u16::MAX]],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let mut actors = [Actor {
+            sprite: *b"POSS",
+            x: 100.0,
+            y: 0.0,
+            health: 20,
+            attack_cooldown: 0.0,
+        }];
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut health = 100;
+        update_actors(&map, &mut actors, player, &mut health, 0.05);
+        assert_eq!(health, 100);
+
+        map.lines.clear();
+        update_actors(&map, &mut actors, player, &mut health, 0.05);
+        assert_eq!(health, 97);
+        update_actors(&map, &mut actors, player, &mut health, 0.2);
+        assert_eq!(health, 97);
+
+        actors[0].sprite = *b"SPOS";
+        actors[0].attack_cooldown = 0.0;
+        update_actors(&map, &mut actors, player, &mut health, 0.05);
+        assert_eq!(health, 91);
     }
 }
