@@ -45,3 +45,19 @@ fn selected_pixel_traces_executed_sir() {
             .any(|t| matches!(t.operation, shader::Instruction::Sample { .. }))
     );
 }
+
+#[test]
+fn profile_collects_command_and_raster_stage_times() {
+    let capture = demo::shader_cube(96, 64, 0.).unwrap();
+    let mut renderer = Renderer::new(96, 64).unwrap();
+    renderer.profile_shaders = true;
+    Device.submit(&capture.commands, &mut renderer).unwrap();
+    let stats = renderer.stats;
+    assert!(stats.command_processing_time > std::time::Duration::ZERO);
+    assert!(stats.vertex_time > std::time::Duration::ZERO);
+    assert!(stats.primitive_setup_time > std::time::Duration::ZERO);
+    assert!(stats.rasterization_time > std::time::Duration::ZERO);
+    assert!(stats.shader_time > std::time::Duration::ZERO);
+    assert!(stats.blend_write_time > std::time::Duration::ZERO);
+    assert!(stats.triangles > 0 && stats.fragments > 0 && stats.shaded > 0);
+}

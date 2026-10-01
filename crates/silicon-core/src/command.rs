@@ -2,7 +2,11 @@
 use crate::*;
 use serde::{Deserialize, Serialize};
 use silicon_shader::{Instruction, Program};
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum BufferUsage {
     Vertex,
@@ -114,7 +118,10 @@ impl Device {
         })
     }
     pub fn submit(self, cmd: &CommandBuffer, r: &mut Renderer) -> Result<Submission> {
+        let validation_start = r.profile_shaders.then(Instant::now);
         cmd.validate()?;
+        let mut command_processing_time =
+            validation_start.map_or(Duration::ZERO, |start| start.elapsed());
         let mut pipeline = None;
         let mut vertices = None;
         let mut indices = None;
@@ -122,6 +129,8 @@ impl Device {
         let mut textures: [Option<(&Texture, Sampler)>; 16] = [None; 16];
         let mut stats = Submission::default();
         for (number, command) in cmd.commands.iter().enumerate() {
+            let mut command_start = r.profile_shaders.then(Instant::now);
+            let is_draw = matches!(command, Command::Draw { .. });
             match command {
                 Command::BeginRenderPass { clear } => r.clear(*clear),
                 Command::EndRenderPass => {}
@@ -166,6 +175,9 @@ impl Device {
                     let packets = std::cell::Cell::new(0u64);
                     let instructions = std::cell::Cell::new(0u64);
                     let samples = std::cell::Cell::new(0u64);
+                    if let Some(start) = command_start.take() {
+                        command_processing_time += start.elapsed();
+                    }
                     r.try_draw_packets(
                         v,
                         ind,
@@ -287,7 +299,11 @@ impl Device {
                     r.stats.texture_samples += samples.get();
                 }
             }
+            if !is_draw && let Some(start) = command_start {
+                command_processing_time += start.elapsed();
+            }
         }
+        r.stats.command_processing_time += command_processing_time;
         Ok(stats)
     }
 }

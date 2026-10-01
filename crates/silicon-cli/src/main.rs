@@ -162,31 +162,81 @@ fn frame(r: &mut Renderer, scene: &Scene, threads: usize) -> Result<Option<Submi
     }
 }
 fn report(r: &Renderer, elapsed: f64, submission: Option<&Submission>) {
-    println!(
-        "{}x{} CPU framebuffer | {:.3} ms | {:.2} render FPS",
-        r.framebuffer.width,
-        r.framebuffer.height,
-        elapsed * 1000.,
-        1. / elapsed
-    );
+    if r.profile_shaders {
+        println!(
+            "{}x{} CPU framebuffer",
+            r.framebuffer.width, r.framebuffer.height
+        );
+    } else {
+        println!(
+            "{}x{} CPU framebuffer | {:.3} ms | {:.2} render FPS",
+            r.framebuffer.width,
+            r.framebuffer.height,
+            elapsed * 1000.,
+            1. / elapsed
+        );
+    }
     println!("Multisample coverage: {}x", r.sample_count().get());
-    println!(
-        "Vertices: {} | triangles: {} | clipped: {} | culled: {}",
-        r.stats.vertices, r.stats.triangles, r.stats.clipped, r.stats.culled
-    );
-    println!(
-        "Tile visits: {} | fragments: {} | early-Z: {} | shaded: {} | discarded: {}",
-        r.stats.tiles,
-        r.stats.fragments,
-        r.stats.early_z_rejected,
-        r.stats.shaded,
-        r.stats.discarded
-    );
-    println!(
-        "Accumulated worker stage times: vertex {:.3} ms | clipping + raster + shading + ROP {:.3} ms",
-        r.stats.vertex_time.as_secs_f64() * 1000.,
-        r.stats.raster_time.as_secs_f64() * 1000.
-    );
+    if r.profile_shaders {
+        println!("Frame time: {:.3} ms", elapsed * 1000.);
+        println!("Profile stages: accumulated CPU worker time in ms");
+        println!(
+            "  Command processing:     {:.3} ms{}",
+            r.stats.command_processing_time.as_secs_f64() * 1000.,
+            if r.stats.command_processing_time.is_zero() {
+                " (this scene has no command buffer)"
+            } else {
+                ""
+            }
+        );
+        println!(
+            "  Vertex processing:      {:.3}",
+            r.stats.vertex_time.as_secs_f64() * 1000.
+        );
+        println!(
+            "  Primitive setup:        {:.3}",
+            r.stats.primitive_setup_time.as_secs_f64() * 1000.
+        );
+        println!(
+            "  Rasterization / depth:  {:.3}",
+            r.stats.rasterization_time.as_secs_f64() * 1000.
+        );
+        println!(
+            "  Fragment shading:       {:.3}",
+            r.stats.shader_time.as_secs_f64() * 1000.
+        );
+        println!(
+            "  Blending / writes:      {:.3}",
+            r.stats.blend_write_time.as_secs_f64() * 1000.
+        );
+        println!("  Presentation: not measured (headless profile)");
+        println!("Triangles: {}", r.stats.triangles);
+        println!("Triangles culled: {}", r.stats.culled);
+        println!("Fragments generated: {}", r.stats.fragments);
+        println!("Early-Z rejected samples: {}", r.stats.early_z_rejected);
+        println!("Fragments shaded: {}", r.stats.shaded);
+        println!("Texture samples (SIR only): {}", r.stats.texture_samples);
+        println!("Discarded fragments: {}", r.stats.discarded);
+        println!("Stage sums can overlap with parallel workers; they are not wall-time shares.");
+    } else {
+        println!(
+            "Vertices: {} | triangles: {} | clipped: {} | culled: {}",
+            r.stats.vertices, r.stats.triangles, r.stats.clipped, r.stats.culled
+        );
+        println!(
+            "Tile visits: {} | fragments: {} | early-Z: {} | shaded: {} | discarded: {}",
+            r.stats.tiles,
+            r.stats.fragments,
+            r.stats.early_z_rejected,
+            r.stats.shaded,
+            r.stats.discarded
+        );
+        println!(
+            "Accumulated worker stage times: vertex {:.3} ms | clipping + raster + shading + ROP {:.3} ms",
+            r.stats.vertex_time.as_secs_f64() * 1000.,
+            r.stats.raster_time.as_secs_f64() * 1000.
+        );
+    }
     if r.stats.shader_packets > 0 {
         println!("Shader SIMD: {}", shader::packet_backend_name());
         println!(
@@ -196,16 +246,10 @@ fn report(r: &Renderer, elapsed: f64, submission: Option<&Submission>) {
             r.stats.shader_packet_lanes as f64 / (r.stats.shader_packets * 4) as f64 * 100.
         );
     }
-    if r.profile_shaders {
-        println!(
-            "Fragment shader accumulated time: {:.3} ms (instrumented)",
-            r.stats.shader_time.as_secs_f64() * 1000.
-        );
-    }
     if let Some(s) = submission {
         println!("Draws: {}", s.draws);
     }
-    if r.stats.shader_instructions > 0 {
+    if r.stats.shader_instructions > 0 && !r.profile_shaders {
         println!(
             "Executed SIR instructions: {} | texture samples: {}",
             r.stats.shader_instructions, r.stats.texture_samples

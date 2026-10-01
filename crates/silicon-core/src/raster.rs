@@ -6,6 +6,10 @@ const SAMPLE_2X: [(i64, i64); 2] = [(64, 64), (192, 192)];
 const SAMPLE_4X: [(i64, i64); 4] = [(96, 32), (224, 96), (32, 160), (160, 224)];
 #[derive(Clone, Debug, Default)]
 pub struct Statistics {
+    pub command_processing_time: Duration,
+    pub primitive_setup_time: Duration,
+    pub rasterization_time: Duration,
+    pub blend_write_time: Duration,
     pub shader_time: Duration,
     pub shader_packets: u64,
     pub shader_packet_lanes: u64,
@@ -26,6 +30,10 @@ pub struct Statistics {
 }
 impl std::ops::AddAssign<&Self> for Statistics {
     fn add_assign(&mut self, other: &Self) {
+        self.command_processing_time += other.command_processing_time;
+        self.primitive_setup_time += other.primitive_setup_time;
+        self.rasterization_time += other.rasterization_time;
+        self.blend_write_time += other.blend_write_time;
         self.shader_time += other.shader_time;
         self.shader_packets += other.shader_packets;
         self.shader_packet_lanes += other.shader_packet_lanes;
@@ -116,6 +124,11 @@ impl Renderer {
         self.stats = Statistics::default();
         self.traces.clear();
     }
+    fn record_primitive_setup(&mut self, start: Option<Instant>) {
+        if let Some(start) = start {
+            self.stats.primitive_setup_time += start.elapsed();
+        }
+    }
     pub fn draw<V, F>(
         &mut self,
         vertices: &[Vertex],
@@ -189,6 +202,7 @@ impl Renderer {
         let start = Instant::now();
         let render_result = (|| {
             for i in (0..count).step_by(3) {
+                let setup_start = self.profile_shaders.then(Instant::now);
                 let ix = |n: usize| indices.map_or(n, |ind| ind[n] as usize);
                 let original = [
                     transformed[ix(i)],
@@ -196,6 +210,7 @@ impl Renderer {
                     transformed[ix(i + 2)],
                 ];
                 let poly = clip_triangle(original);
+                self.record_primitive_setup(setup_start);
                 self.stats.triangles += 1;
                 if poly.as_slice() != original.as_slice() {
                     self.stats.clipped += 1;
@@ -223,7 +238,9 @@ impl Renderer {
         state: Pipeline,
         shader: &F,
     ) -> Result<()> {
+        let setup_start = self.profile_shaders.then(Instant::now);
         if v.iter().any(|v| v.position.w <= 0.) {
+            self.record_primitive_setup(setup_start);
             return Ok(());
         }
         let w = self.framebuffer.width;
@@ -251,6 +268,7 @@ impl Renderer {
         });
         let mut area = edge(s[0], s[1], s[2].x, s[2].y);
         if area == 0 {
+            self.record_primitive_setup(setup_start);
             return Ok(());
         }
         let front = match state.front_face {
@@ -259,6 +277,7 @@ impl Renderer {
         };
         if (state.cull == Cull::Back && !front) || (state.cull == Cull::Front && front) {
             self.stats.culled += 1;
+            self.record_primitive_setup(setup_start);
             return Ok(());
         }
         if area < 0 {
@@ -288,6 +307,7 @@ impl Renderer {
         let inv_area = 1. / area as f32;
         let dx = edges.map(|(a, b)| -(b.y - a.y) as f32 * SUBPIXEL as f32 * inv_area);
         let dy = edges.map(|(a, b)| (b.x - a.x) as f32 * SUBPIXEL as f32 * inv_area);
+        self.record_primitive_setup(setup_start);
         for ty in (min_y..max_y).step_by(TILE as usize) {
             for tx in (min_x..max_x).step_by(TILE as usize) {
                 self.stats.tiles += 1;
@@ -304,6 +324,7 @@ impl Renderer {
                     });
                     let step = edges.map(|(a, b)| -(b.y - a.y) * SUBPIXEL);
                     for x in (tx..end_x).step_by(4) {
+                        let raster_start = self.profile_shaders.then(Instant::now);
                         let mut coverage = [0u8; 4];
                         for (sample, offset) in offsets.iter().enumerate().take(positions.len()) {
                             let sample_edges = std::array::from_fn(|i| e[i] + offset[i]);
@@ -353,6 +374,9 @@ impl Renderer {
                                     prepared[lane as usize] = Some(p);
                                 }
                             }
+                        }
+                        if let Some(start) = raster_start {
+                            self.stats.rasterization_time += start.elapsed();
                         }
                         self.stats.shaded += active.count_ones() as u64;
                         let start = (self.profile_shaders && active != 0).then(Instant::now);
@@ -524,6 +548,7 @@ impl Renderer {
                 stencil_pass,
             });
         }
+        let blend_start = self.profile_shaders.then(Instant::now);
         if let Some(color) = output {
             if !color.0.is_finite() {
                 return Err("fragment shader produced a non-finite color".into());
@@ -552,6 +577,9 @@ impl Renderer {
                     self.framebuffer.write_sample_color(index, sample, color);
                 }
             }
+        }
+        if let Some(start) = blend_start {
+            self.stats.blend_write_time += start.elapsed();
         }
         Ok(())
     }
@@ -690,6 +718,10 @@ impl Renderer {
                 self.stats.culled = band.stats.culled;
             }
             self.stats.tiles += band.stats.tiles;
+            self.stats.command_processing_time += band.stats.command_processing_time;
+            self.stats.primitive_setup_time += band.stats.primitive_setup_time;
+            self.stats.rasterization_time += band.stats.rasterization_time;
+            self.stats.blend_write_time += band.stats.blend_write_time;
             self.stats.fragments += band.stats.fragments;
             self.stats.shaded += band.stats.shaded;
             self.stats.early_z_rejected += band.stats.early_z_rejected;
