@@ -37,7 +37,12 @@ seconds), then close it. If the player or a living enemy is in the sector, the
 door reverses and opens again. The ceiling geometry and collision update while
 it moves. Press `E` from the front of E1M1's one-sided special-11 exit line to
 stop gameplay and report `EXITED`; the prototype does not load another map.
-Locked doors and walk-triggered specials remain unsupported.
+Walking across a special-2 line opens each sector with its tag and leaves the
+door open. The release WAD has six such lines for tags 5 and 6, targeting closed
+sectors 77 and 145. Trigger lines activate only after accepted player movement;
+the one-shot special clears once crossed. This follows id Software's
+[`P_CrossSpecialLine` open-door action](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_spec.c).
+Locked doors and other walk-triggered specials remain unsupported.
 
 The combat slice loads four normal-skill enemy types from WAD things and their
 classic `A1`–`D1` walk and `E1`–`G1` attack sprite patches: former humans (20
@@ -110,9 +115,9 @@ that test fixture is not included.
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
 gib states, Doom's detailed actor navigation, other sound events, keys and
-locked doors, walk-triggered specials, level progression after E1M1, other
-weapons and their ammunition, and full weapon animation beyond the brief
-idle/fire pose remain unimplemented.
+locked doors, crossing specials other than special 2, level progression after
+E1M1, other weapons and their ammunition, and full weapon animation beyond the
+brief idle/fire pose remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in
 [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was rendered from
 the unmodified release WAD. The WAD itself is not included. The release archive

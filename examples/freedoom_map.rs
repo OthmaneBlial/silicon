@@ -27,6 +27,7 @@ const ACTOR_IDLE_CYCLE: f32 = 20.0 / 35.0;
 const LINE_TWO_SIDED: u16 = 4;
 const LINE_SOUND_BLOCK: u16 = 64;
 const LINE_DOOR_RAISE: u16 = 1;
+const LINE_WALK_OPEN_DOOR: u16 = 2;
 const LINE_EXIT_USE: u16 = 11;
 const USE_RANGE: f32 = 64.0;
 const DOOR_SPEED: f32 = 70.0;
@@ -58,6 +59,7 @@ struct Sector {
     floor: f32,
     ceiling: f32,
     light: u8,
+    tag: u16,
     floor_flat: [u8; 8],
     ceiling_flat: [u8; 8],
 }
@@ -76,7 +78,7 @@ struct Map {
     vertices: Vec<Vertex2>,
     sectors: Vec<Sector>,
     sides: Vec<SideDef>,
-    lines: Vec<[u16; 6]>, // endpoints, flags, side 0, side 1, special
+    lines: Vec<[u16; 7]>, // endpoints, flags, side 0, side 1, special, tag
     segs: Vec<[u16; 5]>,  // endpoints, linedef, side, texture offset
     subsectors: Vec<[u16; 2]>,
     nodes: Vec<Node>,
@@ -217,6 +219,7 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
                 floor: i16_at(r, 0)? as f32,
                 ceiling: i16_at(r, 2)? as f32,
                 light,
+                tag: u16_at(r, 24)?,
                 floor_flat: r[4..12].try_into().unwrap(),
                 ceiling_flat: r[12..20].try_into().unwrap(),
             })
@@ -235,7 +238,7 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
             })
         })
         .collect::<Result<_, io::Error>>()?;
-    let lines: Vec<[u16; 6]> = records(2, 14)?
+    let lines: Vec<[u16; 7]> = records(2, 14)?
         .into_iter()
         .map(|r| {
             Ok([
@@ -245,6 +248,7 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
                 u16_at(r, 10)?,
                 u16_at(r, 12)?,
                 u16_at(r, 6)?,
+                u16_at(r, 8)?,
             ])
         })
         .collect::<Result<_, io::Error>>()?;
@@ -995,6 +999,7 @@ struct Door {
     top: f32,
     wait: f32,
     direction: i8,
+    auto_close: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1720,7 +1725,7 @@ fn bsp_sector_index_at(map: &Map, x: f32, y: f32) -> Option<u16> {
         .map(|_| sidedef.sector)
 }
 
-fn portal_is_walkable(map: &Map, line: [u16; 6], from: u16, to: u16) -> bool {
+fn portal_is_walkable(map: &Map, line: [u16; 7], from: u16, to: u16) -> bool {
     if line[2] & 1 != 0 || line[4] == u16::MAX {
         return false;
     }
@@ -1735,7 +1740,7 @@ fn portal_is_walkable(map: &Map, line: [u16; 6], from: u16, to: u16) -> bool {
             >= from_sector.floor.max(to_sector.floor) + ACTOR_HEIGHT
 }
 
-fn line_has_walkable_opening(map: &Map, line: [u16; 6]) -> bool {
+fn line_has_walkable_opening(map: &Map, line: [u16; 7]) -> bool {
     if line[2] & 1 != 0 {
         return false;
     }
@@ -1903,7 +1908,29 @@ fn can_occupy(map: &Map, player: Player, from: Sector) -> bool {
     actor_path_clear(map, point, point)
 }
 
-fn move_player(map: &Map, player: &mut Player, controls: Controls, delta: f32) {
+fn crossed_line(map: &Map, from: Vertex2, to: Vertex2, line: [u16; 7]) -> bool {
+    let a = map.vertices[line[0] as usize];
+    let b = map.vertices[line[1] as usize];
+    let side = |point: Vertex2| (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+    let from_side = side(from);
+    let to_side = side(to);
+    if !((from_side < 0.0 && to_side >= 0.0) || (from_side > 0.0 && to_side <= 0.0)) {
+        return false;
+    }
+    ray_segment_distance(
+        from,
+        Vertex2 {
+            x: to.x - from.x,
+            y: to.y - from.y,
+        },
+        a,
+        b,
+    )
+    .is_some_and(|distance| distance <= 1.0)
+}
+
+fn move_player(map: &Map, player: &mut Player, controls: Controls, delta: f32) -> Vec<usize> {
+    let mut crossed = Vec::new();
     player.angle = (player.angle + controls.turn * delta).rem_euclid(360.0);
     let angle = player.angle.to_radians();
     let dx =
@@ -1924,9 +1951,22 @@ fn move_player(map: &Map, player: &mut Player, controls: Controls, delta: f32) {
             candidate.y += amount;
         }
         if can_occupy(map, candidate, from) {
+            let origin = Vertex2 {
+                x: player.x,
+                y: player.y,
+            };
+            let destination = Vertex2 {
+                x: candidate.x,
+                y: candidate.y,
+            };
+            crossed.extend(map.lines.iter().enumerate().filter_map(|(index, &line)| {
+                (line[5] == LINE_WALK_OPEN_DOOR && crossed_line(map, origin, destination, line))
+                    .then_some(index)
+            }));
             *player = candidate;
         }
     }
+    crossed
 }
 
 fn use_line(map: &Map, player: Player) -> Option<(usize, u16)> {
@@ -1990,7 +2030,10 @@ fn manual_door(map: &Map, line_index: usize) -> Option<Door> {
     if line[5] != LINE_DOOR_RAISE || line[4] == u16::MAX {
         return None;
     }
-    let door_sector = map.sides.get(line[4] as usize)?.sector;
+    sector_door(map, map.sides.get(line[4] as usize)?.sector, true)
+}
+
+fn sector_door(map: &Map, door_sector: u16, auto_close: bool) -> Option<Door> {
     let sector = map.sectors.get(door_sector as usize)?;
     let top = map
         .lines
@@ -2013,7 +2056,34 @@ fn manual_door(map: &Map, line_index: usize) -> Option<Door> {
         top,
         wait: DOOR_WAIT,
         direction: 1,
+        auto_close,
     })
+}
+
+fn walk_open_doors(map: &mut Map, line_index: usize, active: &[Door]) -> Vec<Door> {
+    let Some(line) = map.lines.get(line_index).copied() else {
+        return Vec::new();
+    };
+    if line[5] != LINE_WALK_OPEN_DOOR {
+        return Vec::new();
+    }
+    map.lines[line_index][5] = 0;
+    if line[6] == 0 {
+        return Vec::new();
+    }
+    map.sectors
+        .iter()
+        .enumerate()
+        .filter(|(_, sector)| sector.tag == line[6])
+        .filter_map(|(index, _)| {
+            let sector = u16::try_from(index).ok()?;
+            if active.iter().any(|door| door.sector == sector) {
+                None
+            } else {
+                sector_door(map, sector, false)
+            }
+        })
+        .collect()
 }
 
 fn update_doors(
@@ -2058,8 +2128,13 @@ fn update_doors(
         };
         changed |= sector.ceiling != previous;
         if direction > 0 && sector.ceiling >= top {
-            doors[index].direction = 0;
-            doors[index].wait = DOOR_WAIT;
+            if doors[index].auto_close {
+                doors[index].direction = 0;
+                doors[index].wait = DOOR_WAIT;
+            } else {
+                doors.remove(index);
+                continue;
+            }
         } else if direction < 0 && sector.ceiling <= sector.floor {
             doors.remove(index);
             continue;
@@ -2840,7 +2915,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
             let axis = |positive, negative| {
                 (window.is_key_down(positive) as i8 - window.is_key_down(negative) as i8) as f32
             };
-            move_player(
+            let crossed = move_player(
                 &scene.map,
                 &mut player,
                 Controls {
@@ -2857,6 +2932,11 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 },
                 delta,
             );
+            for line in crossed {
+                let started = walk_open_doors(&mut scene.map, line, &doors);
+                opened_doors += started.len();
+                doors.extend(started);
+            }
             if window.is_key_pressed(Key::E, KeyRepeat::No)
                 && let Some((line, special)) = use_line(&scene.map, player)
             {
@@ -3041,7 +3121,7 @@ mod tests {
             vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
             sectors: vec![],
             sides: vec![],
-            lines: vec![[0, 1, 1, u16::MAX, u16::MAX, 0]],
+            lines: vec![[0, 1, 1, u16::MAX, u16::MAX, 0, 0]],
             segs: vec![],
             subsectors: vec![],
             nodes: vec![],
@@ -3210,6 +3290,7 @@ mod tests {
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
+            tag: 0,
         };
         let vertices = billboard_vertices(
             Vertex2 { x: 0.0, y: 0.0 },
@@ -3288,6 +3369,7 @@ mod tests {
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
+            tag: 0,
         };
         let side = |sector| SideDef {
             x_offset: 5,
@@ -3308,7 +3390,7 @@ mod tests {
                 },
             ],
             sides: vec![side(0), side(1)],
-            lines: vec![[0, 1, 4, 0, 1, 0]],
+            lines: vec![[0, 1, 4, 0, 1, 0, 0]],
             segs: vec![[0, 1, 0, 0, 7], [0, 1, 0, 1, 7]],
             subsectors: vec![[1, 0], [1, 1]],
             nodes: vec![],
@@ -3349,6 +3431,7 @@ mod tests {
             light: 255,
             floor_flat: *b"FLOOR0_1",
             ceiling_flat: *b"CEIL1_1\0",
+            tag: 0,
         };
         let raised = Sector {
             floor: 32.0,
@@ -3371,7 +3454,7 @@ mod tests {
             ],
             sectors: vec![sector, raised],
             sides: vec![side(0), side(1)],
-            lines: vec![[0, 1, 1, 0, u16::MAX, 0], [2, 3, 1, 1, u16::MAX, 0]],
+            lines: vec![[0, 1, 1, 0, u16::MAX, 0, 0], [2, 3, 1, 1, u16::MAX, 0, 0]],
             segs: vec![[0, 1, 0, 0, 0], [2, 3, 1, 0, 0]],
             subsectors: vec![[1, 0], [1, 1]],
             nodes: vec![Node {
@@ -3419,7 +3502,7 @@ mod tests {
             y: 64.0,
             angle: 0.0,
         };
-        move_player(
+        let crossed = move_player(
             &map,
             &mut player,
             Controls {
@@ -3430,6 +3513,7 @@ mod tests {
             },
             0.05,
         );
+        assert!(crossed.is_empty());
         assert_eq!(player.x, 80.0);
         assert_eq!(player.angle, 0.5);
 
@@ -3446,6 +3530,7 @@ mod tests {
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
+            tag: 0,
         };
         let side = SideDef {
             x_offset: 0,
@@ -3465,8 +3550,8 @@ mod tests {
             sectors: vec![sector],
             sides: vec![side; 2],
             lines: vec![
-                [0, 1, LINE_TWO_SIDED, 0, 1, 0],
-                [2, 3, 1, 0, u16::MAX, LINE_EXIT_USE],
+                [0, 1, LINE_TWO_SIDED, 0, 1, 0, 0],
+                [2, 3, 1, 0, u16::MAX, LINE_EXIT_USE, 0],
             ],
             segs: vec![[0, 1, 0, 0, 0]],
             subsectors: vec![[1, 0]],
@@ -3507,6 +3592,7 @@ mod tests {
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
+            tag: 0,
         };
         let closed_door = Sector {
             ceiling: 0.0,
@@ -3524,7 +3610,7 @@ mod tests {
             vertices: vec![Vertex2 { x: 0.0, y: -32.0 }, Vertex2 { x: 0.0, y: 32.0 }],
             sectors: vec![sector, closed_door],
             sides: vec![side(0), side(1)],
-            lines: vec![[0, 1, LINE_TWO_SIDED, 0, 1, LINE_DOOR_RAISE]],
+            lines: vec![[0, 1, LINE_TWO_SIDED, 0, 1, LINE_DOOR_RAISE, 0]],
             segs: vec![],
             subsectors: vec![],
             nodes: vec![],
@@ -3584,6 +3670,124 @@ mod tests {
     }
 
     #[test]
+    fn walk_open_door_crossings_are_reported_only_after_valid_movement() {
+        let sector = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+            tag: 0,
+        };
+        let side = SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper: [0; 8],
+            lower: [0; 8],
+            middle: [0; 8],
+            sector: 0,
+        };
+        let mut map = Map {
+            vertices: vec![Vertex2 { x: 4.0, y: -32.0 }, Vertex2 { x: 4.0, y: 32.0 }],
+            sectors: vec![sector],
+            sides: vec![side; 2],
+            lines: vec![[0, 1, LINE_TWO_SIDED, 0, 1, LINE_WALK_OPEN_DOOR, 5]],
+            segs: vec![[0, 1, 0, 0, 0]],
+            subsectors: vec![[1, 0]],
+            nodes: vec![],
+            things: vec![],
+        };
+        let controls = Controls {
+            forward: 1.0,
+            strafe: 0.0,
+            turn: 0.0,
+            speed: 160.0,
+        };
+        let mut player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        assert_eq!(move_player(&map, &mut player, controls, 0.05), vec![0]);
+        assert_eq!(player.x, 8.0);
+
+        map.lines[0][2] = 0;
+        map.lines[0][4] = u16::MAX;
+        player.x = 0.0;
+        assert!(move_player(&map, &mut player, controls, 0.05).is_empty());
+        assert_eq!(player.x, 0.0);
+    }
+
+    #[test]
+    fn walk_open_doors_open_only_the_matching_tag_and_stay_open() {
+        let open = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+            tag: 0,
+        };
+        let side = |sector| SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper: [0; 8],
+            lower: [0; 8],
+            middle: [0; 8],
+            sector,
+        };
+        let mut map = Map {
+            vertices: vec![
+                Vertex2 { x: 0.0, y: -32.0 },
+                Vertex2 { x: 0.0, y: 32.0 },
+                Vertex2 { x: 64.0, y: -32.0 },
+                Vertex2 { x: 64.0, y: 32.0 },
+            ],
+            sectors: vec![
+                open,
+                Sector {
+                    ceiling: 0.0,
+                    tag: 5,
+                    ..open
+                },
+                Sector {
+                    ceiling: 0.0,
+                    tag: 7,
+                    ..open
+                },
+            ],
+            sides: vec![side(0), side(1), side(0), side(2)],
+            lines: vec![
+                [0, 1, LINE_TWO_SIDED, 0, 1, LINE_WALK_OPEN_DOOR, 5],
+                [2, 3, LINE_TWO_SIDED, 2, 3, 0, 0],
+            ],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let mut doors = walk_open_doors(&mut map, 0, &[]);
+        assert_eq!(map.lines[0][5], 0);
+        assert_eq!(doors.len(), 1);
+        assert!(!doors[0].auto_close);
+        assert_eq!(map.sectors[2].ceiling, 0.0);
+        assert!(update_doors(
+            &mut map,
+            &mut doors,
+            Player {
+                x: 200.0,
+                y: 0.0,
+                angle: 0.0,
+            },
+            &[],
+            2.0,
+        ));
+        assert_eq!(map.sectors[1].ceiling, 124.0);
+        assert_eq!(map.sectors[2].ceiling, 0.0);
+        assert!(doors.is_empty());
+    }
+
+    #[test]
     fn enemy_routes_use_open_sector_portals_and_respect_steps_and_clearance() {
         let open = Sector {
             floor: 0.0,
@@ -3591,6 +3795,7 @@ mod tests {
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
+            tag: 0,
         };
         let side = |sector| SideDef {
             x_offset: 0,
@@ -3617,11 +3822,11 @@ mod tests {
             ],
             sides: (0..5).map(side).collect(),
             lines: vec![
-                [0, 1, 0, 0, 1, 0], // sector 0 -> 1
-                [0, 1, 0, 1, 2, 0], // sector 1 -> 2
-                [0, 1, 1, 0, 2, 0], // blocked shortcut
-                [0, 1, 0, 0, 3, 0], // too little actor clearance
-                [0, 1, 0, 0, 4, 0], // step exceeds the limit
+                [0, 1, 0, 0, 1, 0, 0], // sector 0 -> 1
+                [0, 1, 0, 1, 2, 0, 0], // sector 1 -> 2
+                [0, 1, 1, 0, 2, 0, 0], // blocked shortcut
+                [0, 1, 0, 0, 3, 0, 0], // too little actor clearance
+                [0, 1, 0, 0, 4, 0, 0], // step exceeds the limit
             ],
             segs: vec![],
             subsectors: vec![],
@@ -3644,6 +3849,7 @@ mod tests {
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
+            tag: 0,
         };
         let side = |sector| SideDef {
             x_offset: 0,
@@ -3670,10 +3876,10 @@ mod tests {
                 side(4),
             ],
             lines: vec![
-                [0, 1, LINE_TWO_SIDED, 0, 1, 0],
-                [2, 3, LINE_TWO_SIDED | LINE_SOUND_BLOCK, 2, 3, 0],
-                [4, 5, LINE_TWO_SIDED | LINE_SOUND_BLOCK, 4, 5, 0],
-                [6, 7, LINE_TWO_SIDED, 6, 7, 0],
+                [0, 1, LINE_TWO_SIDED, 0, 1, 0, 0],
+                [2, 3, LINE_TWO_SIDED | LINE_SOUND_BLOCK, 2, 3, 0, 0],
+                [4, 5, LINE_TWO_SIDED | LINE_SOUND_BLOCK, 4, 5, 0, 0],
+                [6, 7, LINE_TWO_SIDED, 6, 7, 0, 0],
             ],
             segs: vec![
                 [0, 1, 0, 0, 0],
@@ -3762,6 +3968,7 @@ mod tests {
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
+            tag: 0,
         };
         let side = |sector| SideDef {
             x_offset: 0,
@@ -3783,9 +3990,9 @@ mod tests {
             sectors: vec![sector; 3],
             sides: vec![side(0), side(1), side(1), side(2), side(0)],
             lines: vec![
-                [0, 1, 0, 0, 1, 0],
-                [2, 3, 0, 2, 3, 0],
-                [4, 5, 1, 4, u16::MAX, 0],
+                [0, 1, 0, 0, 1, 0, 0],
+                [2, 3, 0, 2, 3, 0, 0],
+                [4, 5, 1, 4, u16::MAX, 0, 0],
             ],
             segs: vec![[0, 1, 0, 0, 0], [0, 1, 0, 1, 0], [2, 3, 1, 1, 0]],
             subsectors: vec![[1, 0], [1, 1], [1, 2]],
@@ -4088,7 +4295,7 @@ mod tests {
 
         let map = Map {
             vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
-            lines: vec![[0, 1, 1, u16::MAX, u16::MAX, 0]],
+            lines: vec![[0, 1, 1, u16::MAX, u16::MAX, 0, 0]],
             ..map
         };
         assert!(!fire_weapon(&map, &mut actors, player, &mut pain_rng));
@@ -4124,6 +4331,7 @@ mod tests {
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
+            tag: 0,
         };
         let map = Map {
             vertices: vec![
@@ -4145,7 +4353,7 @@ mod tests {
                 middle: [0; 8],
                 sector: 0,
             }],
-            lines: vec![[0, 1, 1, 0, u16::MAX, 0]],
+            lines: vec![[0, 1, 1, 0, u16::MAX, 0, 0]],
             segs: vec![[0, 1, 0, 0, 0]],
             subsectors: vec![[1, 0]],
             nodes: vec![],
@@ -4237,7 +4445,7 @@ mod tests {
             vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
             sectors: vec![],
             sides: vec![],
-            lines: vec![[0, 1, 1, u16::MAX, u16::MAX, 0]],
+            lines: vec![[0, 1, 1, u16::MAX, u16::MAX, 0, 0]],
             segs: vec![],
             subsectors: vec![],
             nodes: vec![],
@@ -4314,6 +4522,7 @@ mod tests {
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
+            tag: 0,
         };
         let raised = Sector {
             floor: 32.0,
@@ -4338,7 +4547,11 @@ mod tests {
             ],
             sectors: vec![sector, raised],
             sides: vec![side(0), side(1)],
-            lines: vec![[0, 1, 0, 0, 1, 0], [2, 3, 0, 1, 0, 0], [4, 5, 1, 0, 1, 0]],
+            lines: vec![
+                [0, 1, 0, 0, 1, 0, 0],
+                [2, 3, 0, 1, 0, 0, 0],
+                [4, 5, 1, 0, 1, 0, 0],
+            ],
             segs: vec![[0, 1, 0, 0, 0], [2, 3, 1, 0, 0]],
             subsectors: vec![[1, 0], [1, 1]],
             nodes: vec![Node {
@@ -4494,7 +4707,7 @@ mod tests {
         );
         assert!(pickups[2].active);
 
-        map.lines.push([0, 1, 1, u16::MAX, u16::MAX, 0]);
+        map.lines.push([0, 1, 1, u16::MAX, u16::MAX, 0, 0]);
         let mut hidden = [Pickup {
             sprite: *b"STIM",
             x: 20.0,
