@@ -32,7 +32,7 @@ stencil and blending generate scene pixels entirely on the CPU.
 
 [Watch the CPU-rendered animation](assets/demos/spirv_showcase.mp4) ·
 [Architecture](docs/architecture.md) · [Pipeline](docs/graphics-pipeline.md) ·
-[Shader VM](docs/sir.md) · [SIMD](docs/simd.md) · [SPIR-V subset](docs/spirv.md) · [Roadmap](docs/roadmap.md)
+[Shader VM](docs/sir.md) · [SIMD](docs/simd.md) · [SPIR-V subset](docs/spirv.md) · [Vulkan-like Rust subset](docs/vulkan-like.md) · [Roadmap](docs/roadmap.md)
 
 ## Run it
 
@@ -62,6 +62,7 @@ cargo run --release --example triangle
 cargo run --release --example textured_cube
 cargo run --release --example stencil
 cargo run --release --example rust_api
+cargo run --release --example vulkan_like
 ```
 
 Requires Rust 1.95.0 (pinned). macOS ARM64 was run locally, including the window.
@@ -91,6 +92,12 @@ smoke test renders and reads back a triangle:
 ```sh
 sh crates/silicon-c-api/scripts/test.sh
 ```
+
+Phase 68 adds a separate Rust-only [Vulkan-like subset](docs/vulkan-like.md)
+with instance/device setup, typed resources, descriptor-like bindings, an
+offscreen render pass and synchronous indexed drawing. `examples/vulkan_like.rs`
+writes `output/vulkan_like_triangle.png`. It is not a Vulkan loader, ABI, or
+conformant implementation.
 
 ## Programmable, observable, reproducible
 
@@ -163,7 +170,7 @@ flowchart LR
 
 | Stage | Implemented |
 | --- | --- |
-| API | Supported Rust API v1 and versioned C ABI v1; synchronous command submission and CPU framebuffer readback |
+| API | Supported Rust API v1, versioned C ABI v1, and Vulkan-like Rust subset; synchronous command submission and CPU framebuffer readback |
 | Memory | Owned typed vertex/index/uniform buffers; reference-counted command lifetimes |
 | Geometry | Indexed/non-indexed triangles, homogeneous six-plane clipping, CW/CCW culling |
 | Raster | Pixel-center top-left coverage, 8-bit subpixel precision, 16×16 tiles |
@@ -222,8 +229,9 @@ PNG and scalar/SIMD/parallel equivalence. Golden changes require an explicit
 
 This is a research software GPU, not a conformant driver. SPIR-V support is
 a narrow graphics subset with acyclic structured selections with a fixed binding contract. **General
-SPIR-V/GLSL compatibility, WGSL, Vulkan/OpenGL compatibility, compute, JIT,
-and games are not implemented.** Do not infer support from the long-term roadmap. MSAA and
+SPIR-V/GLSL compatibility, WGSL, conformant Vulkan/OpenGL drivers, compute, JIT,
+and games are not implemented.** The small Rust Vulkan-like subset is documented
+separately; it is not binary compatible with Vulkan. Do not infer support from the long-term roadmap. MSAA and
 GLSL shadow-map samples are implemented within the documented renderer subset. Multiple color
 attachments and asynchronous queues are also future work.
 
