@@ -1532,6 +1532,7 @@ struct PreparedScene {
     weapon_idle: SpriteTexture,
     weapon_fire: SpriteTexture,
     weapon_recover: SpriteTexture,
+    fist_idle: SpriteTexture,
     fist_fire: SpriteTexture,
     fist_followthrough: SpriteTexture,
     fist_return: SpriteTexture,
@@ -1628,11 +1629,18 @@ enum SpaceWeapon {
     Fist,
 }
 
-fn space_weapon(berserk: bool) -> SpaceWeapon {
-    if berserk {
+fn choose_space_weapon(
+    current: SpaceWeapon,
+    pistol_pressed: bool,
+    fist_pressed: bool,
+    berserk_pickup: bool,
+) -> SpaceWeapon {
+    if pistol_pressed {
+        SpaceWeapon::Pistol
+    } else if fist_pressed || berserk_pickup {
         SpaceWeapon::Fist
     } else {
-        SpaceWeapon::Pistol
+        current
     }
 }
 
@@ -1673,9 +1681,23 @@ fn fist_pose(remaining_tics: f32) -> Option<FistPose> {
 }
 
 #[test]
-fn berserk_selects_fist_for_space() {
-    assert_eq!(space_weapon(false), SpaceWeapon::Pistol);
-    assert_eq!(space_weapon(true), SpaceWeapon::Fist);
+fn weapon_selection_and_berserk_auto_select_are_explicit() {
+    assert_eq!(
+        choose_space_weapon(SpaceWeapon::Pistol, false, false, false),
+        SpaceWeapon::Pistol
+    );
+    assert_eq!(
+        choose_space_weapon(SpaceWeapon::Pistol, false, false, true),
+        SpaceWeapon::Fist
+    );
+    assert_eq!(
+        choose_space_weapon(SpaceWeapon::Fist, true, false, false),
+        SpaceWeapon::Pistol
+    );
+    assert_eq!(
+        choose_space_weapon(SpaceWeapon::Pistol, false, true, false),
+        SpaceWeapon::Fist
+    );
 }
 
 struct WallSection {
@@ -3863,6 +3885,7 @@ impl PreparedScene {
         let weapon_idle = sprite_patch_texture(&data, *b"PISGA0\0\0")?;
         let weapon_fire = sprite_patch_texture(&data, *b"PISGC0\0\0")?;
         let weapon_recover = sprite_patch_texture(&data, *b"PISGB0\0\0")?;
+        let fist_idle = sprite_patch_texture(&data, *b"PUNGA0\0\0")?;
         let fist_fire = sprite_patch_texture(&data, *b"PUNGC0\0\0")?;
         let fist_followthrough = sprite_patch_texture(&data, *b"PUNGD0\0\0")?;
         let fist_return = sprite_patch_texture(&data, *b"PUNGB0\0\0")?;
@@ -3942,6 +3965,7 @@ impl PreparedScene {
             weapon_idle,
             weapon_fire,
             weapon_recover,
+            fist_idle,
             fist_fire,
             fist_followthrough,
             fist_return,
@@ -3973,6 +3997,7 @@ impl PreparedScene {
         actors: &[Actor],
         projectiles: &[Projectile],
         pickups: &[Pickup],
+        selected_weapon: SpaceWeapon,
         weapon_firing_tics: f32,
         fist_firing_tics: f32,
         effects: &PlayerEffects,
@@ -4170,10 +4195,15 @@ impl PreparedScene {
             Some(FistPose::Impact | FistPose::RepeatImpact) => &self.fist_fire,
             Some(FistPose::FollowThrough) => &self.fist_followthrough,
             Some(FistPose::Return) => &self.fist_return,
-            None => match pistol_pose(weapon_firing_tics * DOOM_TICS_PER_SECOND) {
-                Some(PistolPose::Recoil) => &self.weapon_fire,
-                Some(PistolPose::Recover) => &self.weapon_recover,
-                None => &self.weapon_idle,
+            None => match selected_weapon {
+                SpaceWeapon::Fist => &self.fist_idle,
+                SpaceWeapon::Pistol => {
+                    match pistol_pose(weapon_firing_tics * DOOM_TICS_PER_SECOND) {
+                        Some(PistolPose::Recoil) => &self.weapon_fire,
+                        Some(PistolPose::Recover) => &self.weapon_recover,
+                        None => &self.weapon_idle,
+                    }
+                }
             },
         };
         let mut vertices = weapon_vertices(player, weapon, sector);
@@ -4242,6 +4272,7 @@ fn render(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
         &scene.actors,
         &[],
         &scene.pickups,
+        SpaceWeapon::Pistol,
         0.0,
         0.0,
         &effects,
@@ -4332,6 +4363,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     let mut keys = 0;
     let mut armor = Armor::default();
     let mut effects = PlayerEffects::default();
+    let mut selected_weapon = SpaceWeapon::Pistol;
     let mut light_rng = 0x4c49_4748u32;
     let mut sector_lights = spawn_sector_lights(&mut scene.map, &mut light_rng);
     let mut nukage_damage_tics = 0.0;
@@ -4391,6 +4423,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             exited = false;
             secret_exit = false;
             effects.berserk = false;
+            selected_weapon = SpaceWeapon::Pistol;
         }
         let now = std::time::Instant::now();
         let delta = now.duration_since(last).as_secs_f32().min(0.05);
@@ -4481,6 +4514,10 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 }
             }
             if !exited {
+                let berserk_pickups = pickups
+                    .iter()
+                    .filter(|pickup| pickup.active && pickup.effect == PickupEffect::Berserk)
+                    .count();
                 collected += collect_pickups(
                     &scene.map,
                     &mut pickups,
@@ -4491,14 +4528,24 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     &mut armor,
                     &mut effects,
                 );
+                let collected_berserk = pickups
+                    .iter()
+                    .filter(|pickup| pickup.active && pickup.effect == PickupEffect::Berserk)
+                    .count()
+                    < berserk_pickups;
+                selected_weapon = choose_space_weapon(
+                    selected_weapon,
+                    window.is_key_pressed(Key::Key1, KeyRepeat::No),
+                    window.is_key_pressed(Key::Key2, KeyRepeat::No),
+                    collected_berserk,
+                );
                 shot_cooldown = (shot_cooldown - delta).max(0.0);
                 weapon_flash = (weapon_flash - delta).max(0.0);
                 punch_cooldown = (punch_cooldown - delta).max(0.0);
                 punch_flash = (punch_flash - delta).max(0.0);
                 let space_down = window.is_key_down(Key::Space);
-                let selected_space_weapon = space_weapon(effects.berserk);
                 if space_down
-                    && selected_space_weapon == SpaceWeapon::Pistol
+                    && selected_weapon == SpaceWeapon::Pistol
                     && shot_cooldown == 0.0
                     && ammo > 0
                 {
@@ -4513,7 +4560,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     ));
                 }
                 if (window.is_key_down(Key::Q)
-                    || (space_down && selected_space_weapon == SpaceWeapon::Fist))
+                    || (space_down && selected_weapon == SpaceWeapon::Fist))
                     && punch_cooldown == 0.0
                 {
                     punch_cooldown = 22.0 / DOOM_TICS_PER_SECOND;
@@ -4572,6 +4619,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             &actors,
             &projectiles,
             &pickups,
+            selected_weapon,
             weapon_flash,
             punch_flash,
             &effects,
@@ -4588,14 +4636,14 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
         } else {
             "PLAYING"
         };
-        let space_action = match space_weapon(effects.berserk) {
+        let space_action = match selected_weapon {
             SpaceWeapon::Pistol => "fire",
             SpaceWeapon::Fist => "punch",
         };
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks).len();
         window.set_title(&format!(
-            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space {space_action}, Q punch, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | invis {:.0}s | visor {:.0}s | berserk {} | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | {} {state} | WASD move, arrows turn, Shift run, 1 pistol, 2 fist, Space {space_action}, Q punch, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | invis {:.0}s | visor {:.0}s | berserk {} | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.map_name,
             armor.points,
             armor.class,

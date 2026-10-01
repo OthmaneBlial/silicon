@@ -175,7 +175,7 @@ armor bonuses. The map loader also renders and collects matching red, yellow,
 and blue keycards and skulls, plus radiation suits on maps that contain them.
 BSP child bounds cull the
 horizontal view cone, and per-mesh bounds test all six frustum planes.
-The checked-in start view submits 5,711 triangles across 259 draws in 570 of
+The checked-in start view submits 5,713 triangles across 260 draws in 570 of
 682 horizontal BSP leaves. The armor items do not appear in the captured pixels.
 `F_SKY1` surfaces use the map's WAD sky texture.
 View-visible map meshes are grouped by material inside coarse depth bands so

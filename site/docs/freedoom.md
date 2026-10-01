@@ -42,9 +42,10 @@ draws and 804 of 1,104 horizontal leaves. The sky texture fills the previously
 clear opening near the right edge. Visual completeness beyond E1M2 remains in
 progress. The first command writes
 `output/freedoom_map.png`. The interactive view uses
-WASD to move and strafe, arrow keys to turn, Shift to run, Space to fire (or
-punch while berserk), `Q` to punch at any time, `E` to open ordinary doors,
-operate manual lifts, or use the exit,
+WASD to move and strafe, arrow keys to turn, Shift to run, `1` for the pistol,
+and `2` for the fist. Space attacks with the selected weapon; a berserk pack
+automatically selects the fist. `Q` always punches. Press `E` to open ordinary
+doors, operate manual lifts, or use the exit,
 and Escape to exit. Every frame submits the scene again through SILICON;
 movement stays inside
 a BSP-leaf floor, keeps a 16-unit margin from one-sided or explicitly blocking
@@ -155,8 +156,12 @@ species-specific death patches. Moving enemies cycle their walk frames, play
 three-frame attack poses and non-gib death sequences, and choose among eight
 camera-relative views using Doom's state durations; killed enemies remain as
 their final corpse frame. Paired Freedoom patches are horizontally flipped
-where Doom does so. Cutout billboards use a SILICON fragment shader. Space
-fires a seeded 5, 10, or 15-damage hitscan with a 0.35-second cooldown; holding it repeats shots when ready, and pistol ammo caps at 200. Damage follows id Software's [`P_GunShot`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c).
+where Doom does so. Cutout billboards use a SILICON fragment shader. With the
+pistol selected, Space fires a seeded 5, 10, or 15-damage hitscan with a
+0.35-second cooldown; holding it repeats shots when ready, and pistol ammo caps
+at 200. Damage follows id Software's [`P_GunShot`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c).
+Press `1` for the pistol or `2` for the fist. A berserk pack selects the fist,
+but you can switch back to the pistol. With the fist selected, Space punches.
 Press or hold `Q` for a fist punch with a 22-tic (about 0.63-second) cooldown,
 no ammo cost, and Doom's randomized 2–20 damage; holding repeats punches when
 ready. This held-attack behavior follows Doom's [`A_ReFire`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c)
@@ -229,7 +234,7 @@ bands reach the depth test first. This can reject hidden fragments before the
 fragment shader runs, while preserving the framebuffer; it does not implement
 Doom's BSP wall occlusion or per-column portal clipping. At the checked-in
 960×720 start view, 570 of 682 subsectors remain in the horizontal BSP view and
-SILICON submits 5,711 triangles across 259 draws. The checked-in camera view
+SILICON submits 5,713 triangles across 260 draws. The checked-in camera view
 contains 59 visible pickup billboards: nine health/ammo items, 30 health
 bonuses, one blue card, one green armor, and 18 armor bonuses; the armor items
 do not appear in that capture.
@@ -253,9 +258,9 @@ gib states, Doom's detailed actor navigation, other sound events, other
 power-up effects beyond health bonuses, soul spheres, radiation suits,
 invulnerability spheres, partial-invisibility spheres, and light-amplification
 visors, locked-door action variants, crossing specials other than 2 and 88,
-other use specials, episode finales, weapon switching, weapons beyond the pistol
-and fist and their ammunition, and complete weapon state sequences beyond the
-implemented pistol and fist poses remain unimplemented.
+other use specials, episode finales, weapons beyond the pistol and fist and
+their ammunition, and complete weapon state sequences beyond the implemented
+pistol and fist poses remain unimplemented.
 `F_SKY1` ceilings use the map's episode sky texture, sampled by view angle. The
 checked-in [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was
 rendered from the unmodified release WAD. The WAD itself is not included. The release archive
