@@ -145,8 +145,9 @@ Phase 70 renders Freedoom E1M1 geometry, textures, all 29 normal-skill enemy
 sprites, nine health/ammo pickups, the blue keycard, and the pistol through
 SILICON. BSP child bounds cull the horizontal view cone, and per-mesh bounds
 test all six frustum planes.
-The checked-in start view submits 5,549 triangles across 209 draws: 5,509 map
-triangles, 29 enemy billboards, ten pickup billboards, and one weapon billboard.
+The checked-in start view submits 5,613 triangles across 210 draws: 5,509 map
+triangles, 64 episode-sky triangles, 29 enemy billboards, ten pickup billboards,
+and one weapon billboard. `F_SKY1` surfaces use the map's WAD sky texture.
 View-visible map meshes are grouped by material inside coarse depth bands so
 nearer ranges reach the depth test first. BSP cells are split at sector
 boundaries before validated pieces fill flat geometry. Leaf mesh bounds restore

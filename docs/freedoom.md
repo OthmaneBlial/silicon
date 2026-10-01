@@ -35,10 +35,10 @@ within the current episode when the next marker exists, matching id Software's
 Health, ammo, and keys carry forward while map-local counters reset.
 Episode-ending map exits stop at `EXITED` because the prototype has no finale.
 Secret-map routing remains unsupported. The E1M2 capture below records the
-sector-clipped BSP-cell pass: 7,861 triangles across 296 draws and 804 of 1,104
-horizontal leaves. It fills most of the previous lower-floor gaps, though a
-small clear-color opening remains near the right edge. Visual completeness
-beyond E1M2 remains in progress. The first command writes
+sector-clipped BSP-cell pass with its episode sky: 7,925 triangles across 297
+draws and 804 of 1,104 horizontal leaves. The sky texture fills the previously
+clear opening near the right edge. Visual completeness beyond E1M2 remains in
+progress. The first command writes
 `output/freedoom_map.png`. The interactive view uses
 WASD to move and strafe, arrow keys to turn, Shift to run, Space to fire, `E`
 to open ordinary doors, operate manual lifts, or use the exit, and Escape to
@@ -163,9 +163,10 @@ bands reach the depth test first. This can reject hidden fragments before the
 fragment shader runs, while preserving the framebuffer; it does not implement
 Doom's BSP wall occlusion or per-column portal clipping. At the checked-in
 960×720 start view, 570 of 682 subsectors remain in the horizontal BSP view and
-SILICON submits 5,549 triangles across 209 draws, including the newly rendered
-masked middle textures. Five release renders on Apple M2 measured median process
-CPU time of 0.68 s. The earlier depth-band comparison measured 0.62 s against
+SILICON submits 5,613 triangles across 210 draws: 5,509 map triangles, 64 sky
+triangles, 29 enemy billboards, ten pickup billboards, and one weapon billboard.
+Five release renders on Apple M2 measured a median process CPU time of 0.68 s.
+The earlier depth-band comparison measured 0.62 s against
 0.69 s at its predecessor. This fixed-pose measurement is not an engine-wide
 benchmark. Earlier opaque-only counts were
 3,896 triangles and 164 draws for this view. The screenshot shows the player
@@ -179,16 +180,16 @@ gib states, Doom's detailed actor navigation, other sound events, other key
 colors and locked-door types, crossing specials other than 2 and 88, other use
 specials, level progression after E1M1, other weapons and their ammunition, and full weapon
 animation beyond the brief idle/fire pose remain unimplemented.
-`F_SKY1` ceilings show the clear color. The checked-in
-[`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was rendered from
-the unmodified release WAD. The WAD itself is not included. The release archive
+`F_SKY1` ceilings use the map's episode sky texture, sampled by view angle. The
+checked-in [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was
+rendered from the unmodified release WAD. The WAD itself is not included. The release archive
 checksum is SHA-256 `3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59`.
 
 ![Freedoom former-human enemy and pistol billboards rendered through SILICON](../assets/screenshots/freedoom_e1m1_enemy.png)
 
-![Freedoom E1M2 start view rendered through SILICON, with a small clear-color gap](../assets/screenshots/freedoom_e1m2.png)
+![Freedoom E1M2 start view rendered through SILICON with the episode sky texture](../assets/screenshots/freedoom_e1m2.png)
 
-*E1M2 capture after splitting BSP cells at sector boundaries; most lower-floor gaps are filled, with one small clear-color opening remaining.*
+*E1M2 capture after splitting BSP cells at sector boundaries and adding the WAD sky texture.*
 
 *Sprite verification view from the same WAD with only the player start moved into the enemy corridor; the temporary WAD is not included.*
 
