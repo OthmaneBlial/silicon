@@ -13,6 +13,44 @@ const MAX_SHARED_VERTEX_CACHE_BYTES: usize = 16 * 1024 * 1024;
 const SAMPLE_2X: [(i64, i64); 2] = [(64, 64), (192, 192)];
 const SAMPLE_4X: [(i64, i64); 4] = [(96, 32), (224, 96), (32, 160), (160, 224)];
 type ColorOutputs = [Option<Color>; MAX_COLOR_ATTACHMENTS];
+fn same_vertex_inputs(a: &[Vertex], b: &[Vertex]) -> bool {
+    fn same_vertex(a: Vertex, b: Vertex) -> bool {
+        let a = [
+            a.position.x,
+            a.position.y,
+            a.position.z,
+            a.normal.x,
+            a.normal.y,
+            a.normal.z,
+            a.uv.x,
+            a.uv.y,
+            a.color.x,
+            a.color.y,
+            a.color.z,
+            a.color.w,
+        ];
+        let b = [
+            b.position.x,
+            b.position.y,
+            b.position.z,
+            b.normal.x,
+            b.normal.y,
+            b.normal.z,
+            b.uv.x,
+            b.uv.y,
+            b.color.x,
+            b.color.y,
+            b.color.z,
+            b.color.w,
+        ];
+        a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
+    }
+    a.len() == b.len()
+        && a.iter()
+            .copied()
+            .zip(b.iter().copied())
+            .all(|(a, b)| same_vertex(a, b))
+}
 struct SharedVertexEntry {
     vertices: Vec<Vertex>,
     indices: Option<Vec<u32>>,
@@ -41,7 +79,7 @@ impl SharedVertexCache {
         let mut entries = self.0.lock().map_err(|_| "shared vertex cache poisoned")?;
         entries.entries.resize_with(draw + 1, || None);
         if let Some(entry) = &entries.entries[draw] {
-            if entry.vertices.as_slice() != vertices
+            if !same_vertex_inputs(&entry.vertices, vertices)
                 || entry.indices.as_deref() != indices
                 || entry.pipeline != pipeline
             {
@@ -1088,5 +1126,38 @@ mod shared_vertex_cache_tests {
             assert_eq!(transformed.len(), count);
         }
         assert_eq!(cache.0.lock().unwrap().bytes, 0);
+    }
+
+    #[test]
+    fn cache_key_distinguishes_signed_zero_and_reuses_identical_nan_bits() {
+        let cache = SharedVertexCache::default();
+        let mut vertex = Vertex::new(Vec3::ZERO, Color::BLACK);
+        vertex.position.x = -0.0;
+        let (_, computed) = cache
+            .get_or_compute(0, &[vertex], None, Pipeline::default(), || Ok(Vec::new()))
+            .unwrap();
+        assert!(computed);
+
+        let mut different_zero = vertex;
+        different_zero.position.x = 0.0;
+        assert!(
+            cache
+                .get_or_compute(0, &[different_zero], None, Pipeline::default(), || Ok(
+                    Vec::new()
+                ))
+                .is_err()
+        );
+
+        let mut nan = vertex;
+        nan.position.x = f32::from_bits(0x7fc0_1234);
+        let (value, computed) = cache
+            .get_or_compute(1, &[nan], None, Pipeline::default(), || Ok(Vec::new()))
+            .unwrap();
+        drop(value);
+        assert!(computed);
+        let (_, computed) = cache
+            .get_or_compute(1, &[nan], None, Pipeline::default(), || Ok(Vec::new()))
+            .unwrap();
+        assert!(!computed);
     }
 }
