@@ -4495,9 +4495,9 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 weapon_flash = (weapon_flash - delta).max(0.0);
                 punch_cooldown = (punch_cooldown - delta).max(0.0);
                 punch_flash = (punch_flash - delta).max(0.0);
-                let space_pressed = window.is_key_pressed(Key::Space, KeyRepeat::No);
+                let space_down = window.is_key_down(Key::Space);
                 let selected_space_weapon = space_weapon(effects.berserk);
-                if space_pressed
+                if space_down
                     && selected_space_weapon == SpaceWeapon::Pistol
                     && shot_cooldown == 0.0
                     && ammo > 0
@@ -4512,8 +4512,8 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                         &mut gameplay_rng,
                     ));
                 }
-                if (window.is_key_pressed(Key::Q, KeyRepeat::No)
-                    || (space_pressed && selected_space_weapon == SpaceWeapon::Fist))
+                if (window.is_key_down(Key::Q)
+                    || (space_down && selected_space_weapon == SpaceWeapon::Fist))
                     && punch_cooldown == 0.0
                 {
                     punch_cooldown = 22.0 / DOOM_TICS_PER_SECOND;

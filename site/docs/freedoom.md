@@ -156,9 +156,12 @@ three-frame attack poses and non-gib death sequences, and choose among eight
 camera-relative views using Doom's state durations; killed enemies remain as
 their final corpse frame. Paired Freedoom patches are horizontally flipped
 where Doom does so. Cutout billboards use a SILICON fragment shader. Space
-fires a seeded 5, 10, or 15-damage hitscan with a 0.35-second cooldown; pistol ammo caps at 200. Damage follows id Software's [`P_GunShot`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c).
-Press `Q` for a fist punch with a 22-tic (about 0.63-second) cooldown, no ammo cost,
-and Doom's randomized 2–20 damage. It hits the nearest living enemy whose
+fires a seeded 5, 10, or 15-damage hitscan with a 0.35-second cooldown; holding it repeats shots when ready, and pistol ammo caps at 200. Damage follows id Software's [`P_GunShot`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c).
+Press or hold `Q` for a fist punch with a 22-tic (about 0.63-second) cooldown,
+no ammo cost, and Doom's randomized 2–20 damage; holding repeats punches when
+ready. This held-attack behavior follows Doom's [`A_ReFire`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c)
+and pistol/fist state sequences in [`info.c`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/info.c).
+It hits the nearest living enemy whose
 16-unit radius intersects the forward trace within 64 units, unless a blocking
 line comes first. The hit is immediate; PUNGC0, PUNGD0, PUNGC0, and PUNGB0
 play afterward for 4, 5, 4, and 5 Doom tics. The startup frame is omitted; the
