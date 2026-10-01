@@ -46,7 +46,10 @@ most once every 0.85 seconds. Former humans fire 3-damage hitscan attacks and
 shotgunners fire 6-damage hitscan attacks within 512 units, at most once every
 1.4 seconds and only with clear sight past blocking lines. Damage and projectile
 launch happen as soon as the cooldown expires; the pose plays afterward, with
-no attack windup or aim spread. The window title
+no attack windup or aim spread. A surviving pistol hit briefly shows the Doom
+pain sprite for four tics on imps and demons or six tics on former humans and
+shotgunners; this prototype triggers it on every surviving hit instead of
+rolling Doom's pain chance. The window title
 reports health, ammo, pickups, kills, draw calls, and triangles. Imps launch a
 3D straight BAL1A0 fireball aimed at the player's body midpoint within 512
 units when they have clear sight. It travels at 180 units per second, lasts up
@@ -81,7 +84,7 @@ that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
-idle/pain/gib states, keys, exits, other weapons and
+idle/gib states, keys, exits, other weapons and
 their ammunition, full weapon animation beyond the brief idle/fire pose, and
 sound remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in

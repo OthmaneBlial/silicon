@@ -779,6 +779,24 @@ fn actor_attack_frame(sprite: [u8; 4], remaining: f32) -> Option<usize> {
     None
 }
 
+fn actor_pain_profile(sprite: [u8; 4]) -> Option<(usize, f32)> {
+    match &sprite {
+        b"TROO" | b"SARG" => Some((7, 4.0)),
+        b"POSS" | b"SPOS" => Some((6, 6.0)),
+        _ => None,
+    }
+}
+
+fn actor_pain_duration(sprite: [u8; 4]) -> f32 {
+    actor_pain_profile(sprite).map_or(0.0, |(_, tics)| tics / 35.0)
+}
+
+fn actor_pain_frame(sprite: [u8; 4], remaining: f32) -> Option<usize> {
+    actor_pain_profile(sprite)
+        .filter(|_| remaining > 0.0)
+        .map(|(frame, _)| frame)
+}
+
 fn actor_death_profile(sprite: [u8; 4]) -> Option<(&'static [usize], &'static [f32])> {
     match &sprite {
         b"TROO" => Some((&[8, 9, 10, 11, 12], &[8.0, 8.0, 6.0, 6.0])),
@@ -994,6 +1012,7 @@ struct Actor {
     health: i32,
     attack_cooldown: f32,
     attack_animation_remaining: f32,
+    pain_animation_remaining: f32,
     death_animation_time: Option<f32>,
     animation_time: f32,
     angle: f32,
@@ -1736,9 +1755,11 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player) -> bool {
     if let Some(index) = target {
         actors[index].health -= 20;
         if actors[index].health <= 0 {
+            actors[index].pain_animation_remaining = 0.0;
             actors[index].death_animation_time = Some(0.0);
             true
         } else {
+            actors[index].pain_animation_remaining = actor_pain_duration(actors[index].sprite);
             false
         }
     } else {
@@ -1763,6 +1784,10 @@ fn update_actors(
             continue;
         }
         actor.attack_animation_remaining = (actor.attack_animation_remaining - delta).max(0.0);
+        actor.pain_animation_remaining = (actor.pain_animation_remaining - delta).max(0.0);
+        if actor.pain_animation_remaining > 0.0 {
+            continue;
+        }
         if *health <= 0 {
             continue;
         }
@@ -1999,6 +2024,7 @@ impl PreparedScene {
                     health,
                     attack_cooldown: 0.0,
                     attack_animation_remaining: 0.0,
+                    pain_animation_remaining: 0.0,
                     death_animation_time: None,
                     animation_time: 0.0,
                     angle: thing_angle as f32,
@@ -2193,7 +2219,8 @@ impl PreparedScene {
                 actor_death_frame(actor.sprite, actor.death_animation_time.unwrap_or_default())
                     .unwrap_or(0)
             } else {
-                actor_attack_frame(actor.sprite, actor.attack_animation_remaining)
+                actor_pain_frame(actor.sprite, actor.pain_animation_remaining)
+                    .or_else(|| actor_attack_frame(actor.sprite, actor.attack_animation_remaining))
                     .unwrap_or_else(|| actor_walk_frame(actor.sprite, actor.animation_time))
             };
             let sprite = &frames[frame][actor_view_rotation(actor.angle, view_to_actor)];
@@ -2946,6 +2973,7 @@ mod tests {
             health: 20,
             attack_cooldown: 0.0,
             attack_animation_remaining: 0.0,
+            pain_animation_remaining: 0.0,
             death_animation_time: None,
             animation_time: 0.0,
             angle: 0.0,
@@ -2965,6 +2993,27 @@ mod tests {
             nodes: vec![],
             things: vec![],
         };
+        let mut wounded = actors;
+        wounded[0].health = 60;
+        assert!(!fire_weapon(&map, &mut wounded, player));
+        assert_eq!(wounded[0].health, 40);
+        assert_eq!(
+            wounded[0].pain_animation_remaining,
+            actor_pain_duration(*b"TROO")
+        );
+        let mut projectiles = Vec::new();
+        let mut health = 100;
+        update_actors(
+            &map,
+            &mut wounded,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.05,
+        );
+        assert!((wounded[0].pain_animation_remaining - (4.0 / 35.0 - 0.05)).abs() < 0.0001);
+        assert_eq!(wounded[0].x, 100.0);
+
         assert!(fire_weapon(&map, &mut actors, player));
         assert_eq!(actors[0].health, 0);
         assert_eq!(actors[0].death_animation_time, Some(0.0));
@@ -3014,6 +3063,22 @@ mod tests {
     }
 
     #[test]
+    fn enemy_pain_poses_match_doom_sprite_frames_and_tics() {
+        for (sprite, frame, tics) in [
+            (*b"TROO", 7, 4.0),
+            (*b"SARG", 7, 4.0),
+            (*b"POSS", 6, 6.0),
+            (*b"SPOS", 6, 6.0),
+        ] {
+            let duration = tics / 35.0;
+            assert_eq!(actor_pain_duration(sprite), duration);
+            assert_eq!(actor_pain_frame(sprite, duration), Some(frame));
+            assert_eq!(actor_pain_frame(sprite, 0.0), None);
+        }
+        assert_eq!(actor_pain_duration(*b"none"), 0.0);
+    }
+
+    #[test]
     fn enemies_chase_and_melee_on_a_cooldown() {
         let sector = Sector {
             floor: 0.0,
@@ -3055,6 +3120,7 @@ mod tests {
             health: 60,
             attack_cooldown: 0.0,
             attack_animation_remaining: 0.0,
+            pain_animation_remaining: 0.0,
             death_animation_time: None,
             animation_time: 0.0,
             angle: 0.0,
@@ -3145,6 +3211,7 @@ mod tests {
             health: 20,
             attack_cooldown: 0.0,
             attack_animation_remaining: 0.0,
+            pain_animation_remaining: 0.0,
             death_animation_time: None,
             animation_time: 0.0,
             angle: 0.0,
@@ -3251,6 +3318,7 @@ mod tests {
             health: 60,
             attack_cooldown: 0.0,
             attack_animation_remaining: 0.0,
+            pain_animation_remaining: 0.0,
             death_animation_time: None,
             animation_time: 0.0,
             angle: 0.0,
