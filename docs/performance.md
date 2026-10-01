@@ -315,6 +315,15 @@ shared desktop. Its executable SHA-256 is `a586469ce1ff05f773d59caca396631dbb511
 the release archive contains that exact binary. These results exclude presentation
 and PNG encoding, and do not demonstrate a speedup over the earlier noisy run.
 
+## Synthetic raster workloads
+
+`tile_stress` creates a screen-sized grid of small triangles to exercise
+primitive setup and tile binning with a minimal shader. `overdraw` submits 128
+front-to-back full-screen quads (256 triangles) to measure depth rejection.
+Both are included in `benchmarks/run.py` and can also be run individually with
+`silicon benchmark tile_stress` or `silicon benchmark overdraw`. They isolate
+raster workloads; they are not substitutes for the textured showcase scenes.
+
 ## Reproduce
 
 ```sh

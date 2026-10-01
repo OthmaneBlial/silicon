@@ -10,6 +10,88 @@ pub struct Material {
     pub emission: f32,
     pub normal_map_strength: f32,
 }
+const TILE_STRESS_CELL: u32 = 16;
+const OVERDRAW_LAYERS: usize = 128;
+
+fn benchmark_vertex(v: &Vertex) -> VertexOutput {
+    VertexOutput {
+        position: v.position.extend(1.),
+        varyings: [v.color, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO],
+    }
+}
+
+fn benchmark_fragment(f: &Fragment) -> Option<Color> {
+    Some(f.color())
+}
+
+fn tile_stress(r: &mut Renderer) -> Result<()> {
+    r.clear(Color::new(0.02, 0.03, 0.05, 1.));
+    let (width, height) = r.surface_size();
+    let columns = (width / TILE_STRESS_CELL).clamp(1, 128);
+    let rows = (height / TILE_STRESS_CELL).clamp(1, 96);
+    let triangle_count = (columns as usize)
+        .checked_mul(rows as usize)
+        .ok_or("tile stress triangle count overflow")?;
+    let mut vertices = Vec::new();
+    vertices
+        .try_reserve_exact(triangle_count * 3)
+        .map_err(|_| "could not allocate tile stress vertices")?;
+    for y in 0..rows {
+        for x in 0..columns {
+            let left = (x as f32 + 0.1) / columns as f32 * 2. - 1.;
+            let right = (x as f32 + 0.9) / columns as f32 * 2. - 1.;
+            let bottom = (y as f32 + 0.1) / rows as f32 * 2. - 1.;
+            let top = (y as f32 + 0.9) / rows as f32 * 2. - 1.;
+            let hue = (x.wrapping_mul(17).wrapping_add(y.wrapping_mul(31)) % 101) as f32 / 100.;
+            let color = Color::new(0.2 + hue * 0.8, 0.75 - hue * 0.5, 0.95 - hue * 0.65, 1.);
+            vertices.extend([
+                Vertex::new(Vec3::new(left, bottom, 0.5), color),
+                Vertex::new(Vec3::new(right, bottom, 0.5), color),
+                Vertex::new(Vec3::new(left, top, 0.5), color),
+            ]);
+        }
+    }
+    r.draw(
+        &vertices,
+        None,
+        Pipeline {
+            depth_compare: Compare::Always,
+            depth_write: false,
+            ..Default::default()
+        },
+        benchmark_vertex,
+        benchmark_fragment,
+    )
+}
+
+fn overdraw(r: &mut Renderer) -> Result<()> {
+    r.clear(Color::new(0.02, 0.03, 0.05, 1.));
+    let mut vertices = Vec::with_capacity(OVERDRAW_LAYERS * 6);
+    for layer in 0..OVERDRAW_LAYERS {
+        let depth = 0.05 + layer as f32 / OVERDRAW_LAYERS as f32 * 0.9;
+        let color = if layer == 0 {
+            Color::new(0.95, 0.12, 0.08, 1.)
+        } else {
+            Color::new(0.1, 0.2, 0.9, 1.)
+        };
+        vertices.extend([
+            Vertex::new(Vec3::new(-1., -1., depth), color),
+            Vertex::new(Vec3::new(1., -1., depth), color),
+            Vertex::new(Vec3::new(-1., 1., depth), color),
+            Vertex::new(Vec3::new(1., -1., depth), color),
+            Vertex::new(Vec3::new(1., 1., depth), color),
+            Vertex::new(Vec3::new(-1., 1., depth), color),
+        ]);
+    }
+    r.draw(
+        &vertices,
+        None,
+        Pipeline::default(),
+        benchmark_vertex,
+        benchmark_fragment,
+    )
+}
+
 impl Material {
     pub fn matte(color: Color) -> Self {
         Self {
@@ -33,6 +115,12 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
     }
     if name == "anisotropy_showcase" {
         return anisotropy_showcase(r);
+    }
+    if name == "tile_stress" {
+        return tile_stress(r);
+    }
+    if name == "overdraw" {
+        return overdraw(r);
     }
     if name == "shadow_showcase" {
         let (width, height) = r.surface_size();

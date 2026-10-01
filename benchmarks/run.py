@@ -5,7 +5,7 @@ from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--frames',type=int,default=30);p.add_argument('--output',default='output/benchmarks.json');a=p.parse_args()
 subprocess.run(['cargo','build','--release','-p','silicon-cli'],check=True)
 results=[]
-for scene in ('textured_cube','shader_cube','spirv_cube','showcase','spirv_showcase'):
+for scene in ('textured_cube','shader_cube','spirv_cube','showcase','spirv_showcase','tile_stress','overdraw'):
     for backend,threads in [('scalar',1),('simd',1),('scalar',2),('scalar',4),('simd',4)]:
         command=['target/release/silicon','benchmark',scene,'--frames',str(a.frames),'--backend',backend,'--threads',str(threads)]
         run=subprocess.run(command,check=True,text=True,capture_output=True)
