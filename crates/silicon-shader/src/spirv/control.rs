@@ -103,6 +103,11 @@ impl Compiler<'_> {
         Ok(())
     }
     fn check_return(&self) -> Result<()> {
+        if self.stage == Stage::Compute {
+            return self.written.contains(&0).then_some(()).ok_or_else(|| {
+                "compute return must write its storage output on every live path".into()
+            });
+        }
         if !self.written.contains(&0) {
             return Err(
                 "Return must write Position (vertex) or location 0 (fragment) on every live path"
@@ -254,6 +259,7 @@ impl Compiler<'_> {
                     | 79..=83
                     | 87
                     | 88
+                    | 112
                     | 127
                     | 129
                     | 131

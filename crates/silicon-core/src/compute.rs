@@ -74,6 +74,8 @@ pub struct ComputePipeline {
     program: Program,
     local_size: [u32; 3],
     shared_memory_vec4s: usize,
+    storage_input_count: Option<usize>,
+    storage_only: bool,
 }
 
 impl ComputePipeline {
@@ -107,6 +109,22 @@ impl Device {
         local_size: [u32; 3],
     ) -> Result<ComputePipeline> {
         self.create_compute_pipeline_with_shared_memory(program, local_size, 0)
+    }
+
+    /// Translate the supported compute SPIR-V subset into the existing SIR dispatcher.
+    pub fn create_compute_pipeline_from_spirv(&self, bytes: &[u8]) -> Result<ComputePipeline> {
+        let compiled = silicon_shader::spirv::Module::parse(bytes)?.translate()?;
+        if compiled.stage != silicon_shader::spirv::Stage::Compute {
+            return Err("compute pipeline requires a Compute SPIR-V entry point".into());
+        }
+        let input_count = usize::from(compiled.storage_input_count);
+        if input_count > MAX_INPUT_BUFFERS {
+            return Err("compute SPIR-V supports at most 12 input storage buffers".into());
+        }
+        let mut pipeline = self.create_compute_pipeline(compiled.program, compiled.local_size)?;
+        pipeline.storage_input_count = Some(input_count);
+        pipeline.storage_only = true;
+        Ok(pipeline)
     }
 
     /// Create a pipeline with zero-initialized per-workgroup vec4 memory.
@@ -169,6 +187,8 @@ impl Device {
             program,
             local_size,
             shared_memory_vec4s,
+            storage_input_count: None,
+            storage_only: false,
         })
     }
 
@@ -307,7 +327,13 @@ impl Device {
                 }
             }
         }
-        commit_results(output, output_layout, &results, stores)?;
+        commit_results(
+            output,
+            output_layout,
+            &results,
+            stores,
+            !pipeline.storage_only,
+        )?;
         Ok(stats)
     }
 
@@ -470,7 +496,13 @@ impl Device {
             *result = value;
             stats.instructions += instructions;
         }
-        commit_results(output, output_layout, &results, stores)?;
+        commit_results(
+            output,
+            output_layout,
+            &results,
+            stores,
+            !pipeline.storage_only,
+        )?;
         Ok(stats)
     }
 }
@@ -622,7 +654,13 @@ fn dispatch_workgroups_scalar(
             }
         }
     }
-    commit_results(output, output_layout, &results, stores)?;
+    commit_results(
+        output,
+        output_layout,
+        &results,
+        stores,
+        !pipeline.storage_only,
+    )?;
     for (buffer, atomic) in atomic_buffers.iter_mut().zip(&atomic_storage) {
         atomic.commit_into(buffer);
     }
@@ -644,6 +682,15 @@ fn dispatch_shape(
     output: &StorageBuffer,
     output_layout: StorageLayout,
 ) -> Result<Option<DispatchShape>> {
+    if let Some(count) = pipeline.storage_input_count
+        && count != inputs.len()
+    {
+        return Err(format!(
+            "compute SPIR-V requires exactly {} input storage buffers",
+            count
+        )
+        .into());
+    }
     if inputs.len() > MAX_INPUT_BUFFERS {
         return Err("compute dispatch accepts at most 12 input buffers".into());
     }
@@ -684,12 +731,14 @@ fn dispatch_shape(
         .filter(|&count| count <= MAX_DISPATCH_INVOCATIONS)
         .ok_or("compute dispatch exceeds 1048576 invocations")?;
     let global_size = std::array::from_fn(|i| workgroups[i] * pipeline.local_size[i]);
-    for (slot, (buffer, layout)) in inputs.iter().zip(input_layouts).enumerate() {
-        validate_storage_range(layout, invocations, buffer.len())
-            .map_err(|reason| format!("compute input buffer {slot}: {reason}"))?;
+    if !pipeline.storage_only {
+        for (slot, (buffer, layout)) in inputs.iter().zip(input_layouts).enumerate() {
+            validate_storage_range(layout, invocations, buffer.len())
+                .map_err(|reason| format!("compute input buffer {slot}: {reason}"))?;
+        }
+        validate_storage_range(&output_layout, invocations, output.len())
+            .map_err(|reason| format!("compute output buffer: {reason}"))?;
     }
-    validate_storage_range(&output_layout, invocations, output.len())
-        .map_err(|reason| format!("compute output buffer: {reason}"))?;
     Ok(Some(DispatchShape {
         group_count,
         invocations,
@@ -816,6 +865,7 @@ fn commit_results(
     layout: StorageLayout,
     results: &[Vec4],
     mut stores: StagedWrites,
+    write_map_output: bool,
 ) -> Result<()> {
     stores.values.sort_unstable_by_key(|(index, _)| *index);
     if let Some(pair) = stores.values.windows(2).find(|pair| pair[0].0 == pair[1].0) {
@@ -825,15 +875,17 @@ fn commit_results(
         )
         .into());
     }
-    if layout.stride == 1 {
-        let end = layout.offset + results.len();
-        output.values[layout.offset..end].copy_from_slice(results);
-    } else {
-        for (invocation, value) in results.iter().copied().enumerate() {
-            output.values[layout.index(invocation)] = value;
+    if write_map_output {
+        if layout.stride == 1 {
+            let end = layout.offset + results.len();
+            output.values[layout.offset..end].copy_from_slice(results);
+        } else {
+            for (invocation, value) in results.iter().copied().enumerate() {
+                output.values[layout.index(invocation)] = value;
+            }
         }
     }
-    // Explicit shader-selected stores follow map output writes and may overwrite them.
+    // Explicit stores commit after map writes, or alone for SPIR-V compute.
     for (index, value) in stores.values {
         output.values[index] = value;
     }
@@ -912,6 +964,78 @@ mod tests {
             Output { slot: 0, src: 3 },
         ])
         .unwrap()
+    }
+
+    #[test]
+    fn dispatches_glsl_spirv_vec4_storage_add() {
+        let device = Device::new();
+        let pipeline = device
+            .create_compute_pipeline_from_spirv(include_bytes!(
+                "../../../assets/shaders/compute_vector_add.comp.spv"
+            ))
+            .unwrap();
+        assert_eq!(pipeline.local_size(), [64, 1, 1]);
+
+        let a = device
+            .create_storage_buffer(
+                (0..64)
+                    .map(|i| Vec4::new(i as f32, 2.0, 3.0, 4.0))
+                    .collect(),
+            )
+            .unwrap();
+        let b = device
+            .create_storage_buffer(
+                (0..64)
+                    .map(|i| Vec4::new(5.0, i as f32, 7.0, 8.0))
+                    .collect(),
+            )
+            .unwrap();
+        let mut output = device.create_storage_buffer(vec![Vec4::ZERO; 64]).unwrap();
+        let mut simd_output = device.create_storage_buffer(vec![Vec4::ZERO; 64]).unwrap();
+        let stats = device
+            .dispatch_compute(&pipeline, [1, 1, 1], &[&a, &b], &mut output)
+            .unwrap();
+        let simd_stats = device
+            .dispatch_compute_simd(&pipeline, [1, 1, 1], &[&a, &b], &mut simd_output)
+            .unwrap();
+        assert_eq!(stats.invocations, 64);
+        assert_eq!(simd_stats, stats);
+        assert_eq!(simd_output.as_slice(), output.as_slice());
+        assert!(
+            output
+                .as_slice()
+                .iter()
+                .zip(a.as_slice().iter().zip(b.as_slice()))
+                .all(|(actual, (left, right))| *actual == *left + *right)
+        );
+        assert!(
+            device
+                .dispatch_compute(&pipeline, [1, 1, 1], &[&a], &mut output)
+                .unwrap_err()
+                .to_string()
+                .contains("requires exactly 2 input storage buffers")
+        );
+    }
+
+    #[test]
+    fn storage_only_commit_preserves_unwritten_elements() {
+        let original = Vec4::new(9.0, 8.0, 7.0, 6.0);
+        let replacement = Vec4::new(1.0, 2.0, 3.0, 4.0);
+        let mut output = StorageBuffer {
+            values: vec![original, original],
+        };
+        let mut stores = StagedWrites::new(output.len());
+        stores.stage(1, replacement).unwrap();
+
+        commit_results(
+            &mut output,
+            StorageLayout::PACKED,
+            &[Vec4::ZERO; 2],
+            stores,
+            false,
+        )
+        .unwrap();
+        assert_eq!(output.as_slice(), &[original, replacement]);
     }
 
     #[test]

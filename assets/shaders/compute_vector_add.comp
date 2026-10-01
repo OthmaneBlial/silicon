@@ -1,0 +1,20 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputA {
+    vec4 values[];
+} input_a;
+
+layout(set = 0, binding = 1, std430) readonly buffer InputB {
+    vec4 values[];
+} input_b;
+
+layout(set = 0, binding = 2, std430) writeonly buffer Output {
+    vec4 values[];
+} output_data;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    output_data.values[index] = input_a.values[index] + input_b.values[index];
+}

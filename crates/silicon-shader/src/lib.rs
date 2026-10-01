@@ -553,6 +553,15 @@ impl Definitions {
 }
 impl Program {
     pub fn new(ops: Vec<Instruction>) -> Result<Self> {
+        Self::validate(ops, true)
+    }
+
+    /// Validate a compute program that writes through storage rather than graphics output.
+    pub(crate) fn new_compute(ops: Vec<Instruction>) -> Result<Self> {
+        Self::validate(ops, false)
+    }
+
+    fn validate(ops: Vec<Instruction>, requires_output: bool) -> Result<Self> {
         if ops.is_empty() || ops.len() > 4096 {
             return Err("SIR requires 1..4096 instructions".into());
         }
@@ -612,7 +621,7 @@ impl Program {
                     Some(dst)
                 }
                 Instruction::Return => {
-                    if state.live && !state.outputs[0] {
+                    if requires_output && state.live && !state.outputs[0] {
                         return Err(
                             "SIR Return must follow output slot 0 on every live path".into()
                         );
@@ -844,7 +853,7 @@ impl Program {
         if !selections.is_empty() {
             return Err("SIR unclosed selection".into());
         }
-        if state.live && !state.outputs[0] {
+        if requires_output && state.live && !state.outputs[0] {
             return Err("SIR must write output slot 0 on every live path".into());
         }
         Ok(Self { ops })
