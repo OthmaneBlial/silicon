@@ -19,6 +19,8 @@ const MAP_LUMPS: [&str; 11] = [
 const MAX_WAD_BYTES: u64 = 128 * 1024 * 1024;
 const DEPTH_BUCKET_SIZE: f32 = 2048.0;
 const ACTOR_HEIGHT: f32 = 56.0;
+const ACTOR_STEP_HEIGHT: f32 = 24.0;
+const ACTOR_RADIUS: f32 = 16.0;
 const ACTOR_WAKE_RANGE: f32 = 640.0;
 const ACTOR_TARGET_THRESHOLD: f32 = 100.0 / 35.0;
 const ACTOR_IDLE_CYCLE: f32 = 20.0 / 35.0;
@@ -1609,6 +1611,12 @@ fn visible_subsector_order(map: &Map, player: Player) -> Vec<usize> {
 }
 
 fn bsp_sector_at(map: &Map, x: f32, y: f32) -> Option<Sector> {
+    map.sectors
+        .get(bsp_sector_index_at(map, x, y)? as usize)
+        .copied()
+}
+
+fn bsp_sector_index_at(map: &Map, x: f32, y: f32) -> Option<u16> {
     let leaf = map.subsectors.get(subsector_at(map, Vertex2 { x, y })?)?;
     if leaf[0] == 0 {
         return None;
@@ -1616,7 +1624,121 @@ fn bsp_sector_at(map: &Map, x: f32, y: f32) -> Option<Sector> {
     let seg = map.segs.get(leaf[1] as usize)?;
     let line = map.lines.get(seg[2] as usize)?;
     let sidedef = map.sides.get(*line.get(3 + seg[3] as usize)? as usize)?;
-    map.sectors.get(sidedef.sector as usize).copied()
+    map.sectors
+        .get(sidedef.sector as usize)
+        .map(|_| sidedef.sector)
+}
+
+fn portal_is_walkable(map: &Map, line: [u16; 5], from: u16, to: u16) -> bool {
+    if line[2] & 1 != 0 || line[4] == u16::MAX {
+        return false;
+    }
+    let Some(from_sector) = map.sectors.get(from as usize) else {
+        return false;
+    };
+    let Some(to_sector) = map.sectors.get(to as usize) else {
+        return false;
+    };
+    to_sector.floor <= from_sector.floor + ACTOR_STEP_HEIGHT
+        && from_sector.ceiling.min(to_sector.ceiling)
+            >= from_sector.floor.max(to_sector.floor) + ACTOR_HEIGHT
+}
+
+fn sector_routes(map: &Map) -> Vec<Vec<(u16, usize)>> {
+    let mut routes = vec![Vec::new(); map.sectors.len()];
+    for (line_index, &line) in map.lines.iter().enumerate() {
+        let Some(side0) = map.sides.get(line[3] as usize) else {
+            continue;
+        };
+        let Some(side1) = map.sides.get(line[4] as usize) else {
+            continue;
+        };
+        if portal_is_walkable(map, line, side0.sector, side1.sector) {
+            routes[side0.sector as usize].push((side1.sector, line_index));
+        }
+        if portal_is_walkable(map, line, side1.sector, side0.sector) {
+            routes[side1.sector as usize].push((side0.sector, line_index));
+        }
+    }
+    routes
+}
+
+fn first_route_portal(routes: &[Vec<(u16, usize)>], start: u16, goal: u16) -> Option<(usize, u16)> {
+    if start == goal || routes.get(start as usize).is_none() || routes.get(goal as usize).is_none()
+    {
+        return None;
+    }
+
+    // ponytail: unweighted sector hops; use portal-distance costs if routes look unnatural.
+    let mut visited = vec![false; routes.len()];
+    let mut parent = vec![None; routes.len()];
+    let mut pending = vec![start];
+    visited[start as usize] = true;
+    let mut head = 0;
+    while head < pending.len() && !visited[goal as usize] {
+        let current = pending[head];
+        head += 1;
+        for &(next, line_index) in &routes[current as usize] {
+            if !visited[next as usize] {
+                visited[next as usize] = true;
+                parent[next as usize] = Some((current, line_index));
+                pending.push(next);
+            }
+        }
+    }
+    if !visited[goal as usize] {
+        return None;
+    }
+
+    let mut sector = goal;
+    while let Some((previous, line)) = parent[sector as usize] {
+        if previous == start {
+            return Some((line, sector));
+        }
+        sector = previous;
+    }
+    None
+}
+
+fn chase_waypoint(
+    map: &Map,
+    routes: &[Vec<(u16, usize)>],
+    from: Vertex2,
+    goal: Vertex2,
+) -> Option<Vertex2> {
+    let start = bsp_sector_index_at(map, from.x, from.y)?;
+    let goal_sector = bsp_sector_index_at(map, goal.x, goal.y)?;
+    let (line_index, next_sector) = first_route_portal(routes, start, goal_sector)?;
+    let line = *map.lines.get(line_index)?;
+    let a = *map.vertices.get(line[0] as usize)?;
+    let b = *map.vertices.get(line[1] as usize)?;
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let length = (dx * dx + dy * dy).sqrt();
+    if length == 0.0 {
+        return None;
+    }
+    // ponytail: five samples keep waypoint search cheap; increase density if maps strand actors.
+    [0.5, 0.25, 0.75, 0.125, 0.875]
+        .into_iter()
+        .flat_map(|along| {
+            let midpoint = Vertex2 {
+                x: a.x + dx * along,
+                y: a.y + dy * along,
+            };
+            [ACTOR_RADIUS + 8.0, -ACTOR_RADIUS - 8.0]
+                .into_iter()
+                .map(move |offset| (midpoint, offset))
+        })
+        .find_map(|(midpoint, offset)| {
+            let point = Vertex2 {
+                x: midpoint.x - dy / length * offset,
+                y: midpoint.y + dx / length * offset,
+            };
+            (bsp_sector_index_at(map, point.x, point.y) == Some(next_sector)
+                && actor_path_clear(map, from, point))
+            .then_some(point)
+        })
 }
 
 fn floor_at(map: &Map, x: f32, y: f32) -> f32 {
@@ -1635,28 +1757,45 @@ fn distance_to_segment_squared(point: Vertex2, a: Vertex2, b: Vertex2) -> f32 {
     (point.x - (a.x + t * dx)).powi(2) + (point.y - (a.y + t * dy)).powi(2)
 }
 
+fn segment_distance_squared(a: Vertex2, b: Vertex2, c: Vertex2, d: Vertex2) -> f32 {
+    let direction = Vertex2 {
+        x: b.x - a.x,
+        y: b.y - a.y,
+    };
+    if ray_segment_distance(a, direction, c, d).is_some_and(|distance| distance <= 1.0) {
+        0.0
+    } else {
+        distance_to_segment_squared(a, c, d)
+            .min(distance_to_segment_squared(b, c, d))
+            .min(distance_to_segment_squared(c, a, b))
+            .min(distance_to_segment_squared(d, a, b))
+    }
+}
+
+fn actor_path_clear(map: &Map, from: Vertex2, to: Vertex2) -> bool {
+    map.lines.iter().all(|line| {
+        if line[2] & 1 == 0 && line[4] != u16::MAX {
+            return true;
+        }
+        let a = map.vertices[line[0] as usize];
+        let b = map.vertices[line[1] as usize];
+        segment_distance_squared(from, to, a, b) >= ACTOR_RADIUS * ACTOR_RADIUS
+    })
+}
+
 fn can_occupy(map: &Map, player: Player, from: Sector) -> bool {
     let Some(sector) = bsp_sector_at(map, player.x, player.y) else {
         return false;
     };
-    if sector.floor > from.floor + 24.0 || sector.ceiling < sector.floor + ACTOR_HEIGHT {
+    if sector.floor > from.floor + ACTOR_STEP_HEIGHT || sector.ceiling < sector.floor + ACTOR_HEIGHT
+    {
         return false;
     }
     let point = Vertex2 {
         x: player.x,
         y: player.y,
     };
-    for line in &map.lines {
-        if line[2] & 1 == 0 && line[4] != u16::MAX {
-            continue;
-        }
-        let a = map.vertices[line[0] as usize];
-        let b = map.vertices[line[1] as usize];
-        if distance_to_segment_squared(point, a, b) < 16.0 * 16.0 {
-            return false;
-        }
-    }
-    true
+    actor_path_clear(map, point, point)
 }
 
 fn move_player(map: &Map, player: &mut Player, controls: Controls, delta: f32) {
@@ -1800,6 +1939,7 @@ fn update_actors(
     health: &mut i32,
     delta: f32,
 ) {
+    let routes = sector_routes(map);
     for actor in actors.iter_mut() {
         if actor.health <= 0 {
             if let Some(time) = actor.death_animation_time {
@@ -1879,10 +2019,24 @@ fn update_actors(
                 actor.attack_animation_remaining = actor_attack_duration(actor.sprite);
             }
         } else if awake {
+            let player_position = Vertex2 {
+                x: player.x,
+                y: player.y,
+            };
+            let target = chase_waypoint(
+                map,
+                &routes,
+                Vertex2 {
+                    x: actor.x,
+                    y: actor.y,
+                },
+                player_position,
+            )
+            .unwrap_or(player_position);
             let mut enemy = Player {
                 x: actor.x,
                 y: actor.y,
-                angle: dy.atan2(dx).to_degrees(),
+                angle: (target.y - actor.y).atan2(target.x - actor.x).to_degrees(),
             };
             move_player(
                 map,
@@ -2984,6 +3138,170 @@ mod tests {
         let mut cyclic = map;
         cyclic.nodes[0].children = [0, 0];
         assert_eq!(subsector_at(&cyclic, Vertex2 { x: 0.0, y: 0.0 }), None);
+    }
+
+    #[test]
+    fn enemy_routes_use_open_sector_portals_and_respect_steps_and_clearance() {
+        let open = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+        };
+        let side = |sector| SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper: [0; 8],
+            lower: [0; 8],
+            middle: [0; 8],
+            sector,
+        };
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![
+                open,
+                open,
+                open,
+                Sector {
+                    ceiling: 55.0,
+                    ..open
+                },
+                Sector {
+                    floor: 40.0,
+                    ..open
+                },
+            ],
+            sides: (0..5).map(side).collect(),
+            lines: vec![
+                [0, 1, 0, 0, 1], // sector 0 -> 1
+                [0, 1, 0, 1, 2], // sector 1 -> 2
+                [0, 1, 1, 0, 2], // blocked shortcut
+                [0, 1, 0, 0, 3], // too little actor clearance
+                [0, 1, 0, 0, 4], // step exceeds the limit
+            ],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let routes = sector_routes(&map);
+
+        assert_eq!(first_route_portal(&routes, 0, 2), Some((0, 1)));
+        assert_eq!(first_route_portal(&routes, 1, 2), Some((1, 2)));
+        assert_eq!(first_route_portal(&routes, 0, 3), None);
+        assert_eq!(first_route_portal(&routes, 0, 4), None);
+    }
+
+    #[test]
+    fn enemy_pursuit_follows_a_portal_route_around_a_blocking_wall() {
+        let sector = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+        };
+        let side = |sector| SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper: [0; 8],
+            lower: [0; 8],
+            middle: [0; 8],
+            sector,
+        };
+        let map = Map {
+            vertices: vec![
+                Vertex2 { x: 10.0, y: -64.0 },
+                Vertex2 { x: 10.0, y: 64.0 },
+                Vertex2 { x: 10.0, y: 10.0 },
+                Vertex2 { x: 30.0, y: 10.0 },
+                Vertex2 { x: 10.0, y: 14.0 },
+                Vertex2 { x: 10.0, y: 18.0 },
+            ],
+            sectors: vec![sector; 3],
+            sides: vec![side(0), side(1), side(1), side(2), side(0)],
+            lines: vec![[0, 1, 0, 0, 1], [2, 3, 0, 2, 3], [4, 5, 1, 4, u16::MAX]],
+            segs: vec![[0, 1, 0, 0, 0], [0, 1, 0, 1, 0], [2, 3, 1, 1, 0]],
+            subsectors: vec![[1, 0], [1, 1], [1, 2]],
+            nodes: vec![
+                Node {
+                    x: 0,
+                    y: 10,
+                    dx: 1,
+                    dy: 0,
+                    child_bounds: [Bounds2::default(); 2],
+                    children: [0x8001, 0x8002],
+                },
+                Node {
+                    x: 10,
+                    y: 0,
+                    dx: 0,
+                    dy: 1,
+                    child_bounds: [Bounds2::default(); 2],
+                    children: [0, 0x8000],
+                },
+            ],
+            things: vec![],
+        };
+        let routes = sector_routes(&map);
+        let waypoint = chase_waypoint(
+            &map,
+            &routes,
+            Vertex2 { x: 0.0, y: -10.0 },
+            Vertex2 { x: 20.0, y: 40.0 },
+        )
+        .unwrap();
+
+        assert_eq!(bsp_sector_index_at(&map, 0.0, -10.0), Some(0));
+        assert_eq!(bsp_sector_index_at(&map, 20.0, 40.0), Some(2));
+        assert_eq!(bsp_sector_index_at(&map, waypoint.x, waypoint.y), Some(1));
+        assert!(actor_path_clear(
+            &map,
+            Vertex2 { x: 0.0, y: -10.0 },
+            waypoint
+        ));
+        assert!(!has_line_of_sight(
+            &map,
+            Vertex2 { x: 0.0, y: -10.0 },
+            Vertex2 { x: 20.0, y: 40.0 },
+        ));
+
+        let mut actors = [Actor {
+            sprite: *b"SARG",
+            x: 0.0,
+            y: -10.0,
+            health: 60,
+            target_time_remaining: 2.0,
+            attack_cooldown: 0.0,
+            attack_animation_remaining: 0.0,
+            pain_animation_remaining: 0.0,
+            death_animation_time: None,
+            animation_time: 0.0,
+            angle: 0.0,
+        }];
+        let mut projectiles = Vec::new();
+        let mut health = 100;
+        let player = Player {
+            x: 20.0,
+            y: 40.0,
+            angle: 0.0,
+        };
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.5,
+        );
+        assert!(
+            actors[0].x > 10.0,
+            "enemy stopped at ({}, {})",
+            actors[0].x,
+            actors[0].y
+        );
+        assert_eq!(health, 100);
     }
 
     #[test]

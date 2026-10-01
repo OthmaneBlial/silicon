@@ -64,9 +64,13 @@ its PISGC0 patch for 0.16 seconds. Both weapon poses use SILICON's cutout shader
 and draw pipeline. Enemies cycle their A/B ten-tic stand states while unaware.
 They wake within 640 map units on clear sight or when hit; sight refreshes a
 100-tic target timeout, during which they pursue through lost sight. All enemy
-attacks require clear sight. They move toward the player's current position but
-do not pathfind around blocked corridors. This keeps the state timing
-recognizable without implementing Doom's sound propagation or full
+attacks require clear sight. When both positions resolve to BSP sectors, a
+breadth-first route over walkable two-sided linedefs selects the next portal;
+the opening must fit the actor and allow an upward step of at most 24 units. The
+router samples portal points and picks one with a clear 16-unit swept margin
+from blocking lines, allowing simple pursuit around walls. If map data yields
+no waypoint, direct pursuit remains the fallback. This sector graph is not
+Doom's full actor navigation and does not model sound propagation or full
 target-selection rules.
 
 Freedoom 0.13.0 E1M1 has 29 normal-skill enemy placements. The sample parses
@@ -92,9 +96,9 @@ that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
-gib states, sound propagation, pathfinding, keys, exits, other weapons and their
-ammunition, and full weapon animation beyond the brief idle/fire pose remain
-unimplemented.
+gib states, Doom's detailed actor navigation, sound propagation, keys, exits,
+other weapons and their ammunition, and full weapon animation beyond the brief
+idle/fire pose remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in
 [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was rendered from
 the unmodified release WAD. The WAD itself is not included. The release archive
