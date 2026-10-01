@@ -869,6 +869,59 @@ mod tests {
     }
 
     #[test]
+    fn cube_edge_taps_follow_direction_across_adjacent_faces() {
+        let encode = |direction: Vec3| {
+            [direction.x, direction.y, direction.z]
+                .map(|component| ((component * 0.5 + 0.5) * 255.).round() as u8)
+        };
+        let faces = CubeFace::ALL.map(|face| {
+            let mut bytes = Vec::new();
+            for y in 0..16 {
+                for x in 0..16 {
+                    let color = encode(CubeMap::face_direction(
+                        face,
+                        (x as f32 + 0.5) / 16.,
+                        (y as f32 + 0.5) / 16.,
+                    ));
+                    bytes.extend([color[0], color[1], color[2], 255]);
+                }
+            }
+            let mut texture = Texture::new(16, 16, TextureFormat::Rgba8, &bytes).unwrap();
+            texture.generate_mips();
+            texture
+        });
+        let cube = CubeMap::new(faces).unwrap();
+        let sampler = Sampler {
+            filter: Filter::Bilinear,
+            mip: MipFilter::Trilinear,
+            ..Default::default()
+        };
+        let check = |direction: Vec3| {
+            let expected = encode(direction.normalize());
+            let actual = cube.sample(direction, 1.25, sampler).unwrap().rgba8();
+            for channel in 0..3 {
+                assert!(
+                    actual[channel].abs_diff(expected[channel]) <= 24,
+                    "direction {direction:?}: {actual:?} vs {expected:?}"
+                );
+            }
+        };
+        let epsilon = 0.0001;
+        for sign_a in [-1., 1.] {
+            for sign_b in [-1., 1.] {
+                for tangent in [-0.75, -0.25, 0., 0.25, 0.75] {
+                    check(Vec3::new(sign_a * (1. + epsilon), sign_b, tangent));
+                    check(Vec3::new(sign_a, sign_b * (1. + epsilon), tangent));
+                    check(Vec3::new(sign_a * (1. + epsilon), tangent, sign_b));
+                    check(Vec3::new(sign_a, tangent, sign_b * (1. + epsilon)));
+                    check(Vec3::new(tangent, sign_a * (1. + epsilon), sign_b));
+                    check(Vec3::new(tangent, sign_a, sign_b * (1. + epsilon)));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn cube_lod_projects_neighbors_through_the_center_face() {
         let face = || {
             let mut texture =
