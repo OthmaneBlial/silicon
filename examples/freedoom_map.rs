@@ -635,10 +635,14 @@ fn monster_sprite(kind: u16) -> Option<([u8; 4], i32)> {
 }
 
 fn sprite_texture(data: &[u8], prefix: [u8; 4]) -> api::Result<SpriteTexture> {
-    let lumps = wad_lumps(data)?;
     let mut name = [0; 8];
     name[..4].copy_from_slice(&prefix);
     name[4..6].copy_from_slice(b"A1");
+    sprite_patch_texture(data, name)
+}
+
+fn sprite_patch_texture(data: &[u8], name: [u8; 8]) -> api::Result<SpriteTexture> {
+    let lumps = wad_lumps(data)?;
     let patch = lump_bytes(data, &lumps, name)?;
     let width = u16_at(patch, 0)?;
     let height = u16_at(patch, 2)?;
@@ -756,9 +760,12 @@ struct PreparedScene {
     device: Device,
     pipeline: Arc<ShaderPipeline>,
     sprite_pipeline: Arc<ShaderPipeline>,
+    weapon_pipeline: Arc<ShaderPipeline>,
     sampler: Sampler,
     draws: Vec<Draw>,
     sprites: BTreeMap<[u8; 4], SpriteTexture>,
+    weapon_idle: SpriteTexture,
+    weapon_fire: SpriteTexture,
     actors: Vec<Actor>,
     start: Player,
     triangles: usize,
@@ -833,29 +840,22 @@ fn push_wall_quad(out: &mut BTreeMap<[u8; 8], Vec<Vertex>>, texture: &Texture, w
     );
 }
 
-fn actor_vertices(
-    actor: Actor,
-    sprite: &SpriteTexture,
-    camera_angle: f32,
+fn billboard_vertices(
+    left: Vertex2,
+    axis: Vertex2,
+    width: f32,
+    bottom: f32,
+    height: f32,
     sector: Sector,
 ) -> Vec<Vertex> {
-    let radians = camera_angle.to_radians();
     let right = Vertex2 {
-        x: radians.sin(),
-        y: -radians.cos(),
+        x: left.x + axis.x * width,
+        y: left.y + axis.y * width,
     };
-    let left = Vertex2 {
-        x: actor.x - right.x * sprite.left_offset,
-        y: actor.y - right.y * sprite.left_offset,
-    };
-    let right = Vertex2 {
-        x: left.x + right.x * sprite.width,
-        y: left.y + right.y * sprite.width,
-    };
-    let bottom_left = world(left, sector.floor);
-    let bottom_right = world(right, sector.floor);
-    let top_left = world(left, sector.floor + sprite.height);
-    let top_right = world(right, sector.floor + sprite.height);
+    let bottom_left = world(left, bottom);
+    let bottom_right = world(right, bottom);
+    let top_left = world(left, bottom + height);
+    let top_right = world(right, bottom + height);
     let color = shaded([1.0; 3], sector);
     let mut vertices = Vec::with_capacity(6);
     push_triangle_uv(
@@ -877,6 +877,54 @@ fn actor_vertices(
         color,
     );
     vertices
+}
+
+fn actor_vertices(
+    actor: Actor,
+    sprite: &SpriteTexture,
+    camera_angle: f32,
+    sector: Sector,
+) -> Vec<Vertex> {
+    let radians = camera_angle.to_radians();
+    let axis = Vertex2 {
+        x: radians.sin(),
+        y: -radians.cos(),
+    };
+    let left = Vertex2 {
+        x: actor.x - axis.x * sprite.left_offset,
+        y: actor.y - axis.y * sprite.left_offset,
+    };
+    billboard_vertices(
+        left,
+        axis,
+        sprite.width,
+        sector.floor,
+        sprite.height,
+        sector,
+    )
+}
+
+fn weapon_vertices(player: Player, sprite: &SpriteTexture, sector: Sector) -> Vec<Vertex> {
+    let radians = player.angle.to_radians();
+    let forward = Vertex2 {
+        x: radians.cos(),
+        y: radians.sin(),
+    };
+    let axis = Vertex2 {
+        x: radians.sin(),
+        y: -radians.cos(),
+    };
+    let width = sprite.width * 0.4;
+    let height = sprite.height * 0.4;
+    let center = Vertex2 {
+        x: player.x + forward.x * 64.0 + axis.x * 14.0,
+        y: player.y + forward.y * 64.0 + axis.y * 14.0,
+    };
+    let left = Vertex2 {
+        x: center.x - axis.x * width * 0.5,
+        y: center.y - axis.y * width * 0.5,
+    };
+    billboard_vertices(left, axis, width, sector.floor + 5.0, height, sector)
 }
 
 fn geometry(map: &Map, textures: &BTreeMap<[u8; 8], Arc<Texture>>) -> Result<Geometry, io::Error> {
@@ -1285,6 +1333,17 @@ impl PreparedScene {
             device.create_shader(include_bytes!("../assets/shaders/freedoom_sprite.frag.spv"))?;
         let sprite_pipeline =
             device.create_pipeline(&vertex_shader, &sprite_fragment, Pipeline::default())?;
+        let weapon_pipeline = device.create_pipeline(
+            &vertex_shader,
+            &sprite_fragment,
+            Pipeline {
+                depth_compare: api::Compare::Always,
+                depth_write: false,
+                ..Pipeline::default()
+            },
+        )?;
+        let weapon_idle = sprite_patch_texture(&data, *b"PISGA0\0\0")?;
+        let weapon_fire = sprite_patch_texture(&data, *b"PISGC0\0\0")?;
         let sampler = Sampler {
             filter: Filter::Nearest,
             address: Address::Repeat,
@@ -1355,9 +1414,12 @@ impl PreparedScene {
             device,
             pipeline,
             sprite_pipeline,
+            weapon_pipeline,
             sampler,
             draws,
             sprites,
+            weapon_idle,
+            weapon_fire,
             actors,
             start: Player {
                 x: x as f32,
@@ -1372,6 +1434,7 @@ impl PreparedScene {
         &self,
         player: Player,
         actors: &[Actor],
+        weapon_firing: bool,
         renderer: &mut Renderer,
     ) -> api::Result<api::Submission> {
         let sector = bsp_sector_at(&self.map, player.x, player.y)
@@ -1397,7 +1460,7 @@ impl PreparedScene {
             commands.draw(0, draw.count);
         }
         commands.bind_pipeline(self.sprite_pipeline.clone());
-        commands.bind_uniform_buffer(uniform_buffer);
+        commands.bind_uniform_buffer(uniform_buffer.clone());
         for actor in actors.iter().filter(|actor| actor.health > 0) {
             let Some(sector) = bsp_sector_at(&self.map, actor.x, actor.y) else {
                 continue;
@@ -1415,6 +1478,19 @@ impl PreparedScene {
             commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
             commands.draw(0, count);
         }
+        let weapon = if weapon_firing {
+            &self.weapon_fire
+        } else {
+            &self.weapon_idle
+        };
+        let vertices = weapon_vertices(player, weapon, sector);
+        let count = u32::try_from(vertices.len())
+            .map_err(|_| invalid("E1M1 weapon vertex count exceeds SILICON draw range"))?;
+        commands.bind_pipeline(self.weapon_pipeline.clone());
+        commands.bind_uniform_buffer(uniform_buffer);
+        commands.bind_texture(0, weapon.texture.clone(), self.sampler);
+        commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
+        commands.draw(0, count);
         commands.end_render_pass();
         self.device.submit(&commands, renderer)
     }
@@ -1436,7 +1512,7 @@ fn frame_triangles(scene: &PreparedScene, draws: u64) -> api::Result<usize> {
 fn render(path: &Path, output: &Path) -> api::Result<()> {
     let scene = PreparedScene::load(path)?;
     let mut renderer = Renderer::new(960, 720)?;
-    let submission = scene.draw(scene.start, &scene.actors, &mut renderer)?;
+    let submission = scene.draw(scene.start, &scene.actors, false, &mut renderer)?;
     save_frame(&renderer, output)?;
     let triangles = frame_triangles(&scene, submission.draws)?;
     println!(
@@ -1463,6 +1539,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     let mut ammo = 200;
     let mut kills = 0;
     let mut shot_cooldown = 0.0f32;
+    let mut weapon_flash = 0.0f32;
     let mut last = std::time::Instant::now();
     let mut frames = 0u64;
     while window.is_open() && !window.is_key_down(Key::Escape) {
@@ -1491,16 +1568,18 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 delta,
             );
             shot_cooldown = (shot_cooldown - delta).max(0.0);
+            weapon_flash = (weapon_flash - delta).max(0.0);
             if window.is_key_pressed(Key::Space, KeyRepeat::No) && shot_cooldown == 0.0 && ammo > 0
             {
                 ammo -= 1;
                 shot_cooldown = 0.35;
+                weapon_flash = 0.16;
                 kills += usize::from(fire_weapon(&scene.map, &mut actors, player));
             }
             update_actors(&scene.map, &mut actors, player, &mut health, delta);
             health = health.max(0);
         }
-        let submission = scene.draw(player, &actors, &mut renderer)?;
+        let submission = scene.draw(player, &actors, weapon_flash > 0.0, &mut renderer)?;
         renderer.framebuffer.present_into(&mut pixels)?;
         let remaining = actors.iter().filter(|actor| actor.health > 0).count();
         let state = if health == 0 {
