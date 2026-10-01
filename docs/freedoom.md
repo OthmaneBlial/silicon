@@ -261,12 +261,13 @@ material mesh also uses its vertex bounds to reject geometry outside any
 of the six camera-frustum planes, then surviving geometry is batched by
 texture and cutout mode within coarse 2,048-unit view-depth bands, so nearby
 bands reach the depth test first. This can reject hidden fragments before the
-fragment shader runs, while preserving the framebuffer. Opaque, unmasked
-full-height wall quads also mark conservatively covered screen columns; a later
-mesh is culled only when every column in its projected bounds is covered by a
-nearer wall. Partial-height coverage and portal windows remain visible, so this
-is not Doom's general per-column portal clipping. At the checked-in 960×720
-camera pose, 570 of 682 subsectors remain in the horizontal BSP view. The
+fragment shader runs, while preserving the framebuffer. Opaque, unmasked wall
+quads also mark vertical spans that cover an entire screen column; a later mesh
+is culled only when its full projected bounds fit inside a nearer wall span in
+every covered column. Bounds overlapping wall edges or portal openings stay
+visible, so this is not Doom's general per-column portal clipping. At the
+checked-in 960×720 camera pose, 570 of 682 subsectors remain in the horizontal
+BSP view. The
 pre-occlusion checked-in capture measured 5,713 triangles across 260 draws.
 The screenshots, draw counts, and timing measurements below are historical
 captures from before this culler; current WAD render counts have not been
