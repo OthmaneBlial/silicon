@@ -83,7 +83,8 @@ faces. This environment term is not split-sum image-based lighting.
   `OpImageSampleImplicitLod`, and sampler2D/samplerCube `OpImageSampleExplicitLod`
   with a scalar LOD and the Lod-only image operand mask. Compute also accepts
   `OpConvertUToF` for exact dispatch IDs. Cube coordinates are vec3.
-- `OpBranch`, scalar-bool `OpBranchConditional`, `OpSelectionMerge None`,
+- `OpBranch`, scalar-bool `OpBranchConditional` with optional `BranchWeights`
+  hints (ignored), `OpSelectionMerge None`,
   float/vector/bool `OpPhi`, fragment `OpKill`, and early `OpReturn`.
   Scalar float ordered comparisons (equal, unequal, less/greater, inclusive forms),
   `OpFUnordNotEqual`, scalar bool logical equal/unequal/and/or/not, and `OpSelect`
