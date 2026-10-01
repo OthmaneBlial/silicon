@@ -261,10 +261,16 @@ material mesh also uses its vertex bounds to reject geometry outside any
 of the six camera-frustum planes, then surviving geometry is batched by
 texture and cutout mode within coarse 2,048-unit view-depth bands, so nearby
 bands reach the depth test first. This can reject hidden fragments before the
-fragment shader runs, while preserving the framebuffer; it does not implement
-Doom's BSP wall occlusion or per-column portal clipping. At the checked-in
-960×720 start view, 570 of 682 subsectors remain in the horizontal BSP view and
-SILICON submits 5,713 triangles across 260 draws. The checked-in camera view
+fragment shader runs, while preserving the framebuffer. Opaque, unmasked
+full-height wall quads also mark conservatively covered screen columns; a later
+mesh is culled only when every column in its projected bounds is covered by a
+nearer wall. Partial-height coverage and portal windows remain visible, so this
+is not Doom's general per-column portal clipping. At the checked-in 960×720
+camera pose, 570 of 682 subsectors remain in the horizontal BSP view. The
+pre-occlusion checked-in capture measured 5,713 triangles across 260 draws.
+The screenshots, draw counts, and timing measurements below are historical
+captures from before this culler; current WAD render counts have not been
+remeasured. The checked-in camera view
 contains 59 visible pickup billboards: nine health/ammo items, 30 health
 bonuses, one blue card, one green armor, and 18 armor bonuses; the armor items
 do not appear in that capture.
@@ -272,7 +278,8 @@ The sky draw follows opaque map batches with `LessEqual` depth testing and depth
 writes disabled, so the rasterizer rejects sky samples behind nearer map
 geometry before it runs the sky shader. The panorama sits 64 map units inside
 the 8,192-unit far clip plane to leave room for f32 transform rounding. Five
-release renders on Apple M2 measured a median process CPU time of 0.60 s;
+pre-occlusion release renders on Apple M2 measured a median process CPU time of
+0.60 s;
 the E1M1 output is byte-identical to the preceding capture. The earlier
 depth-band comparison measured 0.62 s against 0.69 s at its predecessor. These
 fixed-pose measurements are not engine-wide benchmarks. Earlier opaque-only counts were

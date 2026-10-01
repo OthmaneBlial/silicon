@@ -175,8 +175,12 @@ armor bonuses. The map loader also renders and collects matching red, yellow,
 and blue keycards and skulls, plus radiation suits on maps that contain them.
 BSP child bounds cull the
 horizontal view cone, and per-mesh bounds test all six frustum planes.
-The checked-in start view submits 5,713 triangles across 260 draws in 570 of
-682 horizontal BSP leaves. The armor items do not appear in the captured pixels.
+Opaque, unmasked full-height wall quads also conservatively cull meshes hidden
+across every projected screen column; partial-height wall coverage and portal
+windows stay visible. The pre-occlusion checked-in capture measured 5,713
+triangles across 260 draws in 570 of 682 horizontal BSP leaves; current WAD
+render counts have not been remeasured. The armor items do not appear in the
+captured pixels.
 `F_SKY1` surfaces use the map's WAD sky texture.
 View-visible map meshes are grouped by material inside coarse depth bands so
 nearer ranges reach the depth test first. BSP cells are split at sector
@@ -218,7 +222,8 @@ Enemies cycle four WAD walk frames,
 play attack and death poses, leave corpses,
 and select among eight camera-relative sprite views; fireballs show WAD impact
 frames. It remains a limited Doom gameplay prototype, not a complete game;
-BSP wall occlusion, per-column portal clipping, and broader game rules remain. The [WAD source,
+partial-height and portal-window wall occlusion, per-column portal clipping,
+and broader game rules remain. The [WAD source,
 controls, screenshots, license, and limits](docs/freedoom.md) are documented.
 The Freedoom WAD stays external.
 An [enemy sprite verification frame](assets/screenshots/freedoom_e1m1_enemy.png)
