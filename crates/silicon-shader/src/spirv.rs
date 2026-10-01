@@ -32,7 +32,7 @@ pub struct Compiled {
     pub outputs: BTreeMap<u8, u8>,
     /// Workgroup dimensions declared by a compute entry point.
     pub local_size: [u32; 3],
-    /// One statically sized vec4 workgroup array, or zero when unused.
+    /// Total vec4 slots reserved across fixed workgroup arrays, or zero when unused.
     pub shared_memory_vec4s: usize,
     /// Number of read-only vec4 storage bindings, numbered from zero.
     pub storage_input_count: u8,
