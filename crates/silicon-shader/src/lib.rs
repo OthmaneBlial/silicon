@@ -1105,6 +1105,7 @@ impl Program {
                     result.discarded = matches!(op, Instruction::Discard);
                     live = false;
                     active = false;
+                    next_pc = self.ops.len();
                     (None, Vec4::ZERO)
                 }
                 Instruction::Compare { dst, a, b, kind } => (

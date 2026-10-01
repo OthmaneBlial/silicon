@@ -97,7 +97,12 @@ impl Program {
         // Flush a run only when its mask changes, avoiding per-instruction result writes.
         let (mut counted_mask, mut count) = (active, 0);
         let trace_mask = (0..4).fold(0u8, |mask, i| mask | (u8::from(tracing[i]) << i));
-        for (pc, op) in self.instructions().iter().enumerate() {
+        let ops = self.instructions();
+        let mut next_pc = 0;
+        while next_pc < ops.len() {
+            let pc = next_pc;
+            next_pc += 1;
+            let op = &ops[pc];
             use Instruction::*;
             let executing = if matches!(op, Else | EndIf) {
                 selections.last().map_or(0, |&(parent, _)| parent & live)
@@ -155,6 +160,9 @@ impl Program {
                     }
                     live &= !executing;
                     current = 0;
+                    if live == 0 {
+                        next_pc = ops.len();
+                    }
                     (None, splat(Vec4::ZERO))
                 }
                 Compare { dst, a, b, kind } => (
