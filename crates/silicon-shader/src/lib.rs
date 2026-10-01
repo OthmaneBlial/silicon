@@ -119,6 +119,13 @@ pub enum Instruction {
         a: u8,
         b: u8,
     },
+    /// Copy a register value, including mutable loop-carried values.
+    Move {
+        dst: u8,
+        src: u8,
+    },
+    /// Mark the entry point for loop header calculations that must be repeated.
+    LoopHeader,
     /// Repeat the enclosed instruction range while `condition.x` is nonzero.
     LoopStart {
         condition: u8,
@@ -359,6 +366,10 @@ impl Instruction {
                 *b = f(*b, false)?;
                 dst
             }
+            Move { dst, src } => {
+                *src = f(*src, false)?;
+                dst
+            }
             Mix { dst, a, b, t } => {
                 *a = f(*a, false)?;
                 *b = f(*b, false)?;
@@ -380,7 +391,7 @@ impl Instruction {
                 *condition = f(*condition, false)?;
                 return Ok(());
             }
-            Else | EndIf | LoopEnd | Return | Discard => return Ok(()),
+            Else | EndIf | LoopHeader | LoopEnd | Return | Discard => return Ok(()),
             Normalize3 { dst, src }
             | Not { dst, src }
             | Neg { dst, src }
@@ -474,6 +485,7 @@ impl Instruction {
 pub struct Program {
     ops: Vec<Instruction>,
     loop_pairs: Vec<Option<usize>>,
+    loop_entries: Vec<Option<usize>>,
 }
 impl TryFrom<Vec<Instruction>> for Program {
     type Error = String;
@@ -606,29 +618,41 @@ impl Definitions {
     }
 }
 
-fn pair_loops(ops: &[Instruction]) -> Result<Vec<Option<usize>>> {
+type LoopMap = (Vec<Option<usize>>, Vec<Option<usize>>);
+fn pair_loops(ops: &[Instruction]) -> Result<LoopMap> {
     let mut pairs = vec![None; ops.len()];
+    let mut entries = vec![None; ops.len()];
     let mut starts = Vec::new();
+    let mut header = None;
     for (pc, op) in ops.iter().enumerate() {
         match op {
+            Instruction::LoopHeader if header.replace(pc).is_some() => {
+                return Err("SIR LoopHeader without a following LoopStart".into());
+            }
+            Instruction::LoopHeader => header = Some(pc),
             Instruction::LoopStart { .. } => {
                 if starts.len() == 64 {
                     return Err("SIR loop nesting exceeds 64".into());
                 }
                 starts.push(pc);
+                entries[pc] = Some(header.take().unwrap_or(pc));
             }
             Instruction::LoopEnd => {
                 let start = starts.pop().ok_or("SIR LoopEnd without LoopStart")?;
                 pairs[start] = Some(pc);
                 pairs[pc] = Some(start);
+                entries[pc] = entries[start];
             }
             _ => {}
         }
     }
+    if header.is_some() {
+        return Err("SIR LoopHeader without a following LoopStart".into());
+    }
     if !starts.is_empty() {
         return Err("SIR unclosed loop".into());
     }
-    Ok(pairs)
+    Ok((pairs, entries))
 }
 
 impl Program {
@@ -645,7 +669,7 @@ impl Program {
         if ops.is_empty() || ops.len() > 4096 {
             return Err("SIR requires 1..4096 instructions".into());
         }
-        let loop_pairs = pair_loops(&ops)?;
+        let (loop_pairs, loop_entries) = pair_loops(&ops)?;
         let mut state = Definitions {
             registers: [false; 64],
             outputs: [false; 8],
@@ -717,6 +741,11 @@ impl Program {
                     ));
                     None
                 }
+                Instruction::Move { dst, src } => {
+                    source(src)?;
+                    Some(dst)
+                }
+                Instruction::LoopHeader => None,
                 Instruction::LoopEnd => {
                     let (entry, selection_path) =
                         loops.pop().ok_or("SIR LoopEnd without LoopStart")?;
@@ -977,7 +1006,11 @@ impl Program {
         if requires_output && state.live && !state.outputs[0] {
             return Err("SIR must write output slot 0 on every live path".into());
         }
-        Ok(Self { ops, loop_pairs })
+        Ok(Self {
+            ops,
+            loop_pairs,
+            loop_entries,
+        })
     }
     pub fn instructions(&self) -> &[Instruction] {
         &self.ops
@@ -1230,6 +1263,8 @@ impl Program {
                 Instruction::Merge { dst, a, b } => {
                     (Some(dst), regs[if choice { a } else { b } as usize])
                 }
+                Instruction::Move { dst, src } => (Some(dst), regs[src as usize]),
+                Instruction::LoopHeader => (None, Vec4::ZERO),
                 Instruction::LoopStart { condition } => {
                     let end = self.loop_pairs[pc].expect("validated loop pair");
                     let value = regs[condition as usize];
@@ -1244,11 +1279,11 @@ impl Program {
                     (None, value)
                 }
                 Instruction::LoopEnd => {
-                    let (start, end) = *loops.last().ok_or("SIR LoopEnd without active loop")?;
+                    let (_, end) = *loops.last().ok_or("SIR LoopEnd without active loop")?;
                     if end != pc {
                         return Err(format!("SIR instruction {pc}: mismatched LoopEnd"));
                     }
-                    next_pc = start;
+                    next_pc = self.loop_entries[pc].expect("validated loop entry");
                     (None, Vec4::ZERO)
                 }
                 Instruction::Return | Instruction::Discard => {

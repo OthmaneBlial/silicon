@@ -137,7 +137,7 @@ impl Program {
                     .ok_or_else(|| format!("SIR instruction {pc}: missing uniform {slot}"))
             };
             let (dst, value) = match *op {
-                LoopStart { .. } | LoopEnd => {
+                LoopHeader | LoopStart { .. } | LoopEnd => {
                     return Err("SIR loops must use the scalar lane executor".into());
                 }
                 If { condition } => {
@@ -172,6 +172,7 @@ impl Program {
                         }))
                     }),
                 ),
+                Move { dst, src } => (Some(dst), regs[src as usize]),
                 Return | Discard => {
                     for (i, result) in results.iter_mut().enumerate() {
                         if enabled(i) {

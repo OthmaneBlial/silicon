@@ -463,6 +463,57 @@ fn nested_loops_keep_independent_conditions_and_counters() {
 }
 
 #[test]
+fn loop_headers_recompute_conditions_and_move_carried_values() {
+    let program = Program::new(vec![
+        Const {
+            dst: 0,
+            value: Vec4::ZERO,
+        },
+        Const {
+            dst: 1,
+            value: Vec4::new(1., 1., 1., 1.),
+        },
+        Const {
+            dst: 2,
+            value: Vec4::new(3., 3., 3., 3.),
+        },
+        LoopHeader,
+        Compare {
+            dst: 3,
+            a: 0,
+            b: 2,
+            kind: Comparison::Less,
+        },
+        LoopStart { condition: 3 },
+        Add { dst: 4, a: 0, b: 1 },
+        Move { dst: 0, src: 4 },
+        LoopEnd,
+        Output { slot: 0, src: 0 },
+    ])
+    .unwrap();
+    let scalar = program
+        .execute(&[], &[], |_, _| unreachable!(), false)
+        .unwrap();
+    assert_eq!(scalar.outputs[0], Vec4::new(3., 3., 3., 3.));
+
+    let packet = program
+        .execute4(
+            [&[]; 4],
+            &[],
+            [&[]; 4],
+            0b1111,
+            |_, _, _| unreachable!(),
+            [false; 4],
+        )
+        .unwrap();
+    assert!(
+        packet
+            .iter()
+            .all(|lane| lane.outputs[0] == scalar.outputs[0])
+    );
+}
+
+#[test]
 fn bounded_loops_survive_capture_round_trip() {
     use silicon::{
         Color, Device, FrameCapture, Pipeline, SampleCount, ShaderPipeline, Vec3, Vertex,
