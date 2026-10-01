@@ -1,11 +1,16 @@
 //! Render Freedoom's E1M1 geometry through SILICON's programmable pipeline.
-use minifb::{Key, Window, WindowOptions};
+use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use silicon::api::{
     self, Address, Buffer, Color, Device, Filter, MipFilter, Pipeline, Renderer, Sampler,
     ShaderPipeline, Texture, TextureFormat, Vec2, Vec3, Vec4, Vertex,
 };
 use silicon_math::Mat4;
-use std::{collections::BTreeMap, fs, io, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeMap, btree_map::Entry},
+    fs, io,
+    path::Path,
+    sync::Arc,
+};
 
 const MAP_LUMPS: [&str; 11] = [
     "E1M1", "THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES", "SEGS", "SSECTORS", "NODES", "SECTORS",
@@ -60,7 +65,7 @@ struct Map {
     lines: Vec<[u16; 5]>, // endpoints, flags, side 0, side 1
     segs: Vec<[u16; 5]>,  // endpoints, linedef, side, texture offset
     subsectors: Vec<[u16; 2]>,
-    things: Vec<(i16, i16, u16, u16)>, // x, y, angle, type
+    things: Vec<(i16, i16, u16, u16, u16)>, // x, y, angle, type, flags
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -219,9 +224,17 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
         .into_iter()
         .map(|r| Ok([u16_at(r, 0)?, u16_at(r, 2)?]))
         .collect::<Result<_, io::Error>>()?;
-    let things: Vec<(i16, i16, u16, u16)> = records(1, 10)?
+    let things: Vec<(i16, i16, u16, u16, u16)> = records(1, 10)?
         .into_iter()
-        .map(|r| Ok((i16_at(r, 0)?, i16_at(r, 2)?, u16_at(r, 4)?, u16_at(r, 6)?)))
+        .map(|r| {
+            Ok((
+                i16_at(r, 0)?,
+                i16_at(r, 2)?,
+                u16_at(r, 4)?,
+                u16_at(r, 6)?,
+                u16_at(r, 8)?,
+            ))
+        })
         .collect::<Result<_, io::Error>>()?;
 
     for line in &lines {
@@ -571,6 +584,52 @@ fn wall_textures(data: &[u8], map: &Map) -> api::Result<BTreeMap<[u8; 8], Arc<Te
     Ok(textures)
 }
 
+fn monster_sprite(kind: u16) -> Option<([u8; 4], i32)> {
+    match kind {
+        3001 => Some((*b"TROO", 60)),
+        3002 => Some((*b"SARG", 150)),
+        3004 => Some((*b"POSS", 20)),
+        9 => Some((*b"SPOS", 30)),
+        _ => None,
+    }
+}
+
+fn sprite_texture(data: &[u8], prefix: [u8; 4]) -> api::Result<SpriteTexture> {
+    let lumps = wad_lumps(data)?;
+    let mut name = [0; 8];
+    name[..4].copy_from_slice(&prefix);
+    name[4..6].copy_from_slice(b"A1");
+    let patch = lump_bytes(data, &lumps, name)?;
+    let width = u16_at(patch, 0)?;
+    let height = u16_at(patch, 2)?;
+    let left_offset = i16_at(patch, 4)?;
+    if width == 0
+        || height == 0
+        || width > 4096
+        || height > 4096
+        || width as usize * height as usize > 16_777_216
+    {
+        return Err(invalid("sprite dimensions exceed sample limits").into());
+    }
+    let palette = lump_bytes(data, &lumps, *b"PLAYPAL\0")?;
+    if palette.len() < 256 * 3 {
+        return Err(invalid("PLAYPAL does not contain a complete palette").into());
+    }
+    let mut rgba = vec![0; width as usize * height as usize * 4];
+    composite_patch(&mut rgba, width, height, patch, 0, 0, palette)?;
+    Ok(SpriteTexture {
+        texture: Arc::new(Texture::new(
+            width as u32,
+            height as u32,
+            TextureFormat::Rgba8,
+            &rgba,
+        )?),
+        width: width as f32,
+        height: height as f32,
+        left_offset: left_offset as f32,
+    })
+}
+
 fn world(point: Vertex2, height: f32) -> Vec3 {
     Vec3::new(point.x, height, -point.y)
 }
@@ -650,7 +709,7 @@ struct Controls {
     forward: f32,
     strafe: f32,
     turn: f32,
-    running: bool,
+    speed: f32,
 }
 
 struct Draw {
@@ -663,11 +722,30 @@ struct PreparedScene {
     map: Map,
     device: Device,
     pipeline: Arc<ShaderPipeline>,
+    sprite_pipeline: Arc<ShaderPipeline>,
     sampler: Sampler,
     draws: Vec<Draw>,
     regions: Vec<Region>,
+    sprites: BTreeMap<[u8; 4], SpriteTexture>,
+    actors: Vec<Actor>,
     start: Player,
     triangles: usize,
+}
+
+struct SpriteTexture {
+    texture: Arc<Texture>,
+    width: f32,
+    height: f32,
+    left_offset: f32,
+}
+
+#[derive(Clone, Copy)]
+struct Actor {
+    sprite: [u8; 4],
+    x: f32,
+    y: f32,
+    health: i32,
+    attack_cooldown: f32,
 }
 
 struct WallSection {
@@ -721,6 +799,52 @@ fn push_wall_quad(out: &mut BTreeMap<[u8; 8], Vec<Vertex>>, texture: &Texture, w
         ],
         color,
     );
+}
+
+fn actor_vertices(
+    actor: Actor,
+    sprite: &SpriteTexture,
+    camera_angle: f32,
+    sector: Sector,
+) -> Vec<Vertex> {
+    let radians = camera_angle.to_radians();
+    let right = Vertex2 {
+        x: radians.sin(),
+        y: -radians.cos(),
+    };
+    let left = Vertex2 {
+        x: actor.x - right.x * sprite.left_offset,
+        y: actor.y - right.y * sprite.left_offset,
+    };
+    let right = Vertex2 {
+        x: left.x + right.x * sprite.width,
+        y: left.y + right.y * sprite.width,
+    };
+    let bottom_left = world(left, sector.floor);
+    let bottom_right = world(right, sector.floor);
+    let top_left = world(left, sector.floor + sprite.height);
+    let top_right = world(right, sector.floor + sprite.height);
+    let color = shaded([1.0; 3], sector);
+    let mut vertices = Vec::with_capacity(6);
+    push_triangle_uv(
+        &mut vertices,
+        [
+            (bottom_left, Vec2::new(0.0, 1.0)),
+            (bottom_right, Vec2::new(1.0, 1.0)),
+            (top_right, Vec2::new(1.0, 0.0)),
+        ],
+        color,
+    );
+    push_triangle_uv(
+        &mut vertices,
+        [
+            (bottom_left, Vec2::new(0.0, 1.0)),
+            (top_right, Vec2::new(1.0, 0.0)),
+            (top_left, Vec2::new(0.0, 0.0)),
+        ],
+        color,
+    );
+    vertices
 }
 
 fn geometry(map: &Map, textures: &BTreeMap<[u8; 8], Arc<Texture>>) -> Result<Geometry, io::Error> {
@@ -943,10 +1067,11 @@ fn can_occupy(map: &Map, regions: &[Region], player: Player, from: Sector) -> bo
 
 fn move_player(map: &Map, regions: &[Region], player: &mut Player, controls: Controls, delta: f32) {
     player.angle = (player.angle + controls.turn * delta).rem_euclid(360.0);
-    let speed = if controls.running { 240.0 } else { 160.0 };
     let angle = player.angle.to_radians();
-    let dx = (controls.forward * angle.cos() - controls.strafe * angle.sin()) * speed * delta;
-    let dy = (controls.forward * angle.sin() + controls.strafe * angle.cos()) * speed * delta;
+    let dx =
+        (controls.forward * angle.cos() - controls.strafe * angle.sin()) * controls.speed * delta;
+    let dy =
+        (controls.forward * angle.sin() + controls.strafe * angle.cos()) * controls.speed * delta;
     for (x_axis, amount) in [(true, dx), (false, dy)] {
         if amount == 0.0 {
             continue;
@@ -966,6 +1091,126 @@ fn move_player(map: &Map, regions: &[Region], player: &mut Player, controls: Con
     }
 }
 
+fn cross2(a: Vertex2, b: Vertex2) -> f32 {
+    a.x * b.y - a.y * b.x
+}
+
+fn ray_segment_distance(
+    origin: Vertex2,
+    direction: Vertex2,
+    a: Vertex2,
+    b: Vertex2,
+) -> Option<f32> {
+    let segment = Vertex2 {
+        x: b.x - a.x,
+        y: b.y - a.y,
+    };
+    let relative = Vertex2 {
+        x: a.x - origin.x,
+        y: a.y - origin.y,
+    };
+    let denominator = cross2(direction, segment);
+    if denominator.abs() < 0.0001 {
+        return None;
+    }
+    let distance = cross2(relative, segment) / denominator;
+    let along = cross2(relative, direction) / denominator;
+    (distance >= 0.0 && (0.0..=1.0).contains(&along)).then_some(distance)
+}
+
+fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player) -> bool {
+    let origin = Vertex2 {
+        x: player.x,
+        y: player.y,
+    };
+    let radians = player.angle.to_radians();
+    let direction = Vertex2 {
+        x: radians.cos(),
+        y: radians.sin(),
+    };
+    let nearest_wall = map
+        .lines
+        .iter()
+        .filter(|line| line[2] & 1 != 0 || line[4] == u16::MAX)
+        .filter_map(|line| {
+            ray_segment_distance(
+                origin,
+                direction,
+                map.vertices[line[0] as usize],
+                map.vertices[line[1] as usize],
+            )
+        })
+        .fold(f32::INFINITY, f32::min);
+    let target = actors
+        .iter()
+        .enumerate()
+        .filter(|(_, actor)| actor.health > 0)
+        .filter_map(|(index, actor)| {
+            let dx = actor.x - player.x;
+            let dy = actor.y - player.y;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let aim_error =
+                (dy.atan2(dx).to_degrees() - player.angle + 180.0).rem_euclid(360.0) - 180.0;
+            let aim_width = 1.0 + (18.0 / distance.max(1.0)).atan().to_degrees();
+            let along_ray = dx * direction.x + dy * direction.y;
+            (distance <= 1024.0
+                && aim_error.abs() <= aim_width
+                && along_ray <= nearest_wall
+                && along_ray > 0.0)
+                .then_some((index, along_ray))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(index, _)| index);
+    if let Some(index) = target {
+        actors[index].health -= 20;
+        actors[index].health <= 0
+    } else {
+        false
+    }
+}
+
+fn update_actors(
+    map: &Map,
+    regions: &[Region],
+    actors: &mut [Actor],
+    player: Player,
+    health: &mut i32,
+    delta: f32,
+) {
+    for actor in actors.iter_mut().filter(|actor| actor.health > 0) {
+        actor.attack_cooldown = (actor.attack_cooldown - delta).max(0.0);
+        let dx = player.x - actor.x;
+        let dy = player.y - actor.y;
+        let distance = (dx * dx + dy * dy).sqrt();
+        if distance < 48.0 {
+            if actor.attack_cooldown == 0.0 {
+                *health -= 8;
+                actor.attack_cooldown = 0.85;
+            }
+        } else if distance < 640.0 {
+            let mut enemy = Player {
+                x: actor.x,
+                y: actor.y,
+                angle: dy.atan2(dx).to_degrees(),
+            };
+            move_player(
+                map,
+                regions,
+                &mut enemy,
+                Controls {
+                    forward: 1.0,
+                    strafe: 0.0,
+                    turn: 0.0,
+                    speed: 36.0,
+                },
+                delta,
+            );
+            actor.x = enemy.x;
+            actor.y = enemy.y;
+        }
+    }
+}
+
 impl PreparedScene {
     fn load(path: &Path) -> api::Result<Self> {
         if fs::metadata(path)?.len() > MAX_WAD_BYTES {
@@ -973,7 +1218,7 @@ impl PreparedScene {
         }
         let data = fs::read(path)?;
         let map = parse_map(&data)?;
-        let (x, y, angle, _) = map
+        let (x, y, angle, _, _) = map
             .things
             .iter()
             .copied()
@@ -995,11 +1240,39 @@ impl PreparedScene {
             device.create_shader(include_bytes!("../assets/shaders/textured.frag.spv"))?;
         let pipeline =
             device.create_pipeline(&vertex_shader, &fragment_shader, Pipeline::default())?;
+        let sprite_fragment =
+            device.create_shader(include_bytes!("../assets/shaders/freedoom_sprite.frag.spv"))?;
+        let sprite_pipeline =
+            device.create_pipeline(&vertex_shader, &sprite_fragment, Pipeline::default())?;
         let sampler = Sampler {
             filter: Filter::Nearest,
             address: Address::Repeat,
             mip: MipFilter::None,
         };
+        let mut sprites = BTreeMap::new();
+        let mut actors = Vec::new();
+        for &(x, y, _, kind, flags) in &map.things {
+            let Some((prefix, health)) = monster_sprite(kind) else {
+                continue;
+            };
+            if flags & 2 == 0 || flags & 16 != 0 {
+                continue;
+            }
+            if sector_at(&geometry.regions, x as f32, y as f32).is_none() {
+                // ponytail: convex-hull sector lookup skips five placements; BSP point traversal can restore them.
+                continue;
+            }
+            if let Entry::Vacant(entry) = sprites.entry(prefix) {
+                entry.insert(sprite_texture(&data, prefix)?);
+            }
+            actors.push(Actor {
+                sprite: prefix,
+                x: x as f32,
+                y: y as f32,
+                health,
+                attack_cooldown: 0.0,
+            });
+        }
         let mut draws = Vec::new();
         for (name, vertices) in geometry.flats {
             let texture = flat_textures
@@ -1041,9 +1314,12 @@ impl PreparedScene {
             map,
             device,
             pipeline,
+            sprite_pipeline,
             sampler,
             draws,
             regions: geometry.regions,
+            sprites,
+            actors,
             start: Player {
                 x: x as f32,
                 y: y as f32,
@@ -1053,7 +1329,12 @@ impl PreparedScene {
         })
     }
 
-    fn draw(&self, player: Player, renderer: &mut Renderer) -> api::Result<api::Submission> {
+    fn draw(
+        &self,
+        player: Player,
+        actors: &[Actor],
+        renderer: &mut Renderer,
+    ) -> api::Result<api::Submission> {
         let sector = sector_at(&self.regions, player.x, player.y)
             .ok_or_else(|| invalid("player is outside every E1M1 BSP leaf"))?;
         let eye = Vec3::new(player.x, sector.floor + 41.0, -player.y);
@@ -1070,11 +1351,30 @@ impl PreparedScene {
         let mut commands = self.device.commands();
         commands.begin_render_pass(Color::new(0.12, 0.22, 0.36, 1.0));
         commands.bind_pipeline(self.pipeline.clone());
-        commands.bind_uniform_buffer(uniform_buffer);
+        commands.bind_uniform_buffer(uniform_buffer.clone());
         for draw in &self.draws {
             commands.bind_texture(0, draw.texture.clone(), self.sampler);
             commands.bind_vertex_buffer(draw.vertices.clone());
             commands.draw(0, draw.count);
+        }
+        commands.bind_pipeline(self.sprite_pipeline.clone());
+        commands.bind_uniform_buffer(uniform_buffer);
+        for actor in actors.iter().filter(|actor| actor.health > 0) {
+            let Some(sector) = sector_at(&self.regions, actor.x, actor.y) else {
+                continue;
+            };
+            let Some(sprite) = self.sprites.get(&actor.sprite) else {
+                continue;
+            };
+            let vertices = actor_vertices(*actor, sprite, player.angle, sector);
+            if vertices.is_empty() {
+                continue;
+            }
+            let count = u32::try_from(vertices.len())
+                .map_err(|_| invalid("E1M1 sprite vertex count exceeds SILICON draw range"))?;
+            commands.bind_texture(0, sprite.texture.clone(), self.sampler);
+            commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
+            commands.draw(0, count);
         }
         commands.end_render_pass();
         self.device.submit(&commands, renderer)
@@ -1088,14 +1388,21 @@ fn save_frame(renderer: &Renderer, output: &Path) -> api::Result<()> {
     renderer.framebuffer.save_png(output)
 }
 
+fn frame_triangles(scene: &PreparedScene, draws: u64) -> api::Result<usize> {
+    let draws =
+        usize::try_from(draws).map_err(|_| invalid("SILICON draw count exceeds host range"))?;
+    Ok(scene.triangles + draws.saturating_sub(scene.draws.len()) * 2)
+}
+
 fn render(path: &Path, output: &Path) -> api::Result<()> {
     let scene = PreparedScene::load(path)?;
     let mut renderer = Renderer::new(960, 720)?;
-    let submission = scene.draw(scene.start, &mut renderer)?;
+    let submission = scene.draw(scene.start, &scene.actors, &mut renderer)?;
     save_frame(&renderer, output)?;
+    let triangles = frame_triangles(&scene, submission.draws)?;
     println!(
         "E1M1: {} triangles, {} SILICON draw(s), player start ({}, {}, {}°)",
-        scene.triangles, submission.draws, scene.start.x, scene.start.y, scene.start.angle
+        triangles, submission.draws, scene.start.x, scene.start.y, scene.start.angle
     );
     Ok(())
 }
@@ -1112,39 +1419,80 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     window.set_target_fps(60);
     let mut pixels = vec![0; 960 * 720];
     let mut player = scene.start;
+    let mut actors = scene.actors.clone();
+    let mut health = 100;
+    let mut ammo = 200;
+    let mut kills = 0;
+    let mut shot_cooldown = 0.0f32;
     let mut last = std::time::Instant::now();
     let mut frames = 0u64;
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let now = std::time::Instant::now();
         let delta = now.duration_since(last).as_secs_f32().min(0.05);
         last = now;
-        let axis = |positive, negative| {
-            (window.is_key_down(positive) as i8 - window.is_key_down(negative) as i8) as f32
-        };
-        move_player(
-            &scene.map,
-            &scene.regions,
-            &mut player,
-            Controls {
-                forward: axis(Key::W, Key::S),
-                strafe: axis(Key::D, Key::A),
-                turn: axis(Key::Right, Key::Left) * 100.0,
-                running: window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift),
-            },
-            delta,
-        );
-        let submission = scene.draw(player, &mut renderer)?;
+        if health > 0 {
+            let axis = |positive, negative| {
+                (window.is_key_down(positive) as i8 - window.is_key_down(negative) as i8) as f32
+            };
+            move_player(
+                &scene.map,
+                &scene.regions,
+                &mut player,
+                Controls {
+                    forward: axis(Key::W, Key::S),
+                    strafe: axis(Key::D, Key::A),
+                    turn: axis(Key::Right, Key::Left) * 100.0,
+                    speed: if window.is_key_down(Key::LeftShift)
+                        || window.is_key_down(Key::RightShift)
+                    {
+                        240.0
+                    } else {
+                        160.0
+                    },
+                },
+                delta,
+            );
+            shot_cooldown = (shot_cooldown - delta).max(0.0);
+            if window.is_key_pressed(Key::Space, KeyRepeat::No) && shot_cooldown == 0.0 && ammo > 0
+            {
+                ammo -= 1;
+                shot_cooldown = 0.35;
+                kills += usize::from(fire_weapon(&scene.map, &mut actors, player));
+            }
+            update_actors(
+                &scene.map,
+                &scene.regions,
+                &mut actors,
+                player,
+                &mut health,
+                delta,
+            );
+            health = health.max(0);
+        }
+        let submission = scene.draw(player, &actors, &mut renderer)?;
         renderer.framebuffer.present_into(&mut pixels)?;
+        let remaining = actors.iter().filter(|actor| actor.health > 0).count();
+        let state = if health == 0 {
+            "DEAD"
+        } else if remaining == 0 {
+            "CLEAR"
+        } else {
+            "PLAYING"
+        };
+        let triangles = frame_triangles(&scene, submission.draws)?;
         window.set_title(&format!(
-            "SILICON | E1M1 | WASD move, arrows turn, Shift run, Esc quit | {} triangles, {} draws",
-            scene.triangles, submission.draws
+            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire | HP {health} | ammo {ammo} | kills {kills}/{} | {} triangles, {} draws",
+            scene.actors.len(),
+            triangles,
+            submission.draws
         ));
         window.update_with_buffer(&pixels, 960, 720)?;
         frames += 1;
     }
     save_frame(&renderer, output)?;
     println!(
-        "E1M1 interactive session: {frames} SILICON-rendered frames; saved {}",
+        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, health {health}; saved {}",
+        scene.actors.len(),
         output.display()
     );
     Ok(())
@@ -1221,9 +1569,9 @@ mod tests {
             12, 0, 0, 0, // first column offset
             0, 1, 0, 1, 0, 255, // one post and column terminator
         ];
-        let mut canvas = vec![0; 4];
-        composite_patch(&mut canvas, 1, 1, &patch, 0, 0, &palette).unwrap();
-        assert_eq!(canvas, [19, 87, 203, 255]);
+        let mut canvas = vec![0; 8];
+        composite_patch(&mut canvas, 2, 1, &patch, 1, 0, &palette).unwrap();
+        assert_eq!(canvas, [0, 0, 0, 0, 19, 87, 203, 255]);
     }
 
     #[test]
@@ -1312,11 +1660,108 @@ mod tests {
                 forward: 1.0,
                 strafe: 0.0,
                 turn: 10.0,
-                running: false,
+                speed: 160.0,
             },
             0.05,
         );
         assert_eq!(player.x, 80.0);
         assert_eq!(player.angle, 0.5);
+    }
+
+    #[test]
+    fn hitscans_damage_an_exposed_enemy_but_stop_at_a_blocking_line() {
+        let mut actors = [Actor {
+            sprite: *b"TROO",
+            x: 100.0,
+            y: 0.0,
+            health: 20,
+            attack_cooldown: 0.0,
+        }];
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            things: vec![],
+        };
+        assert!(fire_weapon(&map, &mut actors, player));
+        assert_eq!(actors[0].health, 0);
+
+        actors[0].health = 20;
+        let map = Map {
+            vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
+            lines: vec![[0, 1, 1, u16::MAX, u16::MAX]],
+            ..map
+        };
+        assert!(!fire_weapon(&map, &mut actors, player));
+        assert_eq!(actors[0].health, 20);
+    }
+
+    #[test]
+    fn enemies_chase_and_melee_on_a_cooldown() {
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            things: vec![],
+        };
+        let sector = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+        };
+        let regions = [Region {
+            polygon: vec![
+                Vertex2 {
+                    x: -200.0,
+                    y: -200.0,
+                },
+                Vertex2 {
+                    x: 200.0,
+                    y: -200.0,
+                },
+                Vertex2 { x: 200.0, y: 200.0 },
+                Vertex2 {
+                    x: -200.0,
+                    y: 200.0,
+                },
+            ],
+            sector,
+        }];
+        let mut actors = [Actor {
+            sprite: *b"TROO",
+            x: 100.0,
+            y: 0.0,
+            health: 60,
+            attack_cooldown: 0.0,
+        }];
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut health = 100;
+        update_actors(&map, &regions, &mut actors, player, &mut health, 1.0);
+        assert_eq!(actors[0].x, 64.0);
+        assert_eq!(health, 100);
+
+        actors[0].x = 40.0;
+        update_actors(&map, &regions, &mut actors, player, &mut health, 0.05);
+        update_actors(&map, &regions, &mut actors, player, &mut health, 0.84);
+        assert_eq!(health, 92);
+        update_actors(&map, &regions, &mut actors, player, &mut health, 0.02);
+        assert_eq!(health, 84);
     }
 }

@@ -105,18 +105,18 @@ subset. The original positions and RGB colors, adapted vertex shader, and
 unchanged upstream fragment shader run through SILICON. See the
 [source, license, and adaptation notes](docs/third-party-demo.md).
 
-Phase 70 now reads Freedoom E1M1, palette-decodes its real floor and ceiling
-flats, composes its opaque wall textures from WAD patches, and submits 4,812
-triangles across 141 SILICON draws through the textured SPIR-V pipeline. This
-scene also has an exploratory first-person walk-through with WASD movement,
-arrow-key turning, and basic wall/step collision. It is not a complete Doom
-game. The
-[WAD source, run command, screenshot, license, and remaining limits](docs/freedoom.md)
-are documented. The Freedoom WAD stays external.
+Phase 70 renders Freedoom E1M1 geometry, textures, and cutout actor sprites
+through SILICON. The static capture submits 4,860 triangles across 165 draws:
+4,812 map triangles and 24 enemy billboards. The interactive prototype adds
+first-person movement, basic collision, hitscan shooting, health, ammunition,
+and simple pursuing melee enemies. It remains a limited E1M1 gameplay slice,
+not a complete Doom game; five enemy placements, BSP visibility, masked walls,
+and broader game rules remain. The [WAD source, controls, screenshot, license,
+and limits](docs/freedoom.md) are documented. The Freedoom WAD stays external.
 
 ![Freedoom E1M1 geometry rendered from its player start by SILICON](assets/screenshots/freedoom_e1m1.png)
 
-*Static E1M1 geometry rendered by SILICON; WAD flats and opaque walls use their palette and sector lighting.*
+*Static E1M1 view from the player start; this camera does not show an enemy. WAD flats, walls, and gameplay sprites use SILICON's texture and shader paths.*
 
 ## Programmable, observable, reproducible
 
@@ -249,7 +249,8 @@ PNG and scalar/SIMD/parallel equivalence. Golden changes require an explicit
 This is a research software GPU, not a conformant driver. SPIR-V support is
 a narrow graphics subset with acyclic structured selections with a fixed binding contract. **General
 SPIR-V/GLSL compatibility, WGSL, conformant Vulkan/OpenGL drivers, compute, JIT,
-and games are not implemented.** The small Rust Vulkan-like subset is documented
+and full-game compatibility are not implemented.** Phase 70 is a limited
+Freedoom E1M1 gameplay slice. The small Rust Vulkan-like subset is documented
 separately; it is not binary compatible with Vulkan. Do not infer support from the long-term roadmap. MSAA and
 GLSL shadow-map samples are implemented within the documented renderer subset. Multiple color
 attachments and asynchronous queues are also future work.
