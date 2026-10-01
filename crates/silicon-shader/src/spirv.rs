@@ -36,6 +36,8 @@ pub struct Compiled {
     pub shared_memory_vec4s: usize,
     /// Number of read-only vec4 storage bindings, numbered from zero.
     pub storage_input_count: u8,
+    /// Number of uint atomic storage bindings after the vec4 output.
+    pub storage_atomic_count: u8,
 }
 pub fn name(op: u16) -> &'static str {
     match op {
@@ -106,6 +108,9 @@ pub fn name(op: u16) -> &'static str {
         186 => "OpFOrdGreaterThan",
         188 => "OpFOrdLessThanEqual",
         190 => "OpFOrdGreaterThanEqual",
+        229 => "OpAtomicExchange",
+        230 => "OpAtomicCompareExchange",
+        234 => "OpAtomicIAdd",
         224 => "OpControlBarrier",
         245 => "OpPhi",
         247 => "OpSelectionMerge",
@@ -156,6 +161,8 @@ impl Op {
             14 | 22 | 41 | 42 | 247 => (2, 2),
             16 => (2, 5),
             21 | 23 | 24 | 28 | 32 | 43 | 61 | 83 | 112 | 127 | 168 | 250 => (3, 3),
+            229 | 234 => (6, 6),
+            230 => (8, 8),
             224 => (3, 3),
             29 => (2, 2),
             59 => (3, 4),
@@ -243,6 +250,11 @@ impl Op {
                 let mut r = vec![a[0]];
                 r.extend_from_slice(&a[2..]);
                 (Some(a[1]), r)
+            }
+            229 | 230 | 234 => {
+                let mut refs = vec![a[0]];
+                refs.extend_from_slice(&a[2..]);
+                (Some(a[1]), refs)
             }
             224 => (None, a.clone()),
             61 | 81 | 83 | 112 | 127 | 168 => (Some(a[1]), vec![a[0], a[2]]),
@@ -433,6 +445,7 @@ struct Compiler<'a> {
     written: BTreeSet<u8>,
     storage_inputs: BTreeSet<u8>,
     storage_output: Option<u8>,
+    storage_atomics: BTreeSet<u8>,
     shared_memory_vec4s: usize,
     shared_memory_offsets: BTreeMap<u32, usize>,
 }
@@ -578,6 +591,7 @@ impl<'a> Compiler<'a> {
             written: BTreeSet::new(),
             storage_inputs: BTreeSet::new(),
             storage_output: None,
+            storage_atomics: BTreeSet::new(),
             shared_memory_vec4s: 0,
             shared_memory_offsets: BTreeMap::new(),
         })
@@ -637,6 +651,16 @@ impl<'a> Compiler<'a> {
             _ => Err("unsigned comparison requires a register or uint32 constant".into()),
         }
     }
+    fn uint_constant(&self, id: u32) -> Result<u32> {
+        let value = self.value(id)?;
+        if self.ty(value.ty)? != Ty::UInt {
+            return Err("atomic scope and semantics must be uint32 constants".into());
+        }
+        let Value::Int(value) = value.value else {
+            return Err("atomic scope and semantics must be uint32 constants".into());
+        };
+        Ok(value)
+    }
     fn emit(&mut self, f: impl FnOnce(u8) -> Sir) -> Result<u8> {
         // ponytail: bounded virtual SSA IDs; widen only when a real shader needs more.
         if self.next >= 256 {
@@ -674,6 +698,49 @@ impl<'a> Compiler<'a> {
             dst,
             value: Vec4::new(value as f32, value as f32, value as f32, value as f32),
         })
+    }
+    fn runtime_index(&mut self, id: u32) -> Result<u8> {
+        let value = self.value(id)?;
+        let ty = self.ty(value.ty)?;
+        if !matches!(ty, Ty::Int | Ty::UInt) {
+            return Err("runtime-array index requires an int32 value".into());
+        }
+        match value.value {
+            Value::Reg(index, _) => Ok(index),
+            Value::Int(index)
+                if (ty != Ty::Int || index <= i32::MAX as u32) && index <= 16_777_216 =>
+            {
+                let index = index as f32;
+                self.emit(|dst| Sir::Const {
+                    dst,
+                    value: Vec4::new(index, index, index, index),
+                })
+            }
+            Value::Int(_) => {
+                Err("runtime-array constant index is negative or exceeds 16777216".into())
+            }
+            _ => Err("runtime-array index requires a register or int32 constant".into()),
+        }
+    }
+    fn atomic_buffer_index(&self, root: u32) -> Result<u8> {
+        let binding = self
+            .decoration(root, None)
+            .binding
+            .ok_or("atomic storage buffer lacks Binding")?;
+        let output = self
+            .storage_output
+            .ok_or("SPIR-V atomics require the vec4 output binding first")?;
+        let first_atomic = output
+            .checked_add(1)
+            .ok_or("storage binding index overflows")?;
+        let index = (binding as u8)
+            .checked_sub(first_atomic)
+            .filter(|&index| index < 12)
+            .ok_or("atomic storage bindings must follow the vec4 output")?;
+        if !self.storage_atomics.contains(&(binding as u8)) {
+            return Err("atomic operation must target a uint atomic storage buffer".into());
+        }
+        Ok(index)
     }
     fn decoration(&self, id: u32, member: Option<usize>) -> Decoration {
         self.decorations
@@ -818,40 +885,63 @@ impl<'a> Compiler<'a> {
                     let binding = d.binding.ok_or("storage buffer lacks Binding")?;
                     let member = self.decoration(base, Some(0));
                     let array = m.first().copied().ok_or("storage buffer block is empty")?;
-                    let array_valid = matches!(self.ty(array)?, Ty::RuntimeArray(vector) if self.ty(vector)? == Ty::Vector(4))
-                        && self.decoration(array, None).array_stride == Some(16);
-                    let readable = d.non_writable && !d.non_readable;
-                    let writable = d.non_readable && !d.non_writable;
                     if m.len() != 1
                         || self.decoration(base, None).block
                         || d.set != Some(0)
-                        || binding > 12
-                        || !array_valid
-                        || member.offset != Some(0)
-                        || member.non_writable != readable
-                        || member.non_readable != writable
                         || member.builtin.is_some()
                         || member.location.is_some()
                         || member.binding.is_some()
                         || member.set.is_some()
-                        || (readable == writable)
                     {
-                        return Err("compute storage buffers require one set 0 vec4[] member, stride 16, offset 0, and a read-only or write-only qualifier".into());
+                        return Err("compute storage buffers require one set 0 BufferBlock member at offset 0".into());
                     }
-                    let binding = binding as u8;
-                    if readable {
-                        if self.storage_output.is_some_and(|output| binding >= output)
-                            || !self.storage_inputs.insert(binding)
+                    let array_stride = self.decoration(array, None).array_stride;
+                    let vec4_array = matches!(self.ty(array)?, Ty::RuntimeArray(element) if self.ty(element)? == Ty::Vector(4))
+                        && array_stride == Some(16);
+                    let uint_array = matches!(self.ty(array)?, Ty::RuntimeArray(element) if self.ty(element)? == Ty::UInt)
+                        && array_stride == Some(4);
+                    if uint_array {
+                        if binding > 24
+                            || member
+                                != (Decoration {
+                                    offset: Some(0),
+                                    ..Default::default()
+                                })
+                            || d.non_readable
+                            || d.non_writable
                         {
-                            return Err("read-only storage bindings must be unique and precede the output binding".into());
+                            return Err("uint atomic buffers require a unique set 0 binding after the vec4 output, offset 0 and stride 4".into());
                         }
-                    } else if self.storage_output.replace(binding).is_some()
-                        || self.storage_inputs.iter().any(|&input| input >= binding)
-                    {
-                        return Err(
-                            "compute supports one write-only storage output after all inputs"
-                                .into(),
-                        );
+                        if !self.storage_atomics.insert(binding as u8) {
+                            return Err("uint atomic storage bindings must be unique".into());
+                        }
+                    } else {
+                        let readable = d.non_writable && !d.non_readable;
+                        let writable = d.non_readable && !d.non_writable;
+                        if binding > 12
+                            || !vec4_array
+                            || member.offset != Some(0)
+                            || member.non_writable != readable
+                            || member.non_readable != writable
+                            || (readable == writable)
+                        {
+                            return Err("compute storage buffers require one set 0 vec4[] member, stride 16, offset 0, and a read-only or write-only qualifier".into());
+                        }
+                        let binding = binding as u8;
+                        if readable {
+                            if self.storage_output.is_some_and(|output| binding >= output)
+                                || !self.storage_inputs.insert(binding)
+                            {
+                                return Err("read-only storage bindings must be unique and precede the output binding".into());
+                            }
+                        } else if self.storage_output.replace(binding).is_some()
+                            || self.storage_inputs.iter().any(|&input| input >= binding)
+                        {
+                            return Err(
+                                "compute supports one write-only storage output after all inputs"
+                                    .into(),
+                            );
+                        }
                     }
                 } else {
                     if self.stage == Stage::Compute {
@@ -1090,8 +1180,8 @@ impl<'a> Compiler<'a> {
                 self.types.insert(a[0], Ty::Array(a[1], length));
             }
             29 => {
-                if self.ty(a[1])? != Ty::Vector(4) {
-                    return Err("runtime arrays support only vec4 elements".into());
+                if !matches!(self.ty(a[1])?, Ty::Vector(4) | Ty::UInt) {
+                    return Err("runtime arrays support vec4 values or uint atomic elements".into());
                 }
                 self.types.insert(a[0], Ty::RuntimeArray(a[1]));
             }
@@ -1214,6 +1304,84 @@ impl<'a> Compiler<'a> {
                 }
                 self.ops.push(Sir::WorkgroupBarrier);
             }
+            229 | 230 | 234 => {
+                if self.stage != Stage::Compute || self.ty(a[0])? != Ty::UInt {
+                    return Err("SPIR-V atomic operations require compute uint32 values".into());
+                }
+                let (root, path, dynamic_index, storage, base) = self.pointer(a[2])?;
+                if storage != 2
+                    || path != [0]
+                    || dynamic_index.is_none()
+                    || self.ty(base)? != Ty::UInt
+                {
+                    return Err(
+                        "SPIR-V atomics require an indexed uint storage-buffer element".into(),
+                    );
+                }
+                let buffer = self.atomic_buffer_index(root)?;
+                let index = dynamic_index.unwrap();
+                let scope = self.uint_constant(a[3])?;
+                let semantics = if op.opcode == 230 {
+                    let equal = self.uint_constant(a[4])?;
+                    let unequal = self.uint_constant(a[5])?;
+                    if equal != 0 || unequal != 0 {
+                        return Err(
+                            "SPIR-V atomics support Device scope with Relaxed semantics only"
+                                .into(),
+                        );
+                    }
+                    equal
+                } else {
+                    self.uint_constant(a[4])?
+                };
+                if scope != 1 || semantics != 0 {
+                    return Err(
+                        "SPIR-V atomics support Device scope with Relaxed semantics only".into(),
+                    );
+                }
+                let instruction = match op.opcode {
+                    234 => {
+                        let value = self.uint_as_float_reg(a[5])?;
+                        let dst = self.emit(|dst| Sir::AtomicAdd {
+                            dst,
+                            buffer,
+                            index,
+                            value,
+                        })?;
+                        (dst, a[0])
+                    }
+                    229 => {
+                        let value = self.uint_as_float_reg(a[5])?;
+                        let dst = self.emit(|dst| Sir::AtomicExchange {
+                            dst,
+                            buffer,
+                            index,
+                            value,
+                        })?;
+                        (dst, a[0])
+                    }
+                    230 => {
+                        let replacement = self.uint_as_float_reg(a[6])?;
+                        let expected = self.uint_as_float_reg(a[7])?;
+                        let dst = self.emit(|dst| Sir::AtomicCompareExchange {
+                            dst,
+                            buffer,
+                            index,
+                            expected,
+                            replacement,
+                        })?;
+                        (dst, a[0])
+                    }
+                    _ => unreachable!(),
+                };
+                self.values.insert(
+                    a[1],
+                    Typed {
+                        ty: instruction.1,
+                        value: Value::Reg(instruction.0, false),
+                    },
+                );
+            }
             65 => {
                 let (root, mut path, mut dynamic_index, storage, mut base) = self.pointer(a[2])?;
                 let Ty::Pointer(result_storage, target) = self.ty(a[0])? else {
@@ -1233,13 +1401,9 @@ impl<'a> Compiler<'a> {
                             if storage == 2
                                 && path == [0]
                                 && dynamic_index.is_none()
-                                && self.ty(target)? == Ty::Vector(4) =>
+                                && self.ty(target)? == self.ty(element)? =>
                         {
-                            let (index, ty, _) = self.reg(id)?;
-                            if !matches!(self.ty(ty)?, Ty::Int | Ty::UInt) {
-                                return Err("runtime-array index requires an int32 value".into());
-                            }
-                            dynamic_index = Some(index);
+                            dynamic_index = Some(self.runtime_index(id)?);
                             element
                         }
                         Ty::Array(element, length)
@@ -2063,16 +2227,19 @@ impl<'a> Compiler<'a> {
                     return Err("member decoration index out of bounds".into());
                 }
                 let expected = match self.ty(m[*i])? {
-                    Ty::RuntimeArray(vector)
-                        if self.ty(vector)? == Ty::Vector(4)
-                            && self.decoration(*id, None).buffer_block
-                            && (d.non_readable ^ d.non_writable) =>
-                    {
-                        Decoration {
-                            offset: Some(0),
-                            non_readable: d.non_readable,
-                            non_writable: d.non_writable,
-                            ..Default::default()
+                    Ty::RuntimeArray(element) if self.decoration(*id, None).buffer_block => {
+                        match self.ty(element)? {
+                            Ty::Vector(4) if d.non_readable ^ d.non_writable => Decoration {
+                                offset: Some(0),
+                                non_readable: d.non_readable,
+                                non_writable: d.non_writable,
+                                ..Default::default()
+                            },
+                            Ty::UInt if !d.non_readable && !d.non_writable => Decoration {
+                                offset: Some(0),
+                                ..Default::default()
+                            },
+                            _ => return Err("unsupported storage-buffer member layout".into()),
                         }
                     }
                     Ty::Vector(4) if d.builtin == Some(0) => Decoration {
@@ -2115,14 +2282,20 @@ impl<'a> Compiler<'a> {
                 let Ty::RuntimeArray(element) = self.ty(*id)? else {
                     return Err("ArrayStride decoration requires a runtime array".into());
                 };
-                if self.ty(element)? != Ty::Vector(4)
-                    || *d
-                        != (Decoration {
-                            array_stride: Some(16),
-                            ..Default::default()
-                        })
+                let stride = match self.ty(element)? {
+                    Ty::Vector(4) => 16,
+                    Ty::UInt => 4,
+                    _ => return Err("runtime array element type is unsupported".into()),
+                };
+                if *d
+                    != (Decoration {
+                        array_stride: Some(stride),
+                        ..Default::default()
+                    })
                 {
-                    return Err("compute runtime arrays require vec4 stride 16".into());
+                    return Err(
+                        "runtime-array stride does not match its supported element type".into(),
+                    );
                 }
             } else if d.builtin == Some(25) {
                 if *d
@@ -2152,6 +2325,7 @@ impl<'a> Compiler<'a> {
             return Err("vertex stage requires exactly one Position output".into());
         }
         let storage_input_count = self.storage_inputs.len() as u8;
+        let storage_atomic_count = self.storage_atomics.len() as u8;
         if self.stage == Stage::Compute {
             let output = self
                 .storage_output
@@ -2168,6 +2342,17 @@ impl<'a> Compiler<'a> {
                     "compute main must write storage output on every path that reaches its end"
                         .into(),
                 );
+            }
+            if storage_atomic_count > 12
+                || self
+                    .storage_atomics
+                    .iter()
+                    .enumerate()
+                    .any(|(index, &binding)| {
+                        u16::from(binding) != u16::from(output) + 1 + index as u16
+                    })
+            {
+                return Err("compute atomic bindings must be contiguous after output N, with at most 12 uint buffers".into());
             }
         }
         for op in &self.module.instructions {
@@ -2193,6 +2378,7 @@ impl<'a> Compiler<'a> {
             outputs: self.outputs,
             local_size: self.local_size.unwrap_or([1, 1, 1]),
             storage_input_count,
+            storage_atomic_count,
             shared_memory_vec4s: self.shared_memory_vec4s,
         })
     }

@@ -1,0 +1,24 @@
+#version 450
+
+layout(local_size_x = 1) in;
+
+layout(set = 0, binding = 0, std430) writeonly buffer Output {
+    vec4 values[];
+} output_data;
+
+layout(set = 0, binding = 1, std430) buffer Counter {
+    uint values[];
+} counter_data;
+
+void main() {
+    uint global_index = gl_GlobalInvocationID.x;
+    uint old_add = atomicAdd(counter_data.values[0], 1u);
+    uint old_exchange = atomicExchange(counter_data.values[1], 7u);
+    uint old_compare = atomicCompSwap(counter_data.values[2], 7u, 9u);
+    output_data.values[global_index] = vec4(
+        float(old_add),
+        float(old_exchange),
+        float(old_compare),
+        0.0
+    );
+}

@@ -9,6 +9,7 @@ const MAX_STORAGE_WRITES: usize = MAX_DISPATCH_INVOCATIONS;
 const MAX_SHARED_VECTORS: usize = 4096;
 const MAX_INPUT_BUFFERS: usize = 12;
 const MAX_ATOMIC_BUFFERS: usize = 12;
+const MAX_EXACT_ATOMIC_UINT: u32 = 16_777_216;
 const SIMT_WIDTH: usize = 4;
 
 /// Address a vec4 element as `offset + invocation * stride`.
@@ -75,6 +76,7 @@ pub struct ComputePipeline {
     local_size: [u32; 3],
     shared_memory_vec4s: usize,
     storage_input_count: Option<usize>,
+    spirv_atomic_buffer_count: Option<usize>,
     storage_only: bool,
 }
 
@@ -127,6 +129,7 @@ impl Device {
             compiled.shared_memory_vec4s,
         )?;
         pipeline.storage_input_count = Some(input_count);
+        pipeline.spirv_atomic_buffer_count = Some(usize::from(compiled.storage_atomic_count));
         pipeline.storage_only = true;
         Ok(pipeline)
     }
@@ -192,6 +195,7 @@ impl Device {
             local_size,
             shared_memory_vec4s,
             storage_input_count: None,
+            spirv_atomic_buffer_count: None,
             storage_only: false,
         })
     }
@@ -265,7 +269,7 @@ impl Device {
         output: &mut StorageBuffer,
         output_layout: StorageLayout,
     ) -> Result<ComputeStats> {
-        validate_atomic_bindings(&pipeline.program, atomic_buffers.len())?;
+        validate_atomic_bindings(pipeline, atomic_buffers.len())?;
         let Some(shape) = dispatch_shape(
             pipeline,
             workgroups,
@@ -418,7 +422,7 @@ impl Device {
                 output_layout,
             );
         }
-        validate_atomic_bindings(&pipeline.program, atomic_buffers.len())?;
+        validate_atomic_bindings(pipeline, atomic_buffers.len())?;
         let Some(shape) = dispatch_shape(
             pipeline,
             workgroups,
@@ -544,20 +548,33 @@ fn uses_atomic_operations(program: &Program) -> bool {
     })
 }
 
-fn validate_atomic_bindings(program: &Program, count: usize) -> Result<()> {
+fn validate_atomic_bindings(pipeline: &ComputePipeline, count: usize) -> Result<()> {
+    if let Some(expected) = pipeline.spirv_atomic_buffer_count
+        && count != expected
+    {
+        return Err(format!(
+            "compute SPIR-V requires exactly {expected} uint atomic storage buffers"
+        )
+        .into());
+    }
     if count > MAX_ATOMIC_BUFFERS {
         return Err("compute dispatch accepts at most 12 atomic buffers".into());
     }
-    if let Some(buffer) = program.instructions().iter().find_map(|op| match op {
-        Instruction::AtomicAdd { buffer, .. }
-        | Instruction::AtomicExchange { buffer, .. }
-        | Instruction::AtomicCompareExchange { buffer, .. }
-            if *buffer as usize >= count =>
-        {
-            Some(*buffer)
-        }
-        _ => None,
-    }) {
+    if let Some(buffer) = pipeline
+        .program
+        .instructions()
+        .iter()
+        .find_map(|op| match op {
+            Instruction::AtomicAdd { buffer, .. }
+            | Instruction::AtomicExchange { buffer, .. }
+            | Instruction::AtomicCompareExchange { buffer, .. }
+                if *buffer as usize >= count =>
+            {
+                Some(*buffer)
+            }
+            _ => None,
+        })
+    {
         return Err(format!("compute program uses unbound atomic buffer {buffer}").into());
     }
     Ok(())
@@ -586,8 +603,12 @@ fn dispatch_workgroups_scalar(
     let atomic_storage: Vec<_> = if uses_atomic_operations(&pipeline.program) {
         atomic_buffers
             .iter()
-            .map(|buffer| AtomicStorage::new(buffer))
-            .collect()
+            .enumerate()
+            .map(|(index, buffer)| {
+                AtomicStorage::new(buffer, pipeline.spirv_atomic_buffer_count.is_some())
+                    .map_err(|error| format!("atomic buffer {index}: {error}"))
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?
     } else {
         Vec::new()
     };
@@ -777,17 +798,29 @@ struct StagedWrites {
 
 struct AtomicStorage {
     values: Vec<AtomicU32>,
+    uint_values: bool,
 }
 
 impl AtomicStorage {
-    fn new(buffer: &StorageBuffer) -> Self {
-        Self {
+    fn new(buffer: &StorageBuffer, uint_values: bool) -> std::result::Result<Self, String> {
+        if uint_values
+            && buffer
+                .values
+                .iter()
+                .any(|value| exact_atomic_uint(value.x).is_none())
+        {
+            return Err(
+                "uint atomic buffers require x values in 0..=16777216 with no fraction".into(),
+            );
+        }
+        Ok(Self {
             values: buffer
                 .values
                 .iter()
                 .map(|value| AtomicU32::new(value.x.to_bits()))
                 .collect(),
-        }
+            uint_values,
+        })
     }
 
     fn apply(&self, index: usize, operation: AtomicOperation) -> std::result::Result<Vec4, String> {
@@ -799,29 +832,61 @@ impl AtomicStorage {
         })?;
         let old = match operation {
             AtomicOperation::Add(value) => {
-                if !value.is_finite() {
-                    return Err("atomic add value must be finite".into());
+                if self.uint_values {
+                    let delta = exact_atomic_uint(value)
+                        .ok_or("uint atomic add requires an exact value in 0..=16777216")?;
+                    atomic
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |bits| {
+                            exact_atomic_uint(f32::from_bits(bits))
+                                .and_then(|current| current.checked_add(delta))
+                                .filter(|&sum| sum <= MAX_EXACT_ATOMIC_UINT)
+                                .map(|sum| (sum as f32).to_bits())
+                        })
+                        .map_err(|_| "uint atomic add exceeds the exact supported range")?
+                } else {
+                    if !value.is_finite() {
+                        return Err("atomic add value must be finite".into());
+                    }
+                    atomic
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |bits| {
+                            let sum = f32::from_bits(bits) + value;
+                            sum.is_finite().then_some(sum.to_bits())
+                        })
+                        .map_err(|_| "atomic add would produce a non-finite value")?
                 }
-                atomic
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |bits| {
-                        let sum = f32::from_bits(bits) + value;
-                        sum.is_finite().then_some(sum.to_bits())
-                    })
-                    .map_err(|_| "atomic add would produce a non-finite value")?
             }
             AtomicOperation::Exchange(value) => {
-                if !value.is_finite() {
-                    return Err("atomic exchange value must be finite".into());
-                }
-                atomic.swap(value.to_bits(), Ordering::SeqCst)
+                let replacement = if self.uint_values {
+                    exact_atomic_uint(value)
+                        .ok_or("uint atomic exchange requires an exact value in 0..=16777216")?
+                        as f32
+                } else {
+                    if !value.is_finite() {
+                        return Err("atomic exchange value must be finite".into());
+                    }
+                    value
+                };
+                atomic.swap(replacement.to_bits(), Ordering::SeqCst)
             }
             AtomicOperation::CompareExchange {
                 expected,
                 replacement,
             } => {
-                if !expected.is_finite() || !replacement.is_finite() {
-                    return Err("atomic compare-exchange values must be finite".into());
-                }
+                let (expected, replacement) = if self.uint_values {
+                    (
+                        exact_atomic_uint(expected)
+                            .ok_or("uint compare-exchange expected value must be exact")?
+                            as f32,
+                        exact_atomic_uint(replacement)
+                            .ok_or("uint compare-exchange replacement value must be exact")?
+                            as f32,
+                    )
+                } else {
+                    if !expected.is_finite() || !replacement.is_finite() {
+                        return Err("atomic compare-exchange values must be finite".into());
+                    }
+                    (expected, replacement)
+                };
                 atomic
                     .compare_exchange(
                         expected.to_bits(),
@@ -841,6 +906,14 @@ impl AtomicStorage {
             value.x = f32::from_bits(atomic.load(Ordering::SeqCst));
         }
     }
+}
+
+fn exact_atomic_uint(value: f32) -> Option<u32> {
+    (value.is_finite()
+        && value >= 0.0
+        && value.fract() == 0.0
+        && value <= MAX_EXACT_ATOMIC_UINT as f32)
+        .then_some(value as u32)
 }
 
 impl StagedWrites {
@@ -1165,6 +1238,93 @@ mod tests {
             output.as_slice(),
             vec![first + first + first; ELEMENTS].as_slice()
         );
+    }
+
+    #[test]
+    fn dispatches_glsl_spirv_uint_atomics_across_workgroups() {
+        const INVOCATIONS: usize = 64;
+        let device = Device::new();
+        let pipeline = device
+            .create_compute_pipeline_from_spirv(include_bytes!(
+                "../../../assets/shaders/compute_atomic_uint.comp.spv"
+            ))
+            .unwrap();
+        let mut counters = device
+            .create_storage_buffer(vec![
+                Vec4::new(30.0, 2.0, 3.0, 4.0),
+                Vec4::new(5.0, 6.0, 7.0, 8.0),
+                Vec4::new(7.0, 8.0, 9.0, 10.0),
+            ])
+            .unwrap();
+        let mut output = device
+            .create_storage_buffer(vec![Vec4::ZERO; INVOCATIONS])
+            .unwrap();
+        let mut atomic_buffers = [&mut counters];
+        let stats = device
+            .dispatch_compute_with_atomics(
+                &pipeline,
+                [INVOCATIONS as u32, 1, 1],
+                &[],
+                &mut atomic_buffers,
+                &mut output,
+            )
+            .unwrap();
+
+        assert_eq!(stats.invocations, INVOCATIONS as u64);
+        assert_eq!(stats.workgroups, INVOCATIONS as u64);
+        assert_eq!(counters.as_slice()[0], Vec4::new(94.0, 2.0, 3.0, 4.0));
+        assert_eq!(counters.as_slice()[1], Vec4::new(7.0, 6.0, 7.0, 8.0));
+        assert_eq!(counters.as_slice()[2], Vec4::new(9.0, 8.0, 9.0, 10.0));
+
+        let mut old_adds: Vec<_> = output.as_slice().iter().map(|value| value.x).collect();
+        old_adds.sort_by(f32::total_cmp);
+        assert_eq!(
+            old_adds,
+            (30..94).map(|value| value as f32).collect::<Vec<_>>()
+        );
+        let mut old_exchanges: Vec<_> = output.as_slice().iter().map(|value| value.y).collect();
+        old_exchanges.sort_by(f32::total_cmp);
+        assert_eq!(old_exchanges[0], 5.0);
+        assert!(old_exchanges[1..].iter().all(|&value| value == 7.0));
+        let mut old_compares: Vec<_> = output.as_slice().iter().map(|value| value.z).collect();
+        old_compares.sort_by(f32::total_cmp);
+        assert_eq!(old_compares[0], 7.0);
+        assert!(old_compares[1..].iter().all(|&value| value == 9.0));
+    }
+
+    #[test]
+    fn rejects_non_integer_glsl_spirv_atomic_buffer_before_dispatch() {
+        let device = Device::new();
+        let pipeline = device
+            .create_compute_pipeline_from_spirv(include_bytes!(
+                "../../../assets/shaders/compute_atomic_uint.comp.spv"
+            ))
+            .unwrap();
+        let initial = Vec4::new(30.5, 2.0, 3.0, 4.0);
+        let mut counters = device
+            .create_storage_buffer(vec![
+                initial,
+                Vec4::new(5.0, 6.0, 7.0, 8.0),
+                Vec4::new(7.0, 8.0, 9.0, 10.0),
+            ])
+            .unwrap();
+        let sentinel = Vec4::new(42.0, 43.0, 44.0, 45.0);
+        let mut output = device.create_storage_buffer(vec![sentinel]).unwrap();
+        let mut atomic_buffers = [&mut counters];
+
+        let error = device
+            .dispatch_compute_with_atomics(
+                &pipeline,
+                [1, 1, 1],
+                &[],
+                &mut atomic_buffers,
+                &mut output,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("uint atomic buffers require x values"));
+        assert_eq!(counters.as_slice()[0], initial);
+        assert_eq!(output.as_slice(), &[sentinel]);
     }
 
     #[test]

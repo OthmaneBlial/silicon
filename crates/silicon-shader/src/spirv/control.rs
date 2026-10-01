@@ -277,7 +277,10 @@ impl Compiler<'_> {
                     | 182..=184
                     | 186
                     | 188
-                    | 190 => {
+                    | 190
+                    | 229
+                    | 230
+                    | 234 => {
                         prefix = false;
                         self.instruction(op).map_err(|e| op.error(e))?;
                         if let Some(result) = op.ids()?.0 {
