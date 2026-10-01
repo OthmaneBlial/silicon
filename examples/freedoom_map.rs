@@ -3390,8 +3390,9 @@ fn update_actors(
     health: &mut i32,
     armor: &mut Armor,
     delta: f32,
-) {
+) -> Vec<usize> {
     let routes = sector_routes(map);
+    let mut crossed_platform_lines = Vec::new();
     for actor in actors.iter_mut() {
         if actor.health <= 0 {
             if let Some(time) = actor.death_animation_time {
@@ -3490,16 +3491,20 @@ fn update_actors(
                 y: actor.y,
                 angle: (target.y - actor.y).atan2(target.x - actor.x).to_degrees(),
             };
-            move_player(
-                map,
-                &mut enemy,
-                Controls {
-                    forward: 1.0,
-                    strafe: 0.0,
-                    turn: 0.0,
-                    speed: 36.0,
-                },
-                delta,
+            crossed_platform_lines.extend(
+                move_player(
+                    map,
+                    &mut enemy,
+                    Controls {
+                        forward: 1.0,
+                        strafe: 0.0,
+                        turn: 0.0,
+                        speed: 36.0,
+                    },
+                    delta,
+                )
+                .into_iter()
+                .filter(|&line| map.lines[line][5] == LINE_PLAT_DOWN_WAIT_UP),
             );
             actor.x = enemy.x;
             actor.y = enemy.y;
@@ -3513,6 +3518,9 @@ fn update_actors(
             actor.animation_time = (actor.animation_time + delta) % ACTOR_IDLE_CYCLE;
         }
     }
+    crossed_platform_lines.sort_unstable();
+    crossed_platform_lines.dedup();
+    crossed_platform_lines
 }
 
 fn update_projectiles(
@@ -4244,7 +4252,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             );
         }
         if !exited {
-            update_actors(
+            let crossed_platform_lines = update_actors(
                 &scene.map,
                 &mut actors,
                 &mut projectiles,
@@ -4253,6 +4261,11 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 &mut armor,
                 delta,
             );
+            for line in crossed_platform_lines {
+                let started = down_wait_up_platforms(&scene.map, line, &platforms);
+                activated_sectors += started.len();
+                platforms.extend(started);
+            }
             update_projectiles(
                 &scene.map,
                 &mut projectiles,
@@ -5990,6 +6003,9 @@ mod tests {
             middle: [0; 8],
             sector,
         };
+        let mut sectors = vec![sector; 3];
+        sectors[2].floor = 24.0;
+        sectors[2].tag = 5;
         let map = Map {
             vertices: vec![
                 Vertex2 { x: 10.0, y: -64.0 },
@@ -5999,10 +6015,10 @@ mod tests {
                 Vertex2 { x: 10.0, y: 14.0 },
                 Vertex2 { x: 10.0, y: 18.0 },
             ],
-            sectors: vec![sector; 3],
+            sectors,
             sides: vec![side(0), side(1), side(1), side(2), side(0)],
             lines: vec![
-                [0, 1, 0, 0, 1, 0, 0],
+                [0, 1, 0, 0, 1, LINE_PLAT_DOWN_WAIT_UP, 5],
                 [2, 3, 0, 2, 3, 0, 0],
                 [4, 5, 1, 4, u16::MAX, 0, 0],
             ],
@@ -6071,7 +6087,7 @@ mod tests {
             y: 40.0,
             angle: 0.0,
         };
-        update_actors(
+        let crossed = update_actors(
             &map,
             &mut actors,
             &mut projectiles,
@@ -6086,6 +6102,8 @@ mod tests {
             actors[0].x,
             actors[0].y
         );
+        assert_eq!(crossed, [0]);
+        assert_eq!(down_wait_up_platforms(&map, crossed[0], &[])[0].sector, 2);
         assert_eq!(health, 100);
     }
 
