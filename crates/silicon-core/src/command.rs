@@ -567,6 +567,9 @@ impl CommandBuffer {
                                 op,
                                 Instruction::StorageLoad { .. }
                                     | Instruction::StorageStore { .. }
+                                    | Instruction::AtomicAdd { .. }
+                                    | Instruction::AtomicExchange { .. }
+                                    | Instruction::AtomicCompareExchange { .. }
                                     | Instruction::SharedLoad { .. }
                                     | Instruction::SharedStore { .. }
                                     | Instruction::WorkgroupBarrier

@@ -241,9 +241,15 @@ impl Program {
                     }
                     (None, regs[src as usize])
                 }
-                SharedLoad { .. } | SharedStore { .. } | WorkgroupBarrier => {
+                AtomicAdd { .. }
+                | AtomicExchange { .. }
+                | AtomicCompareExchange { .. }
+                | SharedLoad { .. }
+                | SharedStore { .. }
+                | WorkgroupBarrier => {
                     return Err(
-                        "SIR workgroup operations require synchronized scalar execution".into(),
+                        "SIR compute atomics and workgroup operations require scalar execution"
+                            .into(),
                     );
                 }
                 Uniform { dst, slot } => (Some(dst), splat(get(slot)?)),

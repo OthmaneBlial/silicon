@@ -24,7 +24,7 @@ offset/stride. Stores are checked against the output length, capped at 1,048,576
 per dispatch, and committed only after all invocations succeed. Duplicate
 shader-selected destinations fail the dispatch before commit; explicit stores
 run after map output writes and can overwrite them. This provides deterministic
-single-writer scatter without atomics.
+single-writer scatter.
 
 `create_compute_pipeline_with_shared_memory` reserves up to 4,096 vec4s (64 KiB)
 per workgroup. The memory starts at zero for each group. SIR
@@ -37,9 +37,32 @@ divergence error instead of waiting indefinitely.
 Within one barrier interval, shared accesses by different invocations may read
 the same element, but conflicting cross-invocation read/write or write/write
 accesses return a race error. Same-invocation accesses are ordered. A barrier
-starts a new interval. The scalar workgroup scheduler runs these synchronized
-programs for both dispatch entry points; the SIMD dispatch request uses this
-scalar scheduler for correctness. Other programs retain the SIMD4 path.
+starts a new interval. The scalar workgroup scheduler runs shared-memory and
+atomic programs for both dispatch entry points; the SIMD dispatch request uses
+this scalar scheduler for correctness. Other programs retain the SIMD4 path.
+
+`AtomicAdd`, `AtomicExchange` and `AtomicCompareExchange` operate on a separate
+mutable atomic-buffer binding selected by `buffer`. These are scalar f32
+operations on the addressed vec4's x component; yzw are preserved. Operands use
+their x component, and each instruction returns the previous scalar splatted to
+vec4. Compare-exchange compares f32 bit patterns. Values and addition results
+must remain finite. The bindings are available through
+`dispatch_compute_with_atomics` and `dispatch_compute_with_layouts_and_atomics`;
+the SIMD-requested variants use the same scalar workgroup scheduler.
+
+Atomic buffers are checked and copied into dispatch-local `AtomicU32` cells,
+using sequentially consistent host atomics. Invocations execute in deterministic
+workgroup/local order today; atomics linearize across workgroups, but there is no
+cross-workgroup barrier. Atomic-buffer changes commit only after the full
+dispatch succeeds, alongside the output. Failed shaders leave all bound buffers
+unchanged.
+
+The runnable atomic proof sums values across four workgroups and verifies every
+returned prefix:
+
+```sh
+cargo run --release --example compute_atomics
+```
 
 Run the vector-add proof:
 
@@ -74,7 +97,7 @@ finite vec4 values. Dispatch results are staged and copied to the output only
 after every invocation succeeds, so a failed shader leaves output unchanged.
 
 This is an initial data-parallel SIR path, not general compute compatibility.
-Programs cannot bind uniforms or textures, write multiple map outputs,
-synchronize different workgroups, use atomics, or load compute-stage SPIR-V.
+Programs cannot bind uniforms or textures, write multiple map outputs, use
+cross-workgroup barriers, integer/vector atomics, or compute-stage SPIR-V.
 Dispatch is synchronous; command-buffer capture/replay and C API support are not
 included yet.

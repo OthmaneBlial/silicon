@@ -19,12 +19,15 @@ layouts to each input and the output. Dispatch runs one SIR program per 3D
 invocation; SIMD uses four-lane SIR execution and a scalar tail. Shader-selected
 SIR compute programs also support bounded shader-selected storage loads and
 single-writer output stores. `create_compute_pipeline_with_shared_memory` adds
-per-workgroup vec4 memory and `WorkgroupBarrier`; synchronized programs use the
-scalar workgroup scheduler. Command-buffer integration, cross-workgroup
-synchronization, atomics and compute-stage SPIR-V are unsupported. See the
+per-workgroup vec4 memory and `WorkgroupBarrier`; `dispatch_compute_with_atomics`
+and its layout/SIMD variants accept separate mutable bindings for scalar f32
+storage atomics. Shared and atomic programs use the scalar workgroup scheduler.
+Command-buffer integration, cross-workgroup barriers, integer/vector atomics and
+compute-stage SPIR-V are unsupported. See the
 [compute contract](compute.md),
 [vector-add example](../examples/compute_vector_add.rs), and
-[benchmark example](../examples/compute_bench.rs).
+[benchmark example](../examples/compute_bench.rs) and
+[atomic example](../examples/compute_atomics.rs).
 
 Shader creation accepts at most 1 MiB per SPIR-V 1.0 module and translates only
 the documented graphics subset. Pipeline creation requires a compatible

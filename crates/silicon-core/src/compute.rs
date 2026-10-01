@@ -1,5 +1,6 @@
 use crate::{Device, Result, Vec4};
-use silicon_shader::{Instruction, Program};
+use silicon_shader::{AtomicOperation, Instruction, Program};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 const MAX_WORKGROUP_SIZE: usize = 1024;
 const MAX_DISPATCH_INVOCATIONS: usize = 1_048_576;
@@ -7,6 +8,7 @@ const MAX_STORAGE_VECTORS: usize = 1_048_576;
 const MAX_STORAGE_WRITES: usize = MAX_DISPATCH_INVOCATIONS;
 const MAX_SHARED_VECTORS: usize = 4096;
 const MAX_INPUT_BUFFERS: usize = 12;
+const MAX_ATOMIC_BUFFERS: usize = 12;
 const SIMT_WIDTH: usize = 4;
 
 /// Address a vec4 element as `offset + invocation * stride`.
@@ -176,12 +178,25 @@ impl Device {
         inputs: &[&StorageBuffer],
         output: &mut StorageBuffer,
     ) -> Result<ComputeStats> {
+        self.dispatch_compute_with_atomics(pipeline, workgroups, inputs, &mut [], output)
+    }
+
+    /// Dispatches with mutable storage buffers available to SIR atomic operations.
+    pub fn dispatch_compute_with_atomics(
+        &self,
+        pipeline: &ComputePipeline,
+        workgroups: [u32; 3],
+        inputs: &[&StorageBuffer],
+        atomic_buffers: &mut [&mut StorageBuffer],
+        output: &mut StorageBuffer,
+    ) -> Result<ComputeStats> {
         let layouts = packed_layouts(inputs.len())?;
-        self.dispatch_compute_with_layouts(
+        self.dispatch_compute_with_layouts_and_atomics(
             pipeline,
             workgroups,
             inputs,
             &layouts[..inputs.len()],
+            atomic_buffers,
             output,
             StorageLayout::PACKED,
         )
@@ -199,6 +214,30 @@ impl Device {
         output: &mut StorageBuffer,
         output_layout: StorageLayout,
     ) -> Result<ComputeStats> {
+        self.dispatch_compute_with_layouts_and_atomics(
+            pipeline,
+            workgroups,
+            inputs,
+            input_layouts,
+            &mut [],
+            output,
+            output_layout,
+        )
+    }
+
+    /// Layout-based dispatch with separate mutable storage bindings for atomics.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_compute_with_layouts_and_atomics(
+        &self,
+        pipeline: &ComputePipeline,
+        workgroups: [u32; 3],
+        inputs: &[&StorageBuffer],
+        input_layouts: &[StorageLayout],
+        atomic_buffers: &mut [&mut StorageBuffer],
+        output: &mut StorageBuffer,
+        output_layout: StorageLayout,
+    ) -> Result<ComputeStats> {
+        validate_atomic_bindings(&pipeline.program, atomic_buffers.len())?;
         let Some(shape) = dispatch_shape(
             pipeline,
             workgroups,
@@ -217,6 +256,7 @@ impl Device {
                 workgroups,
                 inputs,
                 input_layouts,
+                atomic_buffers,
                 output,
                 output_layout,
                 shape,
@@ -276,12 +316,25 @@ impl Device {
         inputs: &[&StorageBuffer],
         output: &mut StorageBuffer,
     ) -> Result<ComputeStats> {
+        self.dispatch_compute_simd_with_atomics(pipeline, workgroups, inputs, &mut [], output)
+    }
+
+    /// SIMD-requested dispatch with mutable storage bindings for atomics.
+    pub fn dispatch_compute_simd_with_atomics(
+        &self,
+        pipeline: &ComputePipeline,
+        workgroups: [u32; 3],
+        inputs: &[&StorageBuffer],
+        atomic_buffers: &mut [&mut StorageBuffer],
+        output: &mut StorageBuffer,
+    ) -> Result<ComputeStats> {
         let layouts = packed_layouts(inputs.len())?;
-        self.dispatch_compute_simd_with_layouts(
+        self.dispatch_compute_simd_with_layouts_and_atomics(
             pipeline,
             workgroups,
             inputs,
             &layouts[..inputs.len()],
+            atomic_buffers,
             output,
             StorageLayout::PACKED,
         )
@@ -297,16 +350,41 @@ impl Device {
         output: &mut StorageBuffer,
         output_layout: StorageLayout,
     ) -> Result<ComputeStats> {
+        self.dispatch_compute_simd_with_layouts_and_atomics(
+            pipeline,
+            workgroups,
+            inputs,
+            input_layouts,
+            &mut [],
+            output,
+            output_layout,
+        )
+    }
+
+    /// SIMD-requested layout dispatch with mutable storage bindings for atomics.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_compute_simd_with_layouts_and_atomics(
+        &self,
+        pipeline: &ComputePipeline,
+        workgroups: [u32; 3],
+        inputs: &[&StorageBuffer],
+        input_layouts: &[StorageLayout],
+        atomic_buffers: &mut [&mut StorageBuffer],
+        output: &mut StorageBuffer,
+        output_layout: StorageLayout,
+    ) -> Result<ComputeStats> {
         if uses_workgroup_executor(&pipeline.program) {
-            return self.dispatch_compute_with_layouts(
+            return self.dispatch_compute_with_layouts_and_atomics(
                 pipeline,
                 workgroups,
                 inputs,
                 input_layouts,
+                atomic_buffers,
                 output,
                 output_layout,
             );
         }
+        validate_atomic_bindings(&pipeline.program, atomic_buffers.len())?;
         let Some(shape) = dispatch_shape(
             pipeline,
             workgroups,
@@ -403,18 +481,53 @@ fn uses_workgroup_executor(program: &Program) -> bool {
     program.instructions().iter().any(|op| {
         matches!(
             op,
-            Instruction::SharedLoad { .. }
+            Instruction::AtomicAdd { .. }
+                | Instruction::AtomicExchange { .. }
+                | Instruction::AtomicCompareExchange { .. }
+                | Instruction::SharedLoad { .. }
                 | Instruction::SharedStore { .. }
                 | Instruction::WorkgroupBarrier
         )
     })
 }
 
+fn uses_atomic_operations(program: &Program) -> bool {
+    program.instructions().iter().any(|op| {
+        matches!(
+            op,
+            Instruction::AtomicAdd { .. }
+                | Instruction::AtomicExchange { .. }
+                | Instruction::AtomicCompareExchange { .. }
+        )
+    })
+}
+
+fn validate_atomic_bindings(program: &Program, count: usize) -> Result<()> {
+    if count > MAX_ATOMIC_BUFFERS {
+        return Err("compute dispatch accepts at most 12 atomic buffers".into());
+    }
+    if let Some(buffer) = program.instructions().iter().find_map(|op| match op {
+        Instruction::AtomicAdd { buffer, .. }
+        | Instruction::AtomicExchange { buffer, .. }
+        | Instruction::AtomicCompareExchange { buffer, .. }
+            if *buffer as usize >= count =>
+        {
+            Some(*buffer)
+        }
+        _ => None,
+    }) {
+        return Err(format!("compute program uses unbound atomic buffer {buffer}").into());
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn dispatch_workgroups_scalar(
     pipeline: &ComputePipeline,
     workgroups: [u32; 3],
     inputs: &[&StorageBuffer],
     input_layouts: &[StorageLayout],
+    atomic_buffers: &mut [&mut StorageBuffer],
     output: &mut StorageBuffer,
     output_layout: StorageLayout,
     shape: DispatchShape,
@@ -427,6 +540,14 @@ fn dispatch_workgroups_scalar(
         workgroups: shape.group_count as u64,
         invocations: shape.invocations as u64,
         ..ComputeStats::default()
+    };
+    let atomic_storage: Vec<_> = if uses_atomic_operations(&pipeline.program) {
+        atomic_buffers
+            .iter()
+            .map(|buffer| AtomicStorage::new(buffer))
+            .collect()
+    } else {
+        Vec::new()
     };
     let [size_x, size_y, _] = shape.global_size;
 
@@ -482,6 +603,13 @@ fn dispatch_workgroups_scalar(
                             .stage(index, value)
                             .map_err(|error| format!("local invocation {local}: {error}"))
                     },
+                    |local, buffer, index, operation| {
+                        atomic_storage
+                            .get(buffer)
+                            .ok_or_else(|| format!("local invocation {local}: unbound atomic buffer {buffer}"))?
+                            .apply(index, operation)
+                            .map_err(|error| format!("local invocation {local}: {error}"))
+                    },
                 )?;
                 for (linear, execution) in linears.into_iter().zip(executions) {
                     results[linear] = execution.outputs[0];
@@ -491,6 +619,9 @@ fn dispatch_workgroups_scalar(
         }
     }
     commit_results(output, output_layout, &results, stores)?;
+    for (buffer, atomic) in atomic_buffers.iter_mut().zip(&atomic_storage) {
+        atomic.commit_into(buffer);
+    }
     Ok(stats)
 }
 
@@ -583,6 +714,74 @@ struct StagedWrites {
     values: Vec<(usize, Vec4)>,
 }
 
+struct AtomicStorage {
+    values: Vec<AtomicU32>,
+}
+
+impl AtomicStorage {
+    fn new(buffer: &StorageBuffer) -> Self {
+        Self {
+            values: buffer
+                .values
+                .iter()
+                .map(|value| AtomicU32::new(value.x.to_bits()))
+                .collect(),
+        }
+    }
+
+    fn apply(&self, index: usize, operation: AtomicOperation) -> std::result::Result<Vec4, String> {
+        let atomic = self.values.get(index).ok_or_else(|| {
+            format!(
+                "atomic access to vec4 {index} is out of bounds for buffer length {}",
+                self.values.len()
+            )
+        })?;
+        let old = match operation {
+            AtomicOperation::Add(value) => {
+                if !value.is_finite() {
+                    return Err("atomic add value must be finite".into());
+                }
+                atomic
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |bits| {
+                        let sum = f32::from_bits(bits) + value;
+                        sum.is_finite().then_some(sum.to_bits())
+                    })
+                    .map_err(|_| "atomic add would produce a non-finite value")?
+            }
+            AtomicOperation::Exchange(value) => {
+                if !value.is_finite() {
+                    return Err("atomic exchange value must be finite".into());
+                }
+                atomic.swap(value.to_bits(), Ordering::SeqCst)
+            }
+            AtomicOperation::CompareExchange {
+                expected,
+                replacement,
+            } => {
+                if !expected.is_finite() || !replacement.is_finite() {
+                    return Err("atomic compare-exchange values must be finite".into());
+                }
+                atomic
+                    .compare_exchange(
+                        expected.to_bits(),
+                        replacement.to_bits(),
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    )
+                    .unwrap_or_else(|old| old)
+            }
+        };
+        let old = f32::from_bits(old);
+        Ok(Vec4::new(old, old, old, old))
+    }
+
+    fn commit_into(&self, buffer: &mut StorageBuffer) {
+        for (value, atomic) in buffer.values.iter_mut().zip(&self.values) {
+            value.x = f32::from_bits(atomic.load(Ordering::SeqCst));
+        }
+    }
+}
+
 impl StagedWrites {
     fn new(output_len: usize) -> Self {
         Self {
@@ -617,7 +816,7 @@ fn commit_results(
     stores.values.sort_unstable_by_key(|(index, _)| *index);
     if let Some(pair) = stores.values.windows(2).find(|pair| pair[0].0 == pair[1].0) {
         return Err(format!(
-            "compute storage writes contain duplicate destination vec4 {}; atomics are unsupported",
+            "compute storage writes contain duplicate destination vec4 {}",
             pair[0].0
         )
         .into());
@@ -1076,6 +1275,250 @@ mod tests {
             .to_string();
         assert!(error.contains("shared-memory vec4 1 is out of bounds"));
         assert_eq!(output.as_slice(), &[sentinel; 4]);
+    }
+
+    #[test]
+    fn atomic_add_is_linearizable_across_workgroups() {
+        use Instruction::*;
+        let device = Device::new();
+        let program = Program::new(vec![
+            Const {
+                dst: 0,
+                value: Vec4::ZERO,
+            },
+            Const {
+                dst: 1,
+                value: Vec4::new(1.0, 0.0, 0.0, 0.0),
+            },
+            AtomicAdd {
+                dst: 2,
+                buffer: 0,
+                index: 0,
+                value: 1,
+            },
+            Output { slot: 0, src: 2 },
+        ])
+        .unwrap();
+        let pipeline = device.create_compute_pipeline(program, [4, 1, 1]).unwrap();
+        let initial = Vec4::new(10.0, 2.0, 3.0, 4.0);
+        let mut scalar_atomic = device.create_storage_buffer(vec![initial]).unwrap();
+        let mut simd_atomic = device.create_storage_buffer(vec![initial]).unwrap();
+        let mut scalar_output = device.create_storage_buffer(vec![Vec4::ZERO; 8]).unwrap();
+        let mut simd_output = device.create_storage_buffer(vec![Vec4::ZERO; 8]).unwrap();
+
+        let mut scalar_bindings = [&mut scalar_atomic];
+        let scalar_stats = device
+            .dispatch_compute_with_atomics(
+                &pipeline,
+                [2, 1, 1],
+                &[],
+                &mut scalar_bindings,
+                &mut scalar_output,
+            )
+            .unwrap();
+        let mut simd_bindings = [&mut simd_atomic];
+        let simd_stats = device
+            .dispatch_compute_simd_with_atomics(
+                &pipeline,
+                [2, 1, 1],
+                &[],
+                &mut simd_bindings,
+                &mut simd_output,
+            )
+            .unwrap();
+
+        assert_eq!(scalar_stats, simd_stats);
+        assert_eq!(scalar_output.as_slice(), simd_output.as_slice());
+        assert_eq!(
+            scalar_output
+                .as_slice()
+                .iter()
+                .map(|value| value.x)
+                .collect::<Vec<_>>(),
+            (10..18).map(|value| value as f32).collect::<Vec<_>>()
+        );
+        assert_eq!(scalar_atomic.as_slice()[0], Vec4::new(18.0, 2.0, 3.0, 4.0));
+        assert_eq!(simd_atomic.as_slice(), scalar_atomic.as_slice());
+    }
+
+    #[test]
+    fn atomic_exchange_and_compare_exchange_return_previous_values() {
+        use Instruction::*;
+        let device = Device::new();
+        let program = Program::new(vec![
+            Const {
+                dst: 0,
+                value: Vec4::ZERO,
+            },
+            Const {
+                dst: 1,
+                value: Vec4::new(5.0, 0.0, 0.0, 0.0),
+            },
+            AtomicExchange {
+                dst: 2,
+                buffer: 0,
+                index: 0,
+                value: 1,
+            },
+            Const {
+                dst: 3,
+                value: Vec4::ZERO,
+            },
+            StorageStore { index: 3, src: 2 },
+            Const {
+                dst: 4,
+                value: Vec4::new(5.0, 0.0, 0.0, 0.0),
+            },
+            Const {
+                dst: 5,
+                value: Vec4::new(7.0, 0.0, 0.0, 0.0),
+            },
+            AtomicCompareExchange {
+                dst: 6,
+                buffer: 0,
+                index: 0,
+                expected: 4,
+                replacement: 5,
+            },
+            Const {
+                dst: 7,
+                value: Vec4::new(1.0, 0.0, 0.0, 0.0),
+            },
+            StorageStore { index: 7, src: 6 },
+            Const {
+                dst: 8,
+                value: Vec4::new(5.0, 0.0, 0.0, 0.0),
+            },
+            Const {
+                dst: 9,
+                value: Vec4::new(9.0, 0.0, 0.0, 0.0),
+            },
+            AtomicCompareExchange {
+                dst: 10,
+                buffer: 0,
+                index: 0,
+                expected: 8,
+                replacement: 9,
+            },
+            Const {
+                dst: 11,
+                value: Vec4::new(2.0, 0.0, 0.0, 0.0),
+            },
+            StorageStore { index: 11, src: 10 },
+            Output { slot: 0, src: 2 },
+        ])
+        .unwrap();
+        let pipeline = device.create_compute_pipeline(program, [1, 1, 1]).unwrap();
+        let mut atomics = device
+            .create_storage_buffer(vec![Vec4::new(3.0, 4.0, 5.0, 6.0)])
+            .unwrap();
+        let mut output = device.create_storage_buffer(vec![Vec4::ZERO; 3]).unwrap();
+        let mut bindings = [&mut atomics];
+        device
+            .dispatch_compute_with_atomics(&pipeline, [1, 1, 1], &[], &mut bindings, &mut output)
+            .unwrap();
+
+        assert_eq!(
+            output.as_slice(),
+            &[
+                Vec4::new(3.0, 3.0, 3.0, 3.0),
+                Vec4::new(5.0, 5.0, 5.0, 5.0),
+                Vec4::new(7.0, 7.0, 7.0, 7.0),
+            ]
+        );
+        assert_eq!(atomics.as_slice()[0], Vec4::new(7.0, 4.0, 5.0, 6.0));
+    }
+
+    #[test]
+    fn atomic_dispatch_errors_do_not_mutate_bound_buffers() {
+        use Instruction::*;
+        let device = Device::new();
+        let sentinel = Vec4::new(-9.0, -9.0, -9.0, -9.0);
+        let pipeline = device
+            .create_compute_pipeline(
+                Program::new(vec![
+                    Const {
+                        dst: 0,
+                        value: Vec4::ZERO,
+                    },
+                    Const {
+                        dst: 1,
+                        value: Vec4::new(1.0, 0.0, 0.0, 0.0),
+                    },
+                    AtomicAdd {
+                        dst: 2,
+                        buffer: 0,
+                        index: 0,
+                        value: 1,
+                    },
+                    Const {
+                        dst: 3,
+                        value: Vec4::new(1.0, 0.0, 0.0, 0.0),
+                    },
+                    StorageStore { index: 3, src: 2 },
+                    Output { slot: 0, src: 2 },
+                ])
+                .unwrap(),
+                [1, 1, 1],
+            )
+            .unwrap();
+        let mut atomics = device
+            .create_storage_buffer(vec![Vec4::new(10.0, 2.0, 3.0, 4.0)])
+            .unwrap();
+        let mut output = device.create_storage_buffer(vec![sentinel]).unwrap();
+        let error = device
+            .dispatch_compute_with_atomics(&pipeline, [1, 1, 1], &[], &mut [], &mut output)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unbound atomic buffer 0"));
+        assert_eq!(output.as_slice(), &[sentinel]);
+
+        let mut bindings = [&mut atomics];
+        let error = device
+            .dispatch_compute_with_atomics(&pipeline, [1, 1, 1], &[], &mut bindings, &mut output)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("storage store to vec4 1 is out of bounds"));
+        assert_eq!(atomics.as_slice()[0], Vec4::new(10.0, 2.0, 3.0, 4.0));
+        assert_eq!(output.as_slice(), &[sentinel]);
+
+        let out_of_bounds = device
+            .create_compute_pipeline(
+                Program::new(vec![
+                    Const {
+                        dst: 0,
+                        value: Vec4::new(1.0, 0.0, 0.0, 0.0),
+                    },
+                    Const {
+                        dst: 1,
+                        value: Vec4::new(2.0, 0.0, 0.0, 0.0),
+                    },
+                    AtomicExchange {
+                        dst: 2,
+                        buffer: 0,
+                        index: 0,
+                        value: 1,
+                    },
+                    Output { slot: 0, src: 2 },
+                ])
+                .unwrap(),
+                [1, 1, 1],
+            )
+            .unwrap();
+        let mut bindings = [&mut atomics];
+        let error = device
+            .dispatch_compute_with_atomics(
+                &out_of_bounds,
+                [1, 1, 1],
+                &[],
+                &mut bindings,
+                &mut output,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("atomic access to vec4 1 is out of bounds"));
+        assert_eq!(atomics.as_slice()[0], Vec4::new(10.0, 2.0, 3.0, 4.0));
+        assert_eq!(output.as_slice(), &[sentinel]);
     }
 
     #[test]

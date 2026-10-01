@@ -100,8 +100,8 @@ The experimental SIR compute path dispatches a bounded 3D workgroup grid on the
 CPU. Each invocation can read matching vec4 elements or use SIR indexed loads
 and staged stores into owned storage buffers. Checked offset/stride layouts
 address interleaved record fields. SIR also supports per-workgroup shared vec4
-memory and synchronized barriers with race detection. Run the vector-add proof
-(4,096 checked outputs):
+memory, synchronized barriers with race detection, and scalar f32 storage
+atomics. Run the vector-add proof (4,096 checked outputs):
 
 ```sh
 cargo run --release --example compute_vector_add
@@ -120,8 +120,14 @@ Run the four-invocation workgroup reversal using shared memory and a barrier:
 cargo run --release --example compute_shared_memory
 ```
 
-The bounded contract has no cross-workgroup synchronization, atomics, or
-compute-stage SPIR-V. See the
+Run the cross-workgroup atomic sum and prefix proof (16 verified prefixes):
+
+```sh
+cargo run --release --example compute_atomics
+```
+
+The bounded contract has no cross-workgroup barriers, integer/vector atomics,
+or compute-stage SPIR-V. See the
 [compute limits](docs/compute.md).
 
 Phase 68 adds a separate Rust-only [Vulkan-like subset](docs/vulkan-like.md)
@@ -241,7 +247,7 @@ flowchart LR
 | Attachments | RGBA8/BGRA8, depth with 8 compare modes, stencil masks/operations |
 | Texturing | RGBA8/RGB8/R8, nearest/bilinear/trilinear, clamp/repeat/mirror, mip generation/LOD |
 | Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 → SIR; nested selections, Phi, early return/discard |
-| Compute | Experimental SIR dispatch, 3D IDs, up to 12 indexed read buffers, checked record layouts, staged indexed writes, 64 KiB per-workgroup shared memory and barriers; divergent barriers and shared-memory races fail safely; synchronized kernels use the scalar scheduler |
+| Compute | Experimental SIR dispatch, 3D IDs, up to 12 indexed read buffers, checked record layouts, staged indexed writes, 64 KiB per-workgroup shared memory and barriers, and scalar f32 storage atomics; divergent barriers and shared-memory races fail safely; synchronized kernels use the scalar scheduler |
 | Output merger | Replace, source alpha, additive and multiplicative blending; color/depth write enables |
 | Execution | Scalar reference, optional SIMD coverage4 and NEON/SSE four-fragment SIR, disjoint worker bands |
 | Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling, pipeline-cache probe, cargo-fuzz targets |

@@ -221,6 +221,28 @@ pub enum Instruction {
         index: u8,
         src: u8,
     },
+    /// Atomically add `value.x` to a vec4 storage element's x component.
+    AtomicAdd {
+        dst: u8,
+        buffer: u8,
+        index: u8,
+        value: u8,
+    },
+    /// Atomically replace a vec4 storage element's x component with `value.x`.
+    AtomicExchange {
+        dst: u8,
+        buffer: u8,
+        index: u8,
+        value: u8,
+    },
+    /// Compare the x component's bits with `expected.x` and replace on a match.
+    AtomicCompareExchange {
+        dst: u8,
+        buffer: u8,
+        index: u8,
+        expected: u8,
+        replacement: u8,
+    },
     /// Load one vec4 from workgroup memory at `index.x`.
     SharedLoad {
         dst: u8,
@@ -234,6 +256,15 @@ pub enum Instruction {
     /// Synchronize all invocations in the current workgroup.
     WorkgroupBarrier,
 }
+
+/// A scalar f32 atomic operation on a vec4 storage element's x component.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AtomicOperation {
+    Add(f32),
+    Exchange(f32),
+    CompareExchange { expected: f32, replacement: f32 },
+}
+
 impl Instruction {
     /// Visit sources before the destination, including repeated source operands.
     fn map_registers(&mut self, mut f: impl FnMut(u8, bool) -> Result<u8>) -> Result<()> {
@@ -315,6 +346,28 @@ impl Instruction {
                 *index = f(*index, false)?;
                 *src = f(*src, false)?;
                 return Ok(());
+            }
+            AtomicAdd {
+                dst, index, value, ..
+            }
+            | AtomicExchange {
+                dst, index, value, ..
+            } => {
+                *index = f(*index, false)?;
+                *value = f(*value, false)?;
+                dst
+            }
+            AtomicCompareExchange {
+                dst,
+                index,
+                expected,
+                replacement,
+                ..
+            } => {
+                *index = f(*index, false)?;
+                *expected = f(*expected, false)?;
+                *replacement = f(*replacement, false)?;
+                dst
             }
             SharedLoad { dst, index } => {
                 *index = f(*index, false)?;
@@ -553,6 +606,40 @@ impl Program {
                     source(src)?;
                     None
                 }
+                Instruction::AtomicAdd {
+                    dst,
+                    buffer,
+                    index,
+                    value,
+                }
+                | Instruction::AtomicExchange {
+                    dst,
+                    buffer,
+                    index,
+                    value,
+                } => {
+                    source(index)?;
+                    source(value)?;
+                    if buffer >= 16 {
+                        return Err(format!("SIR instruction {pc}: atomic buffer exceeds 15"));
+                    }
+                    Some(dst)
+                }
+                Instruction::AtomicCompareExchange {
+                    dst,
+                    buffer,
+                    index,
+                    expected,
+                    replacement,
+                } => {
+                    source(index)?;
+                    source(expected)?;
+                    source(replacement)?;
+                    if buffer >= 16 {
+                        return Err(format!("SIR instruction {pc}: atomic buffer exceeds 15"));
+                    }
+                    Some(dst)
+                }
                 Instruction::SharedLoad { dst, index } => {
                     source(index)?;
                     Some(dst)
@@ -739,16 +826,18 @@ impl Program {
         )
     }
     /// Run all local invocations through synchronized shared-memory barriers.
-    pub fn execute_workgroup<L, W>(
+    pub fn execute_workgroup<L, W, A>(
         &self,
         inputs: &[&[Vec4]],
         shared: &mut [Vec4],
         mut load_storage: L,
         mut store_storage: W,
+        mut atomic_storage: A,
     ) -> Result<Vec<Execution>>
     where
         L: FnMut(usize, usize, usize) -> Result<Vec4>,
         W: FnMut(usize, usize, Vec4) -> Result<()>,
+        A: FnMut(usize, usize, usize, AtomicOperation) -> Result<Vec4>,
     {
         if inputs.is_empty() || inputs.len() > MAX_WORKGROUP_INVOCATIONS {
             return Err("SIR workgroup requires 1..1024 local invocations".into());
@@ -761,6 +850,8 @@ impl Program {
                 let mut sample = |_, _| Err("compute programs do not sample textures".into());
                 let mut load = |buffer, index| load_storage(local_id, buffer, index);
                 let mut store = |index, value| store_storage(local_id, index, value);
+                let mut atomic =
+                    |buffer, index, operation| atomic_storage(local_id, buffer, index, operation);
                 match self.execute_until_barrier(
                     state,
                     inputs[local_id],
@@ -772,6 +863,7 @@ impl Program {
                     &mut sample,
                     &mut load,
                     &mut store,
+                    &mut atomic,
                     false,
                 )? {
                     ExecutionStatus::Complete => complete_count += 1,
@@ -817,6 +909,36 @@ impl Program {
         store_storage: W,
         tracing: bool,
     ) -> Result<Execution> {
+        self.execute_with_lod_storage_and_atomics(
+            inputs,
+            uniforms,
+            implicit_lods,
+            sample,
+            load_storage,
+            store_storage,
+            |_, _, _| Err("SIR atomic operation used outside compute".into()),
+            tracing,
+        )
+    }
+
+    /// Execute with explicit compute storage and atomic access handlers.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_with_lod_storage_and_atomics<
+        S: FnMut(usize, Vec4) -> Result<Vec4>,
+        L: FnMut(usize, usize) -> Result<Vec4>,
+        W: FnMut(usize, Vec4) -> Result<()>,
+        A: FnMut(usize, usize, AtomicOperation) -> Result<Vec4>,
+    >(
+        &self,
+        inputs: &[Vec4],
+        uniforms: &[Vec4],
+        implicit_lods: &[f32],
+        sample: S,
+        load_storage: L,
+        store_storage: W,
+        atomic_storage: A,
+        tracing: bool,
+    ) -> Result<Execution> {
         let mut state = ExecutionState::new();
         let mut shared = [];
         let mut accesses = HashMap::new();
@@ -831,6 +953,7 @@ impl Program {
             sample,
             load_storage,
             store_storage,
+            atomic_storage,
             tracing,
         )? {
             ExecutionStatus::Complete => Ok(state.result),
@@ -845,6 +968,7 @@ impl Program {
         S: FnMut(usize, Vec4) -> Result<Vec4>,
         L: FnMut(usize, usize) -> Result<Vec4>,
         W: FnMut(usize, Vec4) -> Result<()>,
+        A: FnMut(usize, usize, AtomicOperation) -> Result<Vec4>,
     >(
         &self,
         state: &mut ExecutionState,
@@ -857,6 +981,7 @@ impl Program {
         mut sample: S,
         mut load_storage: L,
         mut store_storage: W,
+        mut atomic_storage: A,
         tracing: bool,
     ) -> Result<ExecutionStatus> {
         let mut regs = state.registers;
@@ -982,6 +1107,52 @@ impl Program {
                     store_storage(index, value)
                         .map_err(|e| format!("SIR instruction {pc}: {e}"))?;
                     (None, value)
+                }
+                Instruction::AtomicAdd {
+                    dst,
+                    buffer,
+                    index,
+                    value,
+                } => {
+                    let index = storage_index(regs[index as usize], pc)?;
+                    let value = regs[value as usize].x;
+                    let old = atomic_storage(buffer as usize, index, AtomicOperation::Add(value))
+                        .map_err(|e| format!("SIR instruction {pc}: {e}"))?;
+                    (Some(dst), old)
+                }
+                Instruction::AtomicExchange {
+                    dst,
+                    buffer,
+                    index,
+                    value,
+                } => {
+                    let index = storage_index(regs[index as usize], pc)?;
+                    let value = regs[value as usize].x;
+                    let old =
+                        atomic_storage(buffer as usize, index, AtomicOperation::Exchange(value))
+                            .map_err(|e| format!("SIR instruction {pc}: {e}"))?;
+                    (Some(dst), old)
+                }
+                Instruction::AtomicCompareExchange {
+                    dst,
+                    buffer,
+                    index,
+                    expected,
+                    replacement,
+                } => {
+                    let index = storage_index(regs[index as usize], pc)?;
+                    let expected = regs[expected as usize].x;
+                    let replacement = regs[replacement as usize].x;
+                    let old = atomic_storage(
+                        buffer as usize,
+                        index,
+                        AtomicOperation::CompareExchange {
+                            expected,
+                            replacement,
+                        },
+                    )
+                    .map_err(|e| format!("SIR instruction {pc}: {e}"))?;
+                    (Some(dst), old)
                 }
                 Instruction::SharedLoad { dst, index } => {
                     let index = vector_index(regs[index as usize], pc, "shared-memory")?;
@@ -1299,5 +1470,43 @@ mod tests {
             Program::new(vec![Add { dst: 1, a: 0, b: 0 }, Output { slot: 0, src: 1 }]).is_err()
         );
         assert!(p.execute(&[], &[], |_, _| Ok(Vec4::ZERO), false).is_err());
+
+        let atomic = Program::new(vec![
+            Const {
+                dst: 0,
+                value: Vec4::ZERO,
+            },
+            Const {
+                dst: 1,
+                value: Vec4::new(1.0, 0.0, 0.0, 0.0),
+            },
+            AtomicAdd {
+                dst: 2,
+                buffer: 0,
+                index: 0,
+                value: 1,
+            },
+            Output { slot: 0, src: 2 },
+        ])
+        .unwrap();
+        assert!(
+            atomic
+                .execute(&[], &[], |_, _| Ok(Vec4::ZERO), false)
+                .unwrap_err()
+                .contains("atomic operation used outside compute")
+        );
+        assert!(
+            atomic
+                .execute4(
+                    [&[], &[], &[], &[]],
+                    &[],
+                    [&[], &[], &[], &[]],
+                    1,
+                    |_, _, _| Ok(Vec4::ZERO),
+                    [false; 4],
+                )
+                .unwrap_err()
+                .contains("require scalar execution")
+        );
     }
 }

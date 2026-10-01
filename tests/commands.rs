@@ -110,6 +110,49 @@ fn workgroup_barriers_are_rejected_before_graphics_clear() {
 }
 
 #[test]
+fn compute_atomics_are_rejected_before_graphics_clear() {
+    use shader::Instruction::*;
+    use std::sync::Arc;
+
+    let vertex =
+        shader::Program::new(vec![Input { dst: 0, slot: 0 }, Output { slot: 0, src: 0 }]).unwrap();
+    let fragment = shader::Program::new(vec![
+        Const {
+            dst: 0,
+            value: Vec4::ZERO,
+        },
+        Const {
+            dst: 1,
+            value: Vec4::new(1.0, 0.0, 0.0, 0.0),
+        },
+        AtomicAdd {
+            dst: 2,
+            buffer: 0,
+            index: 0,
+            value: 1,
+        },
+        Output { slot: 0, src: 2 },
+    ])
+    .unwrap();
+    let pipeline = Arc::new(ShaderPipeline {
+        state: Pipeline::default(),
+        vertex,
+        fragment,
+    });
+    let mut commands = Device.commands();
+    commands.begin_render_pass(Color::BLACK);
+    commands.bind_pipeline(pipeline);
+    commands.end_render_pass();
+
+    let mut renderer = Renderer::new(8, 8).unwrap();
+    renderer.clear(Color::WHITE);
+    let before = renderer.framebuffer.bytes().to_vec();
+    assert!(commands.validate().is_err());
+    assert!(Device.submit(&commands, &mut renderer).is_err());
+    assert_eq!(renderer.framebuffer.bytes(), before);
+}
+
+#[test]
 fn selected_pixel_traces_executed_sir() {
     let c = demo::shader_cube(96, 64, 0.).unwrap();
     let mut r = Renderer::new(96, 64).unwrap();

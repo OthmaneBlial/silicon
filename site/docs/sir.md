@@ -16,8 +16,9 @@ multiply; filtered texture sample; output store; comparisons, logical operations
 component selection, structured `If`/`Else`/`EndIf`, `Merge`, `Return` and
 `Discard`. Compute also has shared-memory loads/stores and a workgroup barrier.
 Values are f32 vec4s, including scalar splats and boolean 0/1 components. There
-are no loops, integer types, shader depth writes, atomics or JIT compilation.
-Bounded scalar and SIMD4 [SIR compute dispatch](compute.md)
+are no loops, integer types, shader depth writes or JIT compilation. Compute
+supports scalar f32 storage atomics on vec4 x components. Bounded scalar and
+SIMD4 [SIR compute dispatch](compute.md)
 are separate from the graphics shader path; compute-stage SPIR-V and general
 SPIR-V compatibility remain unsupported. A [strict SPIR-V 1.0 subset](spirv.md)
 translates externally compiled GLSL into these instructions.
@@ -44,9 +45,10 @@ explicit LOD; `SampleImplicit` gets LOD from a separate per-texture invocation
 array, so derivative metadata does not contaminate SPIR-V vector arithmetic.
 `SampleCube` uses xyz direction and w explicit LOD; `SampleCubeImplicit` gets its
 LOD from the same per-texture array.
-`StorageLoad`, `StorageStore`, `SharedLoad`, `SharedStore` and
-`WorkgroupBarrier` are compute-only. Indexed accesses use checked vec4 addresses;
-the barrier synchronizes every invocation in one workgroup. See the
+`StorageLoad`, `StorageStore`, `AtomicAdd`, `AtomicExchange`,
+`AtomicCompareExchange`, `SharedLoad`, `SharedStore` and `WorkgroupBarrier` are
+compute-only. Indexed accesses use checked vec4 addresses; the barrier
+synchronizes every invocation in one workgroup. See the
 [compute contract](compute.md).
 `Discard` ends the fragment invocation without color, depth or stencil-pass writes.
 Vertex pipelines reject it before submission changes the framebuffer. Native Rust
