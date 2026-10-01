@@ -69,9 +69,9 @@ faces. This environment term is not split-sum image-based lighting.
   subset, one `void()` function, acyclic structured selection blocks, `OpReturn`,
   Logical/GLSL450 memory model and Shader capability. Fragment requires
   OriginUpperLeft; compute requires `LocalSize`. GLSL.std.450 supports `Round`,
-  `RoundEven`, `Trunc`, `Floor`, `Ceil`, `Fract`, `Sin`, `Cos`, `Pow`, `FMin`,
-  `FMax`, `FClamp`, `FMix`, `Length` and `Normalize` with checked operand
-  counts/types.
+  `RoundEven`, `Trunc`, `Floor`, `Ceil`, `Fract`, `Sin`, `Cos`, `Exp`, `Log`,
+  `Exp2`, `Log2`, `Sqrt`, `InverseSqrt`, `Pow`, `FMin`, `FMax`, `FClamp`,
+  `FMix`, `Length` and `Normalize` with checked operand counts/types.
 - Float32 scalars, vec2/3/4, mat4 and scalar bool; int32 constants for graphics
   member indices. Graphics supports logical input/output/uniform/sampler/Function
   pointers and one-member structs. Float/vector/bool locals must be declared first
@@ -205,8 +205,9 @@ returns zero; undefined GLSL inputs do not establish a conformance guarantee.
 
 Tests compare compiled GLSL with an independent hand-written SIR reference at
 exact framebuffer bytes, then capture/replay and SIMD/four-band rendering.
-`math.frag` checks rounding ties, floor, fract, sine and cosine against Rust
-scalar results and compares scalar, packet and rendered worker-band pixels.
+`math.frag` checks rounding ties, floor/fract, trigonometric,
+exponential/logarithmic and square-root operations against Rust scalar results,
+then compares scalar, packet and rendered worker-band pixels.
 The compute fixtures dispatch the checked-in GLSL vec4 add shader over 64
 workgroups and the guarded inversion shader over 65; the latter skips 60
 out-of-range invocations and checks all 4,100 outputs against Rust's scalar result.

@@ -10,8 +10,8 @@ is the reference. `Program::execute4` executes masked four-fragment packets with
 component registers spanning fragments; see [SIMD execution](simd.md).
 
 Operations: input/uniform/constant loads; component add/subtract/multiply/divide
-and power; elementwise round/round-even/trunc/floor/ceil/fract and sine/cosine;
-min/max/mix; dot3/dot4;
+and power; elementwise round/round-even/trunc/floor/ceil/fract, trigonometric,
+exponential/logarithmic and square-root math; min/max/mix; dot3/dot4;
 length/normalization of 1..4 components;
 legacy normalize3; saturation; swizzle and lane composition; row-major matrix-vector
 multiply; filtered texture sample; output store; comparisons, logical operations,
