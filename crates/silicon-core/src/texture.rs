@@ -210,20 +210,107 @@ impl CubeMap {
         }
     }
 
+    fn sample_face_level(&self, face: CubeFace, uv: Vec2, level: usize) -> Vec4 {
+        let width = self.faces[0].levels[level].width;
+        let height = self.faces[0].levels[level].height;
+        let sample = |face, uv: Vec2| {
+            let x = (uv.x * width as f32).floor().clamp(0., width as f32 - 1.) as u32;
+            let y = (uv.y * height as f32).floor().clamp(0., height as f32 - 1.) as u32;
+            let image = &self.faces[Self::face_index(face)].levels[level];
+            Color::from_rgba8(image.pixels[(y * width + x) as usize]).0
+        };
+        let texel = |x: i64, y: i64| {
+            let outside_x = x < 0 || x >= width as i64;
+            let outside_y = y < 0 || y >= height as i64;
+            if !outside_x && !outside_y {
+                return sample(
+                    face,
+                    Vec2::new(
+                        (x as f32 + 0.5) / width as f32,
+                        (y as f32 + 0.5) / height as f32,
+                    ),
+                );
+            }
+            let direction = Self::face_direction(
+                face,
+                (x as f32 + 0.5) / width as f32,
+                (y as f32 + 0.5) / height as f32,
+            );
+            if outside_x && outside_y {
+                let corner = Vec3::new(
+                    direction.x.signum(),
+                    direction.y.signum(),
+                    direction.z.signum(),
+                );
+                let faces = [
+                    if corner.x > 0. {
+                        CubeFace::PositiveX
+                    } else {
+                        CubeFace::NegativeX
+                    },
+                    if corner.y > 0. {
+                        CubeFace::PositiveY
+                    } else {
+                        CubeFace::NegativeY
+                    },
+                    if corner.z > 0. {
+                        CubeFace::PositiveZ
+                    } else {
+                        CubeFace::NegativeZ
+                    },
+                ];
+                return faces
+                    .into_iter()
+                    .map(|face| sample(face, Self::project_to_face(face, corner).unwrap()))
+                    .fold(Vec4::ZERO, |sum, color| sum + color)
+                    / 3.;
+            }
+            {
+                let adjacent = Self::face_for(direction).unwrap_or(face);
+                let adjacent_uv = Self::project_to_face(adjacent, direction).unwrap_or(uv);
+                sample(adjacent, adjacent_uv)
+            }
+        };
+        let x = uv.x.clamp(0., 1.) * width as f32 - 0.5;
+        let y = uv.y.clamp(0., 1.) * height as f32 - 0.5;
+        let ix = x.floor() as i64;
+        let iy = y.floor() as i64;
+        let fx = x - x.floor();
+        let fy = y - y.floor();
+        texel(ix, iy)
+            .lerp(texel(ix + 1, iy), fx)
+            .lerp(texel(ix, iy + 1).lerp(texel(ix + 1, iy + 1), fx), fy)
+    }
+
     pub fn sample(&self, direction: Vec3, lod: f32, sampler: Sampler) -> Result<Color> {
         if !direction.is_finite() || !lod.is_finite() {
             return Err("cube direction and LOD must be finite".into());
         }
         let face = Self::face_for(direction).ok_or("cube direction must be nonzero")?;
         let uv = Self::project_to_face(face, direction).ok_or("invalid cube direction")?;
-        self.faces[Self::face_index(face)].sample(
-            uv,
-            lod,
-            Sampler {
-                address: Address::Clamp,
-                ..sampler
-            },
-        )
+        if matches!(sampler.filter, Filter::Nearest) {
+            return self.faces[Self::face_index(face)].sample(
+                uv,
+                lod,
+                Sampler {
+                    address: Address::Clamp,
+                    ..sampler
+                },
+            );
+        }
+        let level = match sampler.mip {
+            MipFilter::None => 0.,
+            _ => lod.clamp(0., (self.mip_levels() - 1) as f32),
+        };
+        let color = if matches!(sampler.mip, MipFilter::Trilinear) {
+            let low = level.floor() as usize;
+            let high = (low + 1).min(self.mip_levels() - 1);
+            self.sample_face_level(face, uv, low)
+                .lerp(self.sample_face_level(face, uv, high), level.fract())
+        } else {
+            self.sample_face_level(face, uv, level.round() as usize)
+        };
+        Ok(Color(color))
     }
 }
 impl Texture {
@@ -719,6 +806,66 @@ mod tests {
             cube.sample(Vec3::new(0., 0., 1.), f32::INFINITY, sampler)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn cube_bilinear_filter_is_continuous_across_edges_and_corners() {
+        let colors = [
+            [255, 0, 0, 255],
+            [0, 0, 255, 255],
+            [0, 255, 0, 255],
+            [255, 255, 0, 255],
+            [255, 0, 255, 255],
+            [0, 255, 255, 255],
+        ];
+        let faces = colors.map(|color| {
+            let mut face = Texture::new(4, 4, TextureFormat::Rgba8, &color.repeat(16)).unwrap();
+            face.generate_mips();
+            face
+        });
+        let cube = CubeMap::new(faces).unwrap();
+        let epsilon = 0.0001;
+        for mip in [MipFilter::None, MipFilter::Nearest, MipFilter::Trilinear] {
+            let sampler = Sampler {
+                filter: Filter::Bilinear,
+                mip,
+                ..Default::default()
+            };
+            let continuous = |from, to| {
+                let from = cube.sample(from, 0.5, sampler).unwrap().rgba8();
+                let to = cube.sample(to, 0.5, sampler).unwrap().rgba8();
+                for channel in 0..4 {
+                    assert!(
+                        from[channel].abs_diff(to[channel]) <= 2,
+                        "{from:?} vs {to:?}"
+                    );
+                }
+                from
+            };
+            for sign_a in [-1., 1.] {
+                for sign_b in [-1., 1.] {
+                    for tangent in [-1., -0.5, 0., 0.5, 1.] {
+                        continuous(
+                            Vec3::new(sign_a * (1. + epsilon), sign_b, tangent),
+                            Vec3::new(sign_a, sign_b * (1. + epsilon), tangent),
+                        );
+                        continuous(
+                            Vec3::new(sign_a * (1. + epsilon), tangent, sign_b),
+                            Vec3::new(sign_a, tangent, sign_b * (1. + epsilon)),
+                        );
+                        continuous(
+                            Vec3::new(tangent, sign_a * (1. + epsilon), sign_b),
+                            Vec3::new(tangent, sign_a, sign_b * (1. + epsilon)),
+                        );
+                    }
+                }
+            }
+            let center = cube
+                .sample(Vec3::new(1., 0.9999, 0.), 0.5, sampler)
+                .unwrap()
+                .rgba8();
+            assert!(center[0] > 120 && center[1] > 120);
+        }
     }
 
     #[test]

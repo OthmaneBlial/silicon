@@ -49,8 +49,9 @@ continues to use isotropic LOD.
 
 `CubeMap` owns six square color textures in +X, -X, +Y, -Y, +Z, -Z order. A
 direction selects the face with the largest absolute component; the other two
-components map to face UVs and use the ordinary texture sampler with clamped
-addressing. Faces must have matching mip dimensions. `cubemap_showcase` uses this
+components map to face UVs. Nearest samples stay on that face; bilinear taps that
+cross an edge are projected onto the adjacent face. Faces must have matching mip
+dimensions. `cubemap_showcase` uses this
 sampler for an environment skybox and reflected directions on the native Rust
 shader scene. Material roughness selects a box-filtered mip level, which blurs
 reflections without implementing split-sum image-based lighting. Ordinary GLSL
@@ -58,7 +59,7 @@ SPIR-V can also bind `samplerCube` and sample it with explicit `textureLod`; the
 PBR scene uses this route. `texture()` also supports an unmodified vec3 direction
 at fragment input location 1. Neighbor-center derivatives project through the
 center direction's selected face for isotropic mip selection; this remains a
-software approximation, and transformed directions and face-edge seams remain.
+software approximation, and transformed directions remain unsupported.
 
 `Renderer::set_sample_count` selects 1×, 2× or 4× rendering. The 2×/4× modes use
 fixed deterministic subpixel positions and track color, depth and stencil for

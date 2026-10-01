@@ -39,13 +39,13 @@ long-term. This repository ships working stages and labels the remaining work.
 | DOOM (phase 70, in progress) | Reads Freedoom 0.13.0 E1M1 and submits textured map geometry, 29 cutout enemy billboards, nine pickup billboards, and a pistol through SILICON (4,890 triangles, 180 draws in the checked-in capture). WAD node data locate points in subsectors; the interactive prototype adds movement, basic collision, health and ammo pickups, player hitscan, pursuing melee enemies, line-of-sight hitscan attacks for former humans and shotgunners, imp fireball projectiles with three-frame impacts, four-frame enemy walk cycles, three-frame attack poses, death sequences and persistent corpses, and eight camera-relative sprite views. BSP visibility, masked textures, enemy idle/pain/gib states, vertical projectile motion, and full Doom rules remain. See [Freedoom checkpoint](freedoom.md) |
 
 Next: JIT remains an advanced experiment; only consider it after more interpreter evidence.
-The cube-map path still uses face-local filtering; implicit SPIR-V sampling is
-limited to an unmodified fragment input direction, and anisotropic SPIR-V
-sampling remains future work.
+Cube maps use cross-face bilinear filtering; implicit SPIR-V sampling is limited
+to an unmodified fragment input direction, and anisotropic SPIR-V sampling
+remains future work.
 
 Future research: multiple targets, full tile binning, loops and broader control flow,
-compute/storage/shared-memory/atomics, transformed implicit sampling, seamless cube
-edges, anisotropic SPIR-V sampling, JIT, DOOM BSP visibility traversal, masked
+compute/storage/shared-memory/atomics, transformed implicit sampling,
+anisotropic SPIR-V sampling, JIT, DOOM BSP visibility traversal, masked
 textures and full gameplay rules, and
 possibly a software ray-tracing unit.
 
