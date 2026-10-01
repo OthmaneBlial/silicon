@@ -687,15 +687,26 @@ fn material_showcase(
         fragment: programs.1.clone(),
     }));
     commands.bind_texture(0, Arc::new(Texture::checker(128)?), Sampler::default());
-    if let Some(texture) = &normal_map {
-        commands.bind_texture(1, texture.clone(), Sampler::default());
-    }
     let eye = Vec3::new(7.5, 5.8, 10.);
     let vp = Mat4::perspective(0.78, width as f32 / height as f32, 0.1, 60.)
         * Mat4::look_at(eye, Vec3::new(0., 1.2, 0.), Vec3::new(0., 1., 0.));
     visit_scene("showcase", time, |mesh, model, material, blend| {
         if blend != Blend::Replace {
             return Err("GLSL showcase requires opaque draws".into());
+        }
+        if let Some(texture) = &normal_map {
+            commands.bind_texture(
+                1,
+                texture.clone(),
+                Sampler {
+                    mip: if material.normal_map_strength > 0. {
+                        MipFilter::Trilinear
+                    } else {
+                        MipFilter::None
+                    },
+                    ..Default::default()
+                },
+            );
         }
         let vertices = if normal_map.is_some() && material.normal_map_strength > 0. {
             tangent_vertices(mesh)?

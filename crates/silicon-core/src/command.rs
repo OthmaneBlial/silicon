@@ -204,8 +204,12 @@ impl Device {
                                 }
                                 inputs[i] = fragments[i].varyings;
                                 lods[i] = textures.map(|t| {
-                                    t.map_or(0., |(t, _)| {
-                                        t.lod(fragments[i].uv_dx, fragments[i].uv_dy)
+                                    t.map_or(0., |(t, sampler)| {
+                                        if matches!(sampler.mip, MipFilter::None) {
+                                            0.
+                                        } else {
+                                            t.lod(fragments[i].uv_dx, fragments[i].uv_dy)
+                                        }
                                     })
                                 });
                                 inputs[i][1].z = lods[i][0];
