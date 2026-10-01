@@ -1328,6 +1328,28 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_relaxed_glsl_spirv_atomic_semantics() {
+        let mut bytes =
+            include_bytes!("../../../assets/shaders/compute_atomic_uint.comp.spv").to_vec();
+        let module = silicon_shader::spirv::Module::parse(&bytes).unwrap();
+        let atomic_add = module
+            .instructions()
+            .iter()
+            .find(|op| op.opcode == 234)
+            .unwrap();
+        let device_scope = atomic_add.operands[3];
+        let semantics_word = (atomic_add.word + 5) * 4;
+        bytes[semantics_word..semantics_word + 4].copy_from_slice(&device_scope.to_le_bytes());
+
+        let error = Device::new()
+            .create_compute_pipeline_from_spirv(&bytes)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("Device scope with Relaxed semantics only"));
+    }
+
+    #[test]
     fn rejects_glsl_spirv_shared_arrays_over_the_combined_limit() {
         let mut bytes =
             include_bytes!("../../../assets/shaders/compute_shared_multi.comp.spv").to_vec();
