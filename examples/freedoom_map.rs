@@ -28,10 +28,13 @@ const LINE_TWO_SIDED: u16 = 4;
 const LINE_SOUND_BLOCK: u16 = 64;
 const LINE_DOOR_RAISE: u16 = 1;
 const LINE_WALK_OPEN_DOOR: u16 = 2;
+const LINE_PLAT_DOWN_WAIT_UP: u16 = 88;
 const LINE_EXIT_USE: u16 = 11;
 const USE_RANGE: f32 = 64.0;
 const DOOR_SPEED: f32 = 70.0;
 const DOOR_WAIT: f32 = 150.0 / 35.0;
+const PLATFORM_SPEED: f32 = 140.0;
+const PLATFORM_WAIT: f32 = 3.0;
 
 #[derive(Clone, Copy)]
 struct Lump {
@@ -1002,6 +1005,14 @@ struct Door {
     auto_close: bool,
 }
 
+struct Platform {
+    sector: u16,
+    low: f32,
+    high: f32,
+    wait: f32,
+    direction: i8,
+}
+
 #[derive(Clone, Copy)]
 struct Controls {
     forward: f32,
@@ -1960,8 +1971,9 @@ fn move_player(map: &Map, player: &mut Player, controls: Controls, delta: f32) -
                 y: candidate.y,
             };
             crossed.extend(map.lines.iter().enumerate().filter_map(|(index, &line)| {
-                (line[5] == LINE_WALK_OPEN_DOOR && crossed_line(map, origin, destination, line))
-                    .then_some(index)
+                (matches!(line[5], LINE_WALK_OPEN_DOOR | LINE_PLAT_DOWN_WAIT_UP)
+                    && crossed_line(map, origin, destination, line))
+                .then_some(index)
             }));
             *player = candidate;
         }
@@ -2084,6 +2096,100 @@ fn walk_open_doors(map: &mut Map, line_index: usize, active: &[Door]) -> Vec<Doo
             }
         })
         .collect()
+}
+
+fn sector_platform(map: &Map, platform_sector: u16) -> Option<Platform> {
+    let sector = map.sectors.get(platform_sector as usize)?;
+    let low = map
+        .lines
+        .iter()
+        .filter_map(|adjacent| {
+            let side0 = map.sides.get(adjacent[3] as usize)?;
+            let side1 = map.sides.get(adjacent[4] as usize)?;
+            if side0.sector == platform_sector {
+                Some(map.sectors.get(side1.sector as usize)?.floor)
+            } else if side1.sector == platform_sector {
+                Some(map.sectors.get(side0.sector as usize)?.floor)
+            } else {
+                None
+            }
+        })
+        .min_by(f32::total_cmp)?
+        .min(sector.floor);
+    (low < sector.floor).then_some(Platform {
+        sector: platform_sector,
+        low,
+        high: sector.floor,
+        wait: PLATFORM_WAIT,
+        direction: -1,
+    })
+}
+
+fn walk_down_wait_up_platforms(map: &Map, line_index: usize, active: &[Platform]) -> Vec<Platform> {
+    let Some(line) = map.lines.get(line_index) else {
+        return Vec::new();
+    };
+    if line[5] != LINE_PLAT_DOWN_WAIT_UP || line[6] == 0 {
+        return Vec::new();
+    }
+    map.sectors
+        .iter()
+        .enumerate()
+        .filter(|(_, sector)| sector.tag == line[6])
+        .filter_map(|(index, _)| {
+            let sector = u16::try_from(index).ok()?;
+            if active.iter().any(|platform| platform.sector == sector) {
+                None
+            } else {
+                sector_platform(map, sector)
+            }
+        })
+        .collect()
+}
+
+fn update_platforms(map: &mut Map, platforms: &mut Vec<Platform>, delta: f32) -> bool {
+    let mut changed = false;
+    let mut index = 0;
+    while index < platforms.len() {
+        if platforms[index].direction == 0 {
+            platforms[index].wait -= delta;
+            if platforms[index].wait <= 0.0 {
+                platforms[index].direction = 1;
+            }
+            index += 1;
+            continue;
+        }
+        let platform = &mut platforms[index];
+        let sector = &mut map.sectors[platform.sector as usize];
+        let direction = platform.direction;
+        let target = if direction < 0 {
+            platform.low
+        } else {
+            platform.high
+        };
+        let previous = sector.floor;
+        let floor = if direction < 0 {
+            (previous - PLATFORM_SPEED * delta).max(target)
+        } else {
+            (previous + PLATFORM_SPEED * delta).min(target)
+        };
+        if direction > 0 && floor + ACTOR_HEIGHT > sector.ceiling {
+            platform.direction = -1;
+            index += 1;
+            continue;
+        }
+        sector.floor = floor;
+        changed |= floor != previous;
+        if direction < 0 && floor <= target {
+            platform.direction = 0;
+            platform.wait = PLATFORM_WAIT;
+        } else if direction > 0 && floor >= target {
+            platforms.remove(index);
+            continue;
+        }
+        index += 1;
+    }
+    changed
 }
 
 fn update_doors(
@@ -2892,12 +2998,13 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     let mut actors = scene.actors.clone();
     let mut projectiles = Vec::new();
     let mut doors = Vec::new();
+    let mut platforms = Vec::new();
     let mut pickups = scene.pickups.clone();
     let mut health = 100;
     let mut ammo = 50;
     let mut kills = 0;
     let mut collected = 0;
-    let mut opened_doors = 0;
+    let mut activated_sectors = 0;
     let mut shot_cooldown = 0.0f32;
     let mut weapon_flash = 0.0f32;
     let mut exited = false;
@@ -2908,7 +3015,9 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         let now = std::time::Instant::now();
         let delta = now.duration_since(last).as_secs_f32().min(0.05);
         last = now;
-        if update_doors(&mut scene.map, &mut doors, player, &actors, delta) {
+        let doors_changed = update_doors(&mut scene.map, &mut doors, player, &actors, delta);
+        let platforms_changed = update_platforms(&mut scene.map, &mut platforms, delta);
+        if doors_changed || platforms_changed {
             scene.rebuild_draws()?;
         }
         if health > 0 && !exited {
@@ -2933,9 +3042,19 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 delta,
             );
             for line in crossed {
-                let started = walk_open_doors(&mut scene.map, line, &doors);
-                opened_doors += started.len();
-                doors.extend(started);
+                match scene.map.lines[line][5] {
+                    LINE_WALK_OPEN_DOOR => {
+                        let started = walk_open_doors(&mut scene.map, line, &doors);
+                        activated_sectors += started.len();
+                        doors.extend(started);
+                    }
+                    LINE_PLAT_DOWN_WAIT_UP => {
+                        let started = walk_down_wait_up_platforms(&scene.map, line, &platforms);
+                        activated_sectors += started.len();
+                        platforms.extend(started);
+                    }
+                    _ => {}
+                }
             }
             if window.is_key_pressed(Key::E, KeyRepeat::No)
                 && let Some((line, special)) = use_line(&scene.map, player)
@@ -2949,7 +3068,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                         .any(|active: &Door| active.sector == door.sector)
                 {
                     doors.push(door);
-                    opened_doors += 1;
+                    activated_sectors += 1;
                 }
             }
             if !exited {
@@ -3014,7 +3133,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     }
     save_frame(&renderer, output)?;
     println!(
-        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, {opened_doors} doors used, health {health}, exited {exited}; saved {}",
+        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, {activated_sectors} sector actions, health {health}, exited {exited}; saved {}",
         scene.actors.len(),
         output.display()
     );
@@ -3711,6 +3830,11 @@ mod tests {
         assert_eq!(move_player(&map, &mut player, controls, 0.05), vec![0]);
         assert_eq!(player.x, 8.0);
 
+        map.lines[0][5] = LINE_PLAT_DOWN_WAIT_UP;
+        player.x = 0.0;
+        assert_eq!(move_player(&map, &mut player, controls, 0.05), vec![0]);
+        assert_eq!(map.lines[0][5], LINE_PLAT_DOWN_WAIT_UP);
+
         map.lines[0][2] = 0;
         map.lines[0][4] = u16::MAX;
         player.x = 0.0;
@@ -3785,6 +3909,79 @@ mod tests {
         assert_eq!(map.sectors[1].ceiling, 124.0);
         assert_eq!(map.sectors[2].ceiling, 0.0);
         assert!(doors.is_empty());
+    }
+
+    #[test]
+    fn walk_platforms_descend_wait_return_and_stay_at_their_original_height() {
+        let open = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+            tag: 0,
+        };
+        let side = |sector| SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper: [0; 8],
+            lower: [0; 8],
+            middle: [0; 8],
+            sector,
+        };
+        let mut map = Map {
+            vertices: vec![
+                Vertex2 { x: 0.0, y: -32.0 },
+                Vertex2 { x: 0.0, y: 32.0 },
+                Vertex2 { x: 64.0, y: -32.0 },
+                Vertex2 { x: 64.0, y: 32.0 },
+            ],
+            sectors: vec![
+                open,
+                Sector {
+                    floor: 64.0,
+                    tag: 5,
+                    ..open
+                },
+                Sector {
+                    floor: 32.0,
+                    tag: 7,
+                    ..open
+                },
+            ],
+            sides: vec![side(0), side(1), side(0), side(2)],
+            lines: vec![
+                [0, 1, LINE_TWO_SIDED, 0, 1, LINE_PLAT_DOWN_WAIT_UP, 5],
+                [2, 3, LINE_TWO_SIDED, 2, 3, 0, 0],
+            ],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let mut platforms = walk_down_wait_up_platforms(&map, 0, &[]);
+        assert_eq!(platforms.len(), 1);
+        assert_eq!((platforms[0].low, platforms[0].high), (0.0, 64.0));
+        assert!(!portal_is_walkable(&map, map.lines[0], 0, 1));
+        assert!(update_platforms(&mut map, &mut platforms, 0.1));
+        assert_eq!(map.sectors[1].floor, 50.0);
+        assert!(update_platforms(&mut map, &mut platforms, 1.0));
+        assert_eq!(map.sectors[1].floor, 0.0);
+        assert!(portal_is_walkable(&map, map.lines[0], 0, 1));
+        assert_eq!(platforms[0].direction, 0);
+        assert!(!update_platforms(&mut map, &mut platforms, 2.9));
+        assert_eq!(platforms[0].direction, 0);
+        assert!(!update_platforms(&mut map, &mut platforms, 0.1));
+        assert_eq!(platforms[0].direction, 1);
+        assert!(update_platforms(&mut map, &mut platforms, 0.1));
+        assert_eq!(map.sectors[1].floor, 14.0);
+        assert!(update_platforms(&mut map, &mut platforms, 0.4));
+        assert_eq!(map.sectors[1].floor, 64.0);
+        assert!(!portal_is_walkable(&map, map.lines[0], 0, 1));
+        assert!(platforms.is_empty());
+        assert_eq!(map.sectors[2].floor, 32.0);
+        assert_eq!(map.lines[0][5], LINE_PLAT_DOWN_WAIT_UP);
+        assert_eq!(walk_down_wait_up_platforms(&map, 0, &[]).len(), 1);
     }
 
     #[test]

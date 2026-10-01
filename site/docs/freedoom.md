@@ -42,7 +42,14 @@ door open. The release WAD has six such lines for tags 5 and 6, targeting closed
 sectors 77 and 145. Trigger lines activate only after accepted player movement;
 the one-shot special clears once crossed. This follows id Software's
 [`P_CrossSpecialLine` open-door action](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_spec.c).
-Locked doors and other walk-triggered specials remain unsupported.
+Player crossings of repeatable special-88 lines trigger the tagged platform to
+descend at 140 units per second to the lowest neighboring floor, wait 105 tics
+(3 seconds), then return to its starting height. The release WAD has five such
+lines for tags 1 and 2, targeting sectors 98 and 103. Platform floors and their
+collision and rendered geometry move together. The speed and timing follow
+id Software's [`T_PlatRaise` and `downWaitUpStay` action](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_plats.c).
+Locked doors, enemy-triggered platforms, and other walk-triggered specials
+remain unsupported.
 
 The combat slice loads four normal-skill enemy types from WAD things and their
 classic `A1`–`D1` walk and `E1`–`G1` attack sprite patches: former humans (20
