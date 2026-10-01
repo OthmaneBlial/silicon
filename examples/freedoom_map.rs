@@ -1,8 +1,8 @@
 //! Render Freedoom's E1M1 geometry through SILICON's programmable pipeline.
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use silicon::api::{
-    self, Address, Buffer, Color, Device, Filter, MipFilter, Pipeline, Renderer, Sampler,
-    ShaderPipeline, Texture, TextureFormat, Vec2, Vec3, Vec4, Vertex,
+    self, Address, Color, Device, Filter, MipFilter, Pipeline, Renderer, Sampler, ShaderPipeline,
+    Texture, TextureFormat, Vec2, Vec3, Vec4, Vertex,
 };
 use silicon_math::Mat4;
 use std::{
@@ -69,12 +69,21 @@ struct Map {
     things: Vec<(i16, i16, u16, u16, u16)>, // x, y, angle, type, flags
 }
 
+#[derive(Clone, Copy, Default)]
+struct Bounds2 {
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+}
+
 #[derive(Clone, Copy)]
 struct Node {
     x: i16,
     y: i16,
     dx: i16,
     dy: i16,
+    child_bounds: [Bounds2; 2],
     children: [u16; 2],
 }
 
@@ -242,6 +251,20 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
                 y: i16_at(r, 2)?,
                 dx: i16_at(r, 4)?,
                 dy: i16_at(r, 6)?,
+                child_bounds: [
+                    Bounds2 {
+                        min_x: i16_at(r, 12)? as f32,
+                        min_y: i16_at(r, 10)? as f32,
+                        max_x: i16_at(r, 14)? as f32,
+                        max_y: i16_at(r, 8)? as f32,
+                    },
+                    Bounds2 {
+                        min_x: i16_at(r, 20)? as f32,
+                        min_y: i16_at(r, 18)? as f32,
+                        max_x: i16_at(r, 22)? as f32,
+                        max_y: i16_at(r, 16)? as f32,
+                    },
+                ],
                 children: [u16_at(r, 24)?, u16_at(r, 26)?],
             })
         })
@@ -298,6 +321,13 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
     for node in &nodes {
         if node.dx == 0 && node.dy == 0 {
             return Err(invalid("NODES contains a zero-length partition"));
+        }
+        if node
+            .child_bounds
+            .iter()
+            .any(|b| b.min_x > b.max_x || b.min_y > b.max_y)
+        {
+            return Err(invalid("NODES contains an inverted child bounding box"));
         }
         for &child in &node.children {
             let index = (child & 0x7fff) as usize;
@@ -893,9 +923,10 @@ struct Controls {
 }
 
 struct Draw {
+    name: [u8; 8],
+    wall: bool,
     texture: Arc<Texture>,
-    vertices: Buffer<Vertex>,
-    count: u32,
+    vertices: Vec<Vertex>,
 }
 
 struct PreparedScene {
@@ -905,7 +936,7 @@ struct PreparedScene {
     sprite_pipeline: Arc<ShaderPipeline>,
     weapon_pipeline: Arc<ShaderPipeline>,
     sampler: Sampler,
-    draws: Vec<Draw>,
+    draws: Vec<Vec<Draw>>,
     sprites: BTreeMap<[u8; 4], Vec<Vec<SpriteTexture>>>,
     pickup_sprites: BTreeMap<[u8; 4], SpriteTexture>,
     weapon_idle: SpriteTexture,
@@ -915,7 +946,6 @@ struct PreparedScene {
     actors: Vec<Actor>,
     pickups: Vec<Pickup>,
     start: Player,
-    triangles: usize,
 }
 
 #[derive(Clone)]
@@ -1173,160 +1203,165 @@ fn weapon_vertices(player: Player, sprite: &SpriteTexture, sector: Sector) -> Ve
     billboard_vertices(left, axis, width, sector.floor + 5.0, height, sector, false)
 }
 
-fn geometry(map: &Map, textures: &BTreeMap<[u8; 8], Arc<Texture>>) -> Result<Geometry, io::Error> {
-    let mut out = Geometry::default();
+fn geometry(
+    map: &Map,
+    textures: &BTreeMap<[u8; 8], Arc<Texture>>,
+) -> Result<Vec<Geometry>, io::Error> {
+    let mut all = Vec::with_capacity(map.subsectors.len());
     for leaf in &map.subsectors {
+        let mut out = Geometry::default();
         let segs = &map.segs[leaf[1] as usize..leaf[1] as usize + leaf[0] as usize];
-        let Some(first) = segs.first() else { continue };
-        let front_side = map.lines[first[2] as usize][3 + first[3] as usize];
-        let sector_index = map.sides[front_side as usize].sector;
-        let sector = map.sectors[sector_index as usize];
-        let polygon = convex_hull(
-            segs.iter()
-                .flat_map(|seg| [map.vertices[seg[0] as usize], map.vertices[seg[1] as usize]])
-                .collect(),
-        );
-        if polygon.len() < 3 {
-            continue;
-        }
-        let root = world(polygon[0], sector.floor);
-        let light = 0.38 + sector.light as f32 / 255.0 * 0.62;
-        let floor = Vec4::new(light, light, light, 1.0);
-        let ceiling = floor;
-        for i in 1..polygon.len() - 1 {
-            if sector.floor_flat != *b"F_SKY1\0\0" {
-                let mesh = out.flats.entry(sector.floor_flat).or_default();
-                push_triangle_uv(
-                    mesh,
-                    [
-                        (root, flat_uv(polygon[0])),
-                        (world(polygon[i], sector.floor), flat_uv(polygon[i])),
-                        (world(polygon[i + 1], sector.floor), flat_uv(polygon[i + 1])),
-                    ],
-                    floor,
-                );
+        if let Some(first) = segs.first() {
+            let front_side = map.lines[first[2] as usize][3 + first[3] as usize];
+            let sector_index = map.sides[front_side as usize].sector;
+            let sector = map.sectors[sector_index as usize];
+            let polygon = convex_hull(
+                segs.iter()
+                    .flat_map(|seg| [map.vertices[seg[0] as usize], map.vertices[seg[1] as usize]])
+                    .collect(),
+            );
+            if polygon.len() >= 3 {
+                let root = world(polygon[0], sector.floor);
+                let light = 0.38 + sector.light as f32 / 255.0 * 0.62;
+                let floor = Vec4::new(light, light, light, 1.0);
+                let ceiling = floor;
+                for i in 1..polygon.len() - 1 {
+                    if sector.floor_flat != *b"F_SKY1\0\0" {
+                        let mesh = out.flats.entry(sector.floor_flat).or_default();
+                        push_triangle_uv(
+                            mesh,
+                            [
+                                (root, flat_uv(polygon[0])),
+                                (world(polygon[i], sector.floor), flat_uv(polygon[i])),
+                                (world(polygon[i + 1], sector.floor), flat_uv(polygon[i + 1])),
+                            ],
+                            floor,
+                        );
+                    }
+                    if sector.ceiling_flat != *b"F_SKY1\0\0" {
+                        let mesh = out.flats.entry(sector.ceiling_flat).or_default();
+                        push_triangle_uv(
+                            mesh,
+                            [
+                                (
+                                    world(polygon[i + 1], sector.ceiling),
+                                    flat_uv(polygon[i + 1]),
+                                ),
+                                (world(polygon[i], sector.ceiling), flat_uv(polygon[i])),
+                                (world(polygon[0], sector.ceiling), flat_uv(polygon[0])),
+                            ],
+                            ceiling,
+                        );
+                    }
+                }
             }
-            if sector.ceiling_flat != *b"F_SKY1\0\0" {
-                let mesh = out.flats.entry(sector.ceiling_flat).or_default();
-                push_triangle_uv(
-                    mesh,
-                    [
-                        (
-                            world(polygon[i + 1], sector.ceiling),
-                            flat_uv(polygon[i + 1]),
-                        ),
-                        (world(polygon[i], sector.ceiling), flat_uv(polygon[i])),
-                        (world(polygon[0], sector.ceiling), flat_uv(polygon[0])),
-                    ],
-                    ceiling,
-                );
-            }
         }
-    }
 
-    for seg in &map.segs {
-        let line = map.lines[seg[2] as usize];
-        let front_side = line[3 + seg[3] as usize];
-        if front_side == u16::MAX {
-            return Err(invalid("SEGS selected a missing sidedef"));
-        }
-        let front_sidedef = map.sides[front_side as usize];
-        let front = map.sectors[front_sidedef.sector as usize];
-        let a = map.vertices[seg[0] as usize];
-        let b = map.vertices[seg[1] as usize];
-        let back_side = line[3 + (1 - seg[3]) as usize];
-        if back_side == u16::MAX {
-            if let Some(texture) = textures.get(&front_sidedef.middle) {
-                let bottom_peg = line[2] & 16 != 0;
-                let anchor = if bottom_peg {
-                    front.floor + texture.levels[0].height as f32
-                } else {
+        for seg in segs {
+            let line = map.lines[seg[2] as usize];
+            let front_side = line[3 + seg[3] as usize];
+            if front_side == u16::MAX {
+                return Err(invalid("SEGS selected a missing sidedef"));
+            }
+            let front_sidedef = map.sides[front_side as usize];
+            let front = map.sectors[front_sidedef.sector as usize];
+            let a = map.vertices[seg[0] as usize];
+            let b = map.vertices[seg[1] as usize];
+            let back_side = line[3 + (1 - seg[3]) as usize];
+            if back_side == u16::MAX {
+                if let Some(texture) = textures.get(&front_sidedef.middle) {
+                    let bottom_peg = line[2] & 16 != 0;
+                    let anchor = if bottom_peg {
+                        front.floor + texture.levels[0].height as f32
+                    } else {
+                        front.ceiling
+                    };
+                    push_wall_quad(
+                        &mut out.walls,
+                        texture,
+                        WallSection {
+                            name: front_sidedef.middle,
+                            side: front_sidedef,
+                            seg: *seg,
+                            endpoints: [a, b],
+                            heights: [front.floor, front.ceiling, anchor],
+                            sector: front,
+                        },
+                    );
+                }
+                continue;
+            }
+            let back_sidedef = map.sides[back_side as usize];
+            let back = map.sectors[back_sidedef.sector as usize];
+            if back.ceiling <= front.floor || back.floor >= front.ceiling {
+                if let Some(texture) = textures.get(&front_sidedef.middle) {
+                    let anchor = if line[2] & 16 != 0 {
+                        front.floor + texture.levels[0].height as f32
+                    } else {
+                        front.ceiling
+                    };
+                    push_wall_quad(
+                        &mut out.walls,
+                        texture,
+                        WallSection {
+                            name: front_sidedef.middle,
+                            side: front_sidedef,
+                            seg: *seg,
+                            endpoints: [a, b],
+                            heights: [front.floor, front.ceiling, anchor],
+                            sector: front,
+                        },
+                    );
+                }
+                continue;
+            }
+            if front.ceiling > back.ceiling
+                && let Some(texture) = textures.get(&front_sidedef.upper)
+            {
+                let anchor = if line[2] & 8 != 0 {
                     front.ceiling
+                } else {
+                    back.ceiling + texture.levels[0].height as f32
                 };
                 push_wall_quad(
                     &mut out.walls,
                     texture,
                     WallSection {
-                        name: front_sidedef.middle,
+                        name: front_sidedef.upper,
                         side: front_sidedef,
                         seg: *seg,
                         endpoints: [a, b],
-                        heights: [front.floor, front.ceiling, anchor],
+                        heights: [back.ceiling.max(front.floor), front.ceiling, anchor],
                         sector: front,
                     },
                 );
             }
-            continue;
-        }
-        let back_sidedef = map.sides[back_side as usize];
-        let back = map.sectors[back_sidedef.sector as usize];
-        if back.ceiling <= front.floor || back.floor >= front.ceiling {
-            if let Some(texture) = textures.get(&front_sidedef.middle) {
+            if back.floor > front.floor
+                && let Some(texture) = textures.get(&front_sidedef.lower)
+            {
                 let anchor = if line[2] & 16 != 0 {
-                    front.floor + texture.levels[0].height as f32
-                } else {
                     front.ceiling
+                } else {
+                    back.floor
                 };
                 push_wall_quad(
                     &mut out.walls,
                     texture,
                     WallSection {
-                        name: front_sidedef.middle,
+                        name: front_sidedef.lower,
                         side: front_sidedef,
                         seg: *seg,
                         endpoints: [a, b],
-                        heights: [front.floor, front.ceiling, anchor],
+                        heights: [front.floor, back.floor.min(front.ceiling), anchor],
                         sector: front,
                     },
                 );
             }
-            continue;
+            // Masked middle textures and their transparency are not implemented in this pass.
         }
-        if front.ceiling > back.ceiling
-            && let Some(texture) = textures.get(&front_sidedef.upper)
-        {
-            let anchor = if line[2] & 8 != 0 {
-                front.ceiling
-            } else {
-                back.ceiling + texture.levels[0].height as f32
-            };
-            push_wall_quad(
-                &mut out.walls,
-                texture,
-                WallSection {
-                    name: front_sidedef.upper,
-                    side: front_sidedef,
-                    seg: *seg,
-                    endpoints: [a, b],
-                    heights: [back.ceiling.max(front.floor), front.ceiling, anchor],
-                    sector: front,
-                },
-            );
-        }
-        if back.floor > front.floor
-            && let Some(texture) = textures.get(&front_sidedef.lower)
-        {
-            let anchor = if line[2] & 16 != 0 {
-                front.ceiling
-            } else {
-                back.floor
-            };
-            push_wall_quad(
-                &mut out.walls,
-                texture,
-                WallSection {
-                    name: front_sidedef.lower,
-                    side: front_sidedef,
-                    seg: *seg,
-                    endpoints: [a, b],
-                    heights: [front.floor, back.floor.min(front.ceiling), anchor],
-                    sector: front,
-                },
-            );
-        }
-        // Masked middle textures and their transparency are not implemented in this pass.
+        all.push(out);
     }
-    Ok(out)
+    Ok(all)
 }
 
 fn flat_uv(point: Vertex2) -> Vec2 {
@@ -1359,6 +1394,79 @@ fn subsector_at(map: &Map, point: Vertex2) -> Option<usize> {
         child = node.children[point_on_node_side(point, node)];
     }
     None
+}
+
+fn bounds_in_view(bounds: Bounds2, player: Player) -> bool {
+    let angle = player.angle.to_radians();
+    let (sin, cos) = angle.sin_cos();
+    let tan_half_fov = (1.22_f32 * 0.5).tan() * (4.0 / 3.0);
+    let mut minimum = [f32::INFINITY; 4];
+    for (x, y) in [
+        (bounds.min_x, bounds.min_y),
+        (bounds.min_x, bounds.max_y),
+        (bounds.max_x, bounds.min_y),
+        (bounds.max_x, bounds.max_y),
+    ] {
+        let dx = x - player.x;
+        let dy = y - player.y;
+        let forward = dx * cos + dy * sin;
+        let right = dx * sin - dy * cos;
+        for (index, plane) in [
+            1.0 - forward,
+            forward - 8192.0,
+            right - forward * tan_half_fov,
+            -right - forward * tan_half_fov,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            minimum[index] = minimum[index].min(plane);
+        }
+    }
+    minimum.into_iter().all(|distance| distance <= 0.0)
+}
+
+fn visible_subsector_order(map: &Map, player: Player) -> Vec<usize> {
+    if map.nodes.is_empty() {
+        return (map.subsectors.len() == 1)
+            .then_some(0)
+            .into_iter()
+            .collect();
+    }
+    let mut visible = Vec::new();
+    let mut visited = vec![false; map.nodes.len()];
+    let mut visited_leaves = vec![false; map.subsectors.len()];
+    let mut pending = vec![(map.nodes.len() - 1, None)];
+    while let Some((child, bounds)) = pending.pop() {
+        if bounds.is_some_and(|bounds| !bounds_in_view(bounds, player)) {
+            continue;
+        }
+        if child & 0x8000 != 0 {
+            let leaf = child & 0x7fff;
+            if leaf < map.subsectors.len() && !std::mem::replace(&mut visited_leaves[leaf], true) {
+                visible.push(leaf);
+            }
+            continue;
+        }
+        let Some(seen) = visited.get_mut(child) else {
+            continue;
+        };
+        if std::mem::replace(seen, true) {
+            continue;
+        }
+        let node = map.nodes[child];
+        let near = point_on_node_side(
+            Vertex2 {
+                x: player.x,
+                y: player.y,
+            },
+            node,
+        );
+        for side in [1 - near, near] {
+            pending.push((node.children[side] as usize, Some(node.child_bounds[side])));
+        }
+    }
+    visible
 }
 
 fn bsp_sector_at(map: &Map, x: f32, y: f32) -> Option<Sector> {
@@ -1713,12 +1821,12 @@ impl PreparedScene {
         let wall_textures = wall_textures(&data, &map)?;
         let flat_textures = flat_textures(&data, &map)?;
         let geometry = geometry(&map, &wall_textures)?;
-        if geometry.walls.is_empty() && geometry.flats.is_empty() {
+        if geometry
+            .iter()
+            .all(|leaf| leaf.walls.is_empty() && leaf.flats.is_empty())
+        {
             return Err(invalid("E1M1 produced no renderable geometry").into());
         }
-        let triangles = (geometry.walls.values().map(Vec::len).sum::<usize>()
-            + geometry.flats.values().map(Vec::len).sum::<usize>())
-            / 3;
         let device = Device::new();
         let vertex_shader =
             device.create_shader(include_bytes!("../assets/shaders/textured.vert.spv"))?;
@@ -1795,42 +1903,44 @@ impl PreparedScene {
                 });
             }
         }
-        let mut draws = Vec::new();
-        for (name, vertices) in geometry.flats {
-            let texture = flat_textures
-                .get(&name)
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "flat {} was not decoded",
-                        String::from_utf8_lossy(&name)
-                    ))
-                })?
-                .clone();
-            let count = u32::try_from(vertices.len())
-                .map_err(|_| invalid("E1M1 flat vertex count exceeds SILICON draw range"))?;
-            draws.push(Draw {
-                texture,
-                vertices: device.create_vertex_buffer(vertices)?,
-                count,
-            });
-        }
-        for (name, vertices) in geometry.walls {
-            let texture = wall_textures
-                .get(&name)
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "wall texture {} was not decoded",
-                        String::from_utf8_lossy(&name)
-                    ))
-                })?
-                .clone();
-            let count = u32::try_from(vertices.len())
-                .map_err(|_| invalid("E1M1 wall vertex count exceeds SILICON draw range"))?;
-            draws.push(Draw {
-                texture,
-                vertices: device.create_vertex_buffer(vertices)?,
-                count,
-            });
+        let mut draws = Vec::with_capacity(geometry.len());
+        for leaf in geometry {
+            let mut leaf_draws = Vec::new();
+            for (name, vertices) in leaf.flats {
+                let texture = flat_textures
+                    .get(&name)
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "flat {} was not decoded",
+                            String::from_utf8_lossy(&name)
+                        ))
+                    })?
+                    .clone();
+                leaf_draws.push(Draw {
+                    name,
+                    wall: false,
+                    texture,
+                    vertices,
+                });
+            }
+            for (name, vertices) in leaf.walls {
+                let texture = wall_textures
+                    .get(&name)
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "wall texture {} was not decoded",
+                            String::from_utf8_lossy(&name)
+                        ))
+                    })?
+                    .clone();
+                leaf_draws.push(Draw {
+                    name,
+                    wall: true,
+                    texture,
+                    vertices,
+                });
+            }
+            draws.push(leaf_draws);
         }
         Ok(Self {
             map,
@@ -1853,7 +1963,6 @@ impl PreparedScene {
                 y: y as f32,
                 angle: angle as f32,
             },
-            triangles,
         })
     }
 
@@ -1868,6 +1977,11 @@ impl PreparedScene {
     ) -> api::Result<api::Submission> {
         let sector = bsp_sector_at(&self.map, player.x, player.y)
             .ok_or_else(|| invalid("player is outside every E1M1 BSP leaf"))?;
+        let visible_order = visible_subsector_order(&self.map, player);
+        let mut visible = vec![false; self.map.subsectors.len()];
+        for &leaf in &visible_order {
+            visible[leaf] = true;
+        }
         let eye = Vec3::new(player.x, sector.floor + 41.0, -player.y);
         let radians = player.angle.to_radians();
         let forward = Vec3::new(radians.cos(), 0.0, -radians.sin());
@@ -1883,10 +1997,24 @@ impl PreparedScene {
         commands.begin_render_pass(Color::new(0.12, 0.22, 0.36, 1.0));
         commands.bind_pipeline(self.pipeline.clone());
         commands.bind_uniform_buffer(uniform_buffer.clone());
-        for draw in &self.draws {
-            commands.bind_texture(0, draw.texture.clone(), self.sampler);
-            commands.bind_vertex_buffer(draw.vertices.clone());
-            commands.draw(0, draw.count);
+        let mut batches = BTreeMap::new();
+        for (leaf, draws) in self.draws.iter().enumerate() {
+            if !visible[leaf] {
+                continue;
+            }
+            for draw in draws {
+                let batch = batches
+                    .entry((draw.wall, draw.name))
+                    .or_insert_with(|| (Arc::clone(&draw.texture), Vec::new()));
+                batch.1.extend_from_slice(&draw.vertices);
+            }
+        }
+        for (_, (texture, vertices)) in batches {
+            let count = u32::try_from(vertices.len())
+                .map_err(|_| invalid("visible E1M1 geometry exceeds SILICON draw range"))?;
+            commands.bind_texture(0, texture, self.sampler);
+            commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
+            commands.draw(0, count);
         }
         commands.bind_pipeline(self.sprite_pipeline.clone());
         commands.bind_uniform_buffer(uniform_buffer.clone());
@@ -1985,10 +2113,22 @@ fn save_frame(renderer: &Renderer, output: &Path) -> api::Result<()> {
     renderer.framebuffer.save_png(output)
 }
 
-fn frame_triangles(scene: &PreparedScene, draws: u64) -> api::Result<usize> {
+fn frame_triangles(scene: &PreparedScene, player: Player, draws: u64) -> api::Result<usize> {
     let draws =
         usize::try_from(draws).map_err(|_| invalid("SILICON draw count exceeds host range"))?;
-    Ok(scene.triangles + draws.saturating_sub(scene.draws.len()) * 2)
+    let visible = visible_subsector_order(&scene.map, player);
+    let mut static_draws = BTreeMap::new();
+    for &leaf in &visible {
+        for draw in &scene.draws[leaf] {
+            static_draws.insert((draw.wall, draw.name), ());
+        }
+    }
+    let static_triangles = visible
+        .iter()
+        .flat_map(|&leaf| &scene.draws[leaf])
+        .map(|draw| draw.vertices.len() / 3)
+        .sum::<usize>();
+    Ok(static_triangles + draws.saturating_sub(static_draws.len()) * 2)
 }
 
 fn render(path: &Path, output: &Path) -> api::Result<()> {
@@ -2003,10 +2143,15 @@ fn render(path: &Path, output: &Path) -> api::Result<()> {
         &mut renderer,
     )?;
     save_frame(&renderer, output)?;
-    let triangles = frame_triangles(&scene, submission.draws)?;
+    let triangles = frame_triangles(&scene, scene.start, submission.draws)?;
+    let visible = visible_subsector_order(&scene.map, scene.start).len();
     println!(
-        "E1M1: {} triangles, {} SILICON draw(s), player start ({}, {}, {}°)",
-        triangles, submission.draws, scene.start.x, scene.start.y, scene.start.angle
+        "E1M1: {triangles} triangles, {} SILICON draw(s), {visible}/{} visible BSP subsectors, player start ({}, {}, {}°)",
+        submission.draws,
+        scene.map.subsectors.len(),
+        scene.start.x,
+        scene.start.y,
+        scene.start.angle
     );
     Ok(())
 }
@@ -2097,12 +2242,14 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         } else {
             "PLAYING"
         };
-        let triangles = frame_triangles(&scene, submission.draws)?;
+        let triangles = frame_triangles(&scene, player, submission.draws)?;
+        let visible = visible_subsector_order(&scene.map, player).len();
         window.set_title(&format!(
-            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire | HP {health} | ammo {ammo} | items {collected} | kills {kills}/{} | {} triangles, {} draws",
+            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire | HP {health} | ammo {ammo} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.actors.len(),
             triangles,
-            submission.draws
+            submission.draws,
+            scene.map.subsectors.len()
         ));
         window.update_with_buffer(&pixels, 960, 720)?;
         frames += 1;
@@ -2363,6 +2510,7 @@ mod tests {
                 y: 0,
                 dx: 0,
                 dy: 1,
+                child_bounds: [Bounds2::default(); 2],
                 children: [0x8001, 0x8000],
             }],
             things: vec![],
@@ -2374,6 +2522,7 @@ mod tests {
             y: 0,
             dx: 1,
             dy: 1,
+            child_bounds: [Bounds2::default(); 2],
             children: [0, 0],
         };
         assert_eq!(point_on_node_side(Vertex2 { x: 2.0, y: 0.0 }, diagonal), 0);
@@ -2418,6 +2567,82 @@ mod tests {
         let mut cyclic = map;
         cyclic.nodes[0].children = [0, 0];
         assert_eq!(subsector_at(&cyclic, Vertex2 { x: 0.0, y: 0.0 }), None);
+    }
+
+    #[test]
+    fn bsp_view_traversal_culls_child_bounds_and_stops_cycles() {
+        let bounds = |min_x, min_y, max_x, max_y| Bounds2 {
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+        };
+        let mut map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![[0, 0], [0, 0]],
+            nodes: vec![Node {
+                x: 0,
+                y: 0,
+                dx: 0,
+                dy: 1,
+                child_bounds: [
+                    bounds(-300.0, -20.0, -100.0, 20.0),
+                    bounds(100.0, -20.0, 300.0, 20.0),
+                ],
+                children: [0x8000, 0x8001],
+            }],
+            things: vec![],
+        };
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        assert_eq!(visible_subsector_order(&map, player), vec![1]);
+        map.nodes[0].child_bounds[0] = bounds(400.0, -20.0, 600.0, 20.0);
+        assert_eq!(visible_subsector_order(&map, player), vec![1, 0]);
+        map.nodes[0].children = [0, 0];
+        map.nodes[0].child_bounds = [bounds(-10.0, -10.0, 10.0, 10.0); 2];
+        assert!(visible_subsector_order(&map, player).is_empty());
+        map.nodes[0].children = [0x8000, 0x8000];
+        assert_eq!(visible_subsector_order(&map, player), vec![0]);
+    }
+
+    #[test]
+    fn view_bounds_follow_all_cardinal_camera_headings() {
+        for angle in [0.0_f32, 90.0, 180.0, 270.0] {
+            let player = Player {
+                x: 0.0,
+                y: 0.0,
+                angle,
+            };
+            let radians = angle.to_radians();
+            let forward = Vertex2 {
+                x: radians.cos() * 120.0,
+                y: radians.sin() * 120.0,
+            };
+            let bounds = |center: Vertex2| Bounds2 {
+                min_x: center.x - 12.0,
+                min_y: center.y - 12.0,
+                max_x: center.x + 12.0,
+                max_y: center.y + 12.0,
+            };
+            assert!(bounds_in_view(bounds(forward), player), "angle {angle}");
+            assert!(
+                !bounds_in_view(
+                    bounds(Vertex2 {
+                        x: -forward.x,
+                        y: -forward.y,
+                    }),
+                    player,
+                ),
+                "angle {angle}"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-01",
+  "scene": "Freedoom 0.13.0 E1M1, 960x720 start view",
+  "baseline_commit": "0888375a375375ab1d3089123acf3be81b3d622d",
+  "candidate_source_base": "0888375a375375ab1d3089123acf3be81b3d622d plus the uncommitted BSP-culling changes",
+  "baseline_binary_sha256": "1144db307c78f478f9c4019efb67f5bb503c271ee9fc9d312bfa7f28479d7b29",
+  "candidate_binary_sha256": "b284194a64828ce18f2f1ad15838033e1a57c230e54f668aa21ca71e2bd6f95c",
+  "freedoom_archive": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
+  "freedoom_archive_sha256": "3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59",
+  "freedoom1_wad_sha256": "7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d",
+  "platform": {
+    "os": "macOS 26.6",
+    "cpu": "Apple M2",
+    "architecture": "arm64",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)"
+  },
+  "process_wall_time_ms": {
+    "order": [
+      "before",
+      "after",
+      "after",
+      "before",
+      "before",
+      "after",
+      "after",
+      "before",
+      "before",
+      "after",
+      "after",
+      "before"
+    ],
+    "before": [
+      1063.88,
+      746.08,
+      856.81,
+      1859.63,
+      2098.47,
+      2053.94
+    ],
+    "after": [
+      1213.47,
+      922.21,
+      649.49,
+      561.04,
+      1627.49,
+      1809.53
+    ],
+    "median_before": 1461.76,
+    "median_after": 1067.84
+  },
+  "renderer_work": {
+    "before": {
+      "triangles": 4890,
+      "draws": 180
+    },
+    "after": {
+      "triangles": 3934,
+      "draws": 165,
+      "visible_subsectors": 567,
+      "total_subsectors": 682
+    }
+  },
+  "decoded_rgba_sha256": "0c726b7eb8d9df0ed59730347808d7e04db537a916c73ca9f21fe4584b292511",
+  "interpretation": "The decoded output is byte-identical. Submitted triangles fall 19.6% and draws fall 8.3%. Whole-process wall time includes WAD parsing, palette and texture decoding, geometry preparation, rendering, and PNG output; broad run-to-run variation prevents attributing a wall-time speedup.",
+  "measurement_note": "Exact-source runs had high shared-host wall-time variation (before 746.08\u20132098.47 ms; after 561.04\u20131809.53 ms); medians are not evidence of an isolated speedup."
+}

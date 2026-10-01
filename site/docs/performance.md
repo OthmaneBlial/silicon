@@ -83,6 +83,16 @@ individual frames ranged from 236.83 to 888.61 ms. Keep this as a shader-work
 sample: the shared-host timing spread does not support a speed comparison with
 the earlier PBR records.
 
+## Freedoom BSP frustum work sample
+
+The [raw Freedoom record](../benchmarks/freedoom-bsp-2026-10-01.json)
+alternates six complete 960×720 E1M1 process runs per build on the verified
+Freedoom 0.13.0 archive. The start view drops from 4,890 to 3,934 submitted
+triangles and from 180 to 165 draws; its decoded RGBA output is byte-identical.
+Whole-process medians were 1,461.76 ms before and 1,067.84 ms after, including
+WAD parsing, texture/geometry setup, rendering and PNG output. Run times varied
+widely in both groups, so these samples do not establish a wall-time speedup.
+
 ## 0.5 control-flow checkpoint
 
 The [pre-optimization alternating record](../benchmarks/apple-m2-control-before-counters-2026-10-01.json)

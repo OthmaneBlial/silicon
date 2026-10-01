@@ -56,19 +56,23 @@ its PISGC0 patch for 0.16 seconds. Both weapon poses use SILICON's cutout shader
 and draw pipeline.
 
 Freedoom 0.13.0 E1M1 has 29 normal-skill enemy placements. The sample parses
-the WAD node partition tree and follows its child references to locate each
-thing in a subsector and sector. The checked-in static capture contains 4,890
-submitted triangles across 180 SILICON draws: 4,812 map triangles, 29
-two-triangle enemy billboards, nine two-triangle pickup billboards, and a
-two-triangle pistol billboard. It shows the player start, pistol, and a
-medikit; enemies are outside that camera view. A temporary WAD with only its
-player start moved was used to capture an enemy sprite in view; that test
-fixture is not included.
+the WAD node partition tree to locate each thing's subsector and sector and to
+cull map subsectors whose node bounds lie wholly outside the horizontal view
+cone and near/far interval. Traversal visits child nodes near-to-far; visible
+static wall and flat geometry is then batched by texture. This uses horizontal
+map bounds only, not vertical frustum planes or Doom's wall occlusion and portal
+clipping. At the checked-in 960×720 start view, 567 of 682
+subsectors are visited and SILICON submits 3,934 triangles across 165 draws,
+down from 4,890 triangles and 180 draws with every leaf submitted. The output
+pixels are byte-identical to the checked-in image. It shows the player start,
+pistol, and a medikit; enemies are outside that camera view. A temporary WAD
+with only its player start moved was used to capture an enemy sprite in view;
+that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
-game rules. Every BSP leaf is drawn; view-frustum traversal and BSP visibility
-culling, masked two-sided middle textures, enemy idle/pain/gib states,
-projectile vertical motion, keys, exits, other weapons and
+game rules. BSP bounds only reject map geometry outside the view frustum; masked
+two-sided middle textures, enemy idle/pain/gib states, projectile vertical
+motion, keys, exits, other weapons and
 their ammunition, full weapon animation beyond the brief idle/fire pose, and
 sound remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in
