@@ -3426,7 +3426,7 @@ fn alert_actors_on_noise(map: &Map, actors: &mut [Actor], source: Vertex2) {
     }
 }
 
-fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, pain_rng: &mut u32) -> bool {
+fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, rng: &mut u32) -> bool {
     let origin = Vertex2 {
         x: player.x,
         y: player.y,
@@ -3438,6 +3438,7 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, pain_rng: &mut u
         y: radians.sin(),
     };
     let nearest_wall = nearest_blocking_wall(map, origin, direction);
+    let damage = i32::from(gameplay_random_byte(rng) % 3 + 1) * 5;
     let target = actors
         .iter()
         .enumerate()
@@ -3459,7 +3460,7 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, pain_rng: &mut u
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(index, _)| index);
     if let Some(index) = target {
-        damage_actor(&mut actors[index], 20, pain_rng)
+        damage_actor(&mut actors[index], damage, rng)
     } else {
         false
     }
@@ -6572,7 +6573,7 @@ mod tests {
         let mut wounded = actors;
         wounded[0].health = 60;
         assert!(!fire_weapon(&map, &mut wounded, player, &mut pain_rng));
-        assert_eq!(wounded[0].health, 40);
+        assert_eq!(wounded[0].health, 55);
         assert_eq!(wounded[0].target_time_remaining, ACTOR_TARGET_THRESHOLD);
         assert_eq!(
             wounded[0].pain_animation_remaining,
@@ -6596,16 +6597,17 @@ mod tests {
 
         let mut unreacting = actors;
         unreacting[0].health = 60;
-        let mut no_pain_rng = 12_800;
+        let mut no_pain_rng = 50;
         assert!(!fire_weapon(
             &map,
             &mut unreacting,
             player,
             &mut no_pain_rng
         ));
-        assert_eq!(unreacting[0].health, 40);
+        assert_eq!(unreacting[0].health, 55);
         assert_eq!(unreacting[0].pain_animation_remaining, 0.0);
 
+        actors[0].health = 10;
         assert!(fire_weapon(&map, &mut actors, player, &mut pain_rng));
         assert_eq!(actors[0].health, 0);
         assert_eq!(actors[0].death_animation_time, Some(0.0));
@@ -6661,6 +6663,47 @@ mod tests {
         };
         assert!(!fire_weapon(&map, &mut actors, player, &mut pain_rng));
         assert_eq!(actors[0].health, 20);
+    }
+
+    #[test]
+    fn pistol_damage_uses_dooms_five_ten_or_fifteen_point_roll() {
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut observed = [false; 3];
+        for seed in 1..=256 {
+            let mut actor = [Actor {
+                sprite: *b"TROO",
+                x: 100.0,
+                y: 0.0,
+                health: 100,
+                target_time_remaining: 0.0,
+                attack_cooldown: 0.0,
+                attack_animation_remaining: 0.0,
+                pain_animation_remaining: 0.0,
+                death_animation_time: None,
+                animation_time: 0.0,
+                angle: 0.0,
+            }];
+            let mut rng = seed;
+            assert!(!fire_weapon(&map, &mut actor, player, &mut rng));
+            let damage = 100 - actor[0].health;
+            assert!([5, 10, 15].contains(&damage));
+            observed[damage as usize / 5 - 1] = true;
+        }
+        assert_eq!(observed, [true; 3]);
     }
 
     #[test]

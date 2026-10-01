@@ -155,7 +155,7 @@ three-frame attack poses and non-gib death sequences, and choose among eight
 camera-relative views using Doom's state durations; killed enemies remain as
 their final corpse frame. Paired Freedoom patches are horizontally flipped
 where Doom does so. Cutout billboards use a SILICON fragment shader. Space
-fires a 20-damage hitscan with a 0.35-second cooldown; pistol ammo caps at 200.
+fires a seeded 5, 10, or 15-damage hitscan with a 0.35-second cooldown; pistol ammo caps at 200. Damage follows id Software's [`P_GunShot`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c).
 Press `Q` for a fist punch with a separate 0.35-second cooldown, no ammo cost,
 and Doom's randomized 2–20 damage. It hits the nearest living enemy whose
 16-unit radius intersects the forward trace within 64 units, unless a blocking
