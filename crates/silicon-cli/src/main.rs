@@ -351,10 +351,17 @@ fn run() -> Result<()> {
                 module.instructions().len(),
                 vertex.program.instructions().len()
             );
-            println!(
-                "Inputs: {:?} | outputs: {:?}",
-                vertex.inputs, vertex.outputs
-            );
+            if vertex.stage == shader::spirv::Stage::Compute {
+                println!(
+                    "Local size: {:?} | storage inputs: {} | output binding: {}",
+                    vertex.local_size, vertex.storage_input_count, vertex.storage_input_count
+                );
+            } else {
+                println!(
+                    "Inputs: {:?} | outputs: {:?}",
+                    vertex.inputs, vertex.outputs
+                );
+            }
             for op in module.instructions() {
                 println!(
                     "word {}: {} {:?}",
