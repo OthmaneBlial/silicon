@@ -76,6 +76,34 @@ fn built_in_spirv_scene_reuses_pipeline_across_frames() {
         &pipeline(&second)
     ));
 }
+#[test]
+fn public_device_api_creates_pipeline_and_submits_a_frame() {
+    let device = Device::new();
+    let vertex = device.create_shader(VERTEX).unwrap();
+    let fragment = device.create_shader(FRAGMENT).unwrap();
+    assert_eq!(vertex.stage(), shader::spirv::Stage::Vertex);
+    assert_eq!(fragment.stage(), shader::spirv::Stage::Fragment);
+    assert!(
+        device
+            .create_pipeline(&fragment, &vertex, Pipeline::default())
+            .is_err()
+    );
+    let pipeline = device
+        .create_pipeline(
+            &vertex,
+            &fragment,
+            Pipeline {
+                cull: Cull::Back,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let capture = demo::shader_cube_with_pipeline(32, 24, 0., pipeline).unwrap();
+    let mut renderer = Renderer::new(capture.width, capture.height).unwrap();
+    let submission = device.submit(&capture.commands, &mut renderer).unwrap();
+    assert_eq!(submission.draws, 1);
+    assert!(renderer.stats.shaded > 0);
+}
 fn compiled(bytes: &[u8]) -> shader::spirv::Compiled {
     Module::parse(bytes).unwrap().translate().unwrap()
 }

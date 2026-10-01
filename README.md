@@ -61,11 +61,27 @@ cargo run --release -p silicon-cli -- render stencil --backend simd --threads 4 
 cargo run --release --example triangle
 cargo run --release --example textured_cube
 cargo run --release --example stencil
+cargo run --release --example rust_api
 ```
 
 Requires Rust 1.95.0 (pinned). macOS ARM64 was run locally, including the window.
 Linux x86-64 and ARM64 are CI targets. Window mode on Linux uses X11; the
 headless renderer works without X11 at runtime. Other platforms are unverified.
+
+## Use the Rust API
+
+`Device` creates bounded SPIR-V shader modules, links them into an immutable
+pipeline, creates owned typed buffers and command buffers, and submits commands
+into an explicit `Renderer`. The renderer owns the output size and framebuffer.
+`examples/rust_api.rs` is a runnable end-to-end sample:
+
+```sh
+cargo run --release --example rust_api
+```
+
+It writes `output/rust_api.png`. Shader modules currently accept SILICON's
+documented SPIR-V 1.0 graphics subset; this is not a general-purpose shader
+compiler or Vulkan API.
 
 ## Programmable, observable, reproducible
 

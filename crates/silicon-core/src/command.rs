@@ -39,21 +39,27 @@ pub struct ShaderPipeline {
     pub vertex: Program,
     pub fragment: Program,
 }
+#[derive(Clone, Debug)]
+pub struct ShaderModule {
+    compiled: shader::spirv::Compiled,
+}
+impl ShaderModule {
+    pub fn stage(&self) -> shader::spirv::Stage {
+        self.compiled.stage
+    }
+}
 impl ShaderPipeline {
     pub(crate) fn from_spirv(
         vertex: &[u8],
         fragment: &[u8],
         state: Pipeline,
     ) -> shader::Result<Arc<Self>> {
-        use shader::spirv::{Module, link};
-        let vertex = Module::parse(vertex)?.translate()?;
-        let fragment = Module::parse(fragment)?.translate()?;
-        link(&vertex, &fragment)?;
-        Ok(Arc::new(Self {
-            state,
-            vertex: vertex.program,
-            fragment: fragment.program,
-        }))
+        let device = Device::new();
+        let vertex = device.create_shader(vertex).map_err(|e| e.to_string())?;
+        let fragment = device.create_shader(fragment).map_err(|e| e.to_string())?;
+        device
+            .create_pipeline(&vertex, &fragment, state)
+            .map_err(|e| e.to_string())
     }
 }
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -166,10 +172,32 @@ pub struct Submission {
     pub texture_samples: u64,
 }
 impl Device {
-    pub fn commands(self) -> CommandBuffer {
+    pub const fn new() -> Self {
+        Self
+    }
+    /// Parses and translates a SPIR-V 1.0 module in SILICON's supported graphics subset.
+    pub fn create_shader(&self, spirv: &[u8]) -> shader::Result<ShaderModule> {
+        let compiled = shader::spirv::Module::parse(spirv)?.translate()?;
+        Ok(ShaderModule { compiled })
+    }
+    /// Links one vertex and one fragment module into an immutable pipeline.
+    pub fn create_pipeline(
+        &self,
+        vertex: &ShaderModule,
+        fragment: &ShaderModule,
+        state: Pipeline,
+    ) -> shader::Result<Arc<ShaderPipeline>> {
+        shader::spirv::link(&vertex.compiled, &fragment.compiled)?;
+        Ok(Arc::new(ShaderPipeline {
+            state,
+            vertex: vertex.compiled.program.clone(),
+            fragment: fragment.compiled.program.clone(),
+        }))
+    }
+    pub fn commands(&self) -> CommandBuffer {
         CommandBuffer::default()
     }
-    pub fn create_vertex_buffer(self, data: Vec<Vertex>) -> Result<Buffer<Vertex>> {
+    pub fn create_vertex_buffer(&self, data: Vec<Vertex>) -> Result<Buffer<Vertex>> {
         if data.len() > 1_000_000
             || data.iter().any(|v| {
                 !v.position.is_finite()
@@ -185,7 +213,7 @@ impl Device {
             usage: BufferUsage::Vertex,
         })
     }
-    pub fn create_index_buffer(self, data: Vec<u32>) -> Result<Buffer<u32>> {
+    pub fn create_index_buffer(&self, data: Vec<u32>) -> Result<Buffer<u32>> {
         if data.len() > 3_000_000 {
             return Err("index buffer exceeds 3M indices".into());
         }
@@ -194,7 +222,7 @@ impl Device {
             usage: BufferUsage::Index,
         })
     }
-    pub fn create_uniform_buffer(self, data: Vec<Vec4>) -> Result<Buffer<Vec4>> {
+    pub fn create_uniform_buffer(&self, data: Vec<Vec4>) -> Result<Buffer<Vec4>> {
         if data.len() > 64 || data.iter().any(|v| !v.is_finite()) {
             return Err("uniform buffer requires at most 64 finite vec4s".into());
         }
@@ -203,7 +231,7 @@ impl Device {
             usage: BufferUsage::Uniform,
         })
     }
-    pub fn submit(self, cmd: &CommandBuffer, r: &mut Renderer) -> Result<Submission> {
+    pub fn submit(&self, cmd: &CommandBuffer, r: &mut Renderer) -> Result<Submission> {
         let validation_start = r.profile_shaders.then(Instant::now);
         cmd.validate()?;
         let mut command_processing_time =
