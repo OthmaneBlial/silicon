@@ -79,7 +79,32 @@ impl LogicalDevice {
         DescriptorSet::default()
     }
     pub fn create_render_pass(&self, clear_color: gpu::Color) -> RenderPass {
-        RenderPass { clear_color }
+        let mut clear_colors = [gpu::Color::BLACK; gpu::MAX_COLOR_ATTACHMENTS];
+        clear_colors[0] = clear_color;
+        RenderPass {
+            clear_colors,
+            color_count: 1,
+        }
+    }
+    pub fn create_render_pass_with_colors(
+        &self,
+        clear_colors: &[gpu::Color],
+    ) -> gpu::Result<RenderPass> {
+        if !(1..=gpu::MAX_COLOR_ATTACHMENTS).contains(&clear_colors.len())
+            || clear_colors.iter().any(|color| !color.0.is_finite())
+        {
+            return Err(format!(
+                "render pass requires 1..={} finite clear colors",
+                gpu::MAX_COLOR_ATTACHMENTS
+            )
+            .into());
+        }
+        let mut colors = [gpu::Color::BLACK; gpu::MAX_COLOR_ATTACHMENTS];
+        colors[..clear_colors.len()].copy_from_slice(clear_colors);
+        Ok(RenderPass {
+            clear_colors: colors,
+            color_count: clear_colors.len(),
+        })
     }
     pub fn create_command_buffer(&self) -> CommandBuffer {
         CommandBuffer(self.core.commands())
@@ -152,14 +177,21 @@ impl DescriptorSet {
 
 #[derive(Clone, Copy, Debug)]
 pub struct RenderPass {
-    clear_color: gpu::Color,
+    clear_colors: [gpu::Color; gpu::MAX_COLOR_ATTACHMENTS],
+    color_count: usize,
 }
 
 #[derive(Clone, Default)]
 pub struct CommandBuffer(gpu::CommandBuffer);
 impl CommandBuffer {
     pub fn begin_render_pass(&mut self, render_pass: RenderPass) {
-        self.0.begin_render_pass(render_pass.clear_color);
+        if render_pass.color_count == 1 {
+            self.0.begin_render_pass(render_pass.clear_colors[0]);
+        } else {
+            self.0.begin_render_pass_with_colors(
+                render_pass.clear_colors[..render_pass.color_count].to_vec(),
+            );
+        }
     }
     pub fn bind_pipeline(&mut self, pipeline: &GraphicsPipeline) {
         self.0.bind_pipeline(Arc::clone(&pipeline.0));
