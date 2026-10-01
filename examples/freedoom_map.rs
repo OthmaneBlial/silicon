@@ -54,6 +54,7 @@ const FLOOR_SPEED: f32 = 35.0;
 const DOOM_TICS_PER_SECOND: f32 = 35.0;
 const RADIATION_SUIT_TICS: f32 = 60.0 * DOOM_TICS_PER_SECOND;
 const INVULNERABILITY_TICS: f32 = 30.0 * DOOM_TICS_PER_SECOND;
+const INVISIBILITY_TICS: f32 = 60.0 * DOOM_TICS_PER_SECOND;
 const SECTOR_SECRET: u16 = 9;
 const SECTOR_NUKAGE_DAMAGE: u16 = 7;
 const SECTOR_LIGHT_FLASH: u16 = 1;
@@ -1595,6 +1596,7 @@ enum PickupEffect {
     ArmorBonus,
     RadiationSuit,
     Invulnerability,
+    PartialInvisibility,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1607,6 +1609,7 @@ struct Armor {
 struct PlayerEffects {
     radiation_suit_tics: f32,
     invulnerability_tics: f32,
+    partial_invisibility_tics: f32,
 }
 
 struct WallSection {
@@ -1810,6 +1813,7 @@ fn pickup_definition(kind: u16) -> Option<([u8; 4], PickupEffect)> {
         2015 => Some((*b"BON2", PickupEffect::ArmorBonus)),
         2025 => Some((*b"SUIT", PickupEffect::RadiationSuit)),
         2022 => Some((*b"PINV", PickupEffect::Invulnerability)),
+        2024 => Some((*b"PINS", PickupEffect::PartialInvisibility)),
         _ => None,
     }
 }
@@ -1881,6 +1885,9 @@ fn collect_pickups(
             PickupEffect::Invulnerability => {
                 next_effects.invulnerability_tics = INVULNERABILITY_TICS;
             }
+            PickupEffect::PartialInvisibility => {
+                next_effects.partial_invisibility_tics = INVISIBILITY_TICS;
+            }
         }
         if next_health == *health
             && next_ammo == *ammo
@@ -1893,6 +1900,7 @@ fn collect_pickups(
                     | PickupEffect::ArmorBonus
                     | PickupEffect::RadiationSuit
                     | PickupEffect::Invulnerability
+                    | PickupEffect::PartialInvisibility
             )
             && !consume_at_max
         {
@@ -3283,6 +3291,43 @@ fn has_line_of_sight(map: &Map, from: Vertex2, to: Vertex2) -> bool {
     nearest_blocking_wall(map, from, direction) >= distance
 }
 
+fn enemy_attack_angle(
+    actor: &Actor,
+    player: Player,
+    effects: &PlayerEffects,
+    rng: &mut u32,
+) -> f32 {
+    let angle = (player.y - actor.y).atan2(player.x - actor.x).to_degrees();
+    if effects.partial_invisibility_tics <= 0.0 {
+        return angle;
+    }
+    angle
+        + (f32::from(gameplay_random_byte(rng)) - f32::from(gameplay_random_byte(rng)))
+            * 0.175_781_25
+}
+
+fn enemy_attack_hits_player(map: &Map, actor: &Actor, player: Player, angle: f32) -> bool {
+    let origin = Vertex2 {
+        x: actor.x,
+        y: actor.y,
+    };
+    let radians = angle.to_radians();
+    let direction = Vertex2 {
+        x: radians.cos(),
+        y: radians.sin(),
+    };
+    let target = Vertex2 {
+        x: player.x - actor.x,
+        y: player.y - actor.y,
+    };
+    let along = target.x * direction.x + target.y * direction.y;
+    let across = cross2(target, direction).abs();
+    let reach = (ACTOR_RADIUS * ACTOR_RADIUS - across * across).sqrt();
+    along > 0.0
+        && reach.is_finite()
+        && nearest_blocking_wall(map, origin, direction) >= along - reach
+}
+
 fn sound_reachable_sectors(map: &Map, source: u16) -> Vec<bool> {
     let mut neighbors = vec![Vec::new(); map.sectors.len()];
     for &line in &map.lines {
@@ -3411,6 +3456,7 @@ fn update_actors(
     armor: &mut Armor,
     effects: &PlayerEffects,
     delta: f32,
+    aim_rng: &mut u32,
 ) -> Vec<usize> {
     let routes = sector_routes(map);
     let mut crossed_platform_lines = Vec::new();
@@ -3470,26 +3516,34 @@ fn update_actors(
             && can_see_player
         {
             if actor.attack_cooldown == 0.0 {
-                damage_player(
-                    health,
-                    armor,
-                    effects,
-                    if actor.sprite == *b"SPOS" { 6 } else { 3 },
-                );
+                let attack_angle = enemy_attack_angle(actor, player, effects, aim_rng);
+                if effects.partial_invisibility_tics <= 0.0
+                    || enemy_attack_hits_player(map, actor, player, attack_angle)
+                {
+                    damage_player(
+                        health,
+                        armor,
+                        effects,
+                        if actor.sprite == *b"SPOS" { 6 } else { 3 },
+                    );
+                }
                 actor.attack_cooldown = 1.4;
                 actor.attack_animation_remaining = actor_attack_duration(actor.sprite);
             }
         } else if actor.sprite == *b"TROO" && distance <= 512.0 && can_see_player {
             if actor.attack_cooldown == 0.0 {
+                let attack_angle = enemy_attack_angle(actor, player, effects, aim_rng);
                 let z = floor_at(map, actor.x, actor.y) + ACTOR_HEIGHT * 0.5;
                 let dz = floor_at(map, player.x, player.y) + ACTOR_HEIGHT * 0.5 - z;
                 let speed = 180.0 / (distance * distance + dz * dz).sqrt().max(1.0);
+                let horizontal_speed = distance * speed;
+                let radians = attack_angle.to_radians();
                 projectiles.push(Projectile {
                     x: actor.x,
                     y: actor.y,
                     z,
-                    velocity_x: dx * speed,
-                    velocity_y: dy * speed,
+                    velocity_x: radians.cos() * horizontal_speed,
+                    velocity_y: radians.sin() * horizontal_speed,
                     velocity_z: dz * speed,
                     lifetime: 3.0,
                     explosion_time: None,
@@ -4126,7 +4180,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     let mut weapon_flash = 0.0f32;
     let mut exited = false;
     let mut secret_exit = false;
-    let mut pain_rng = 0x5349_4c49u32;
+    let mut gameplay_rng = 0x5349_4c49u32;
     let mut last = std::time::Instant::now();
     let mut frames = 0u64;
     while window.is_open() && !window.is_key_down(Key::Escape) {
@@ -4169,6 +4223,8 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 (effects.radiation_suit_tics - delta * DOOM_TICS_PER_SECOND).max(0.0);
             effects.invulnerability_tics =
                 (effects.invulnerability_tics - delta * DOOM_TICS_PER_SECOND).max(0.0);
+            effects.partial_invisibility_tics =
+                (effects.partial_invisibility_tics - delta * DOOM_TICS_PER_SECOND).max(0.0);
         }
         let doors_changed = update_doors(&mut scene.map, &mut doors, player, &actors, delta);
         let platforms_changed = update_platforms(&mut scene.map, &mut platforms, delta);
@@ -4265,8 +4321,12 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     ammo -= 1;
                     shot_cooldown = 0.35;
                     weapon_flash = 0.16;
-                    kills +=
-                        usize::from(fire_weapon(&scene.map, &mut actors, player, &mut pain_rng));
+                    kills += usize::from(fire_weapon(
+                        &scene.map,
+                        &mut actors,
+                        player,
+                        &mut gameplay_rng,
+                    ));
                 }
             }
         }
@@ -4291,6 +4351,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 &mut armor,
                 &effects,
                 delta,
+                &mut gameplay_rng,
             );
             for line in crossed_platform_lines {
                 let started = down_wait_up_platforms(&scene.map, line, &platforms);
@@ -4330,12 +4391,13 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks).len();
         window.set_title(&format!(
-            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | invis {:.0}s | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.map_name,
             armor.points,
             armor.class,
             effects.radiation_suit_tics / DOOM_TICS_PER_SECOND,
             effects.invulnerability_tics / DOOM_TICS_PER_SECOND,
+            effects.partial_invisibility_tics / DOOM_TICS_PER_SECOND,
             keys & KEY_RED != 0,
             keys & KEY_YELLOW != 0,
             keys & KEY_BLUE != 0,
@@ -4633,6 +4695,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             10.0 / 35.0,
+            &mut 1u32,
         );
         assert_eq!(actors[0].x, 100.0);
         assert_eq!(actors[0].target_time_remaining, 0.0);
@@ -4649,6 +4712,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.05,
+            &mut 1u32,
         );
         assert_eq!(actors[0].target_time_remaining, ACTOR_TARGET_THRESHOLD);
         assert_eq!(actors[0].animation_time, 0.0);
@@ -4664,6 +4728,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.1,
+            &mut 1u32,
         );
         assert!((actors[0].target_time_remaining - (ACTOR_TARGET_THRESHOLD - 0.1)).abs() < 0.0001);
         assert_eq!(actors[0].angle, 180.0);
@@ -4677,6 +4742,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             ACTOR_TARGET_THRESHOLD,
+            &mut 1u32,
         );
         assert_eq!(actors[0].target_time_remaining, 0.0);
 
@@ -4691,6 +4757,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.05,
+            &mut 1u32,
         );
         assert_eq!(health, 100);
     }
@@ -6153,6 +6220,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.5,
+            &mut 1u32,
         );
         assert!(
             actors[0].x > 10.0,
@@ -6394,6 +6462,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.05,
+            &mut 1u32,
         );
         assert!((wounded[0].pain_animation_remaining - (4.0 / 35.0 - 0.05)).abs() < 0.0001);
         assert_eq!(wounded[0].x, 100.0);
@@ -6424,6 +6493,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.1,
+            &mut 1u32,
         );
         assert_eq!(actors[0].death_animation_time, Some(0.1));
         health = 0;
@@ -6436,6 +6506,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.1,
+            &mut 1u32,
         );
         assert_eq!(health, 0);
         assert_eq!(actors[0].death_animation_time, Some(0.2));
@@ -6451,6 +6522,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.05,
+            &mut 1u32,
         );
         assert_eq!(health, 0);
         assert_eq!(actors[0].attack_animation_remaining, 0.05);
@@ -6551,6 +6623,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             1.0,
+            &mut 1u32,
         );
         assert_eq!(actors[0].x, 64.0);
         assert_eq!(health, 100);
@@ -6567,6 +6640,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.05,
+            &mut 1u32,
         );
         assert_eq!(actors[0].animation_time, 0.0);
         assert_eq!(
@@ -6586,6 +6660,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.05,
+            &mut 1u32,
         );
         assert!(actors[0].attack_animation_remaining < actor_attack_duration(*b"SARG"));
         update_actors(
@@ -6597,6 +6672,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.79,
+            &mut 1u32,
         );
         assert_eq!(health, 92);
         update_actors(
@@ -6608,6 +6684,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.02,
+            &mut 1u32,
         );
         assert_eq!(health, 84);
     }
@@ -6653,6 +6730,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.05,
+            &mut 1u32,
         );
         assert_eq!(health, 100);
 
@@ -6666,6 +6744,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.05,
+            &mut 1u32,
         );
         assert_eq!(health, 97);
         update_actors(
@@ -6677,6 +6756,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.2,
+            &mut 1u32,
         );
         assert_eq!(health, 97);
 
@@ -6691,6 +6771,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.05,
+            &mut 1u32,
         );
         assert_eq!(health, 91);
     }
@@ -6775,6 +6856,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.05,
+            &mut 1u32,
         );
         assert!(projectiles.is_empty());
 
@@ -6788,6 +6870,7 @@ mod tests {
             &mut Armor::default(),
             &PlayerEffects::default(),
             0.05,
+            &mut 1u32,
         );
         assert_eq!(projectiles.len(), 1);
         assert_eq!(projectiles[0].z, 60.0);
@@ -6977,6 +7060,10 @@ mod tests {
         assert_eq!(
             pickup_definition(2022),
             Some((*b"PINV", PickupEffect::Invulnerability))
+        );
+        assert_eq!(
+            pickup_definition(2024),
+            Some((*b"PINS", PickupEffect::PartialInvisibility))
         );
         let mut map = Map {
             vertices: vec![Vertex2 { x: 12.0, y: -32.0 }, Vertex2 { x: 12.0, y: 32.0 }],
@@ -7344,6 +7431,122 @@ mod tests {
         damage_player(&mut health, &mut armor, &effects, 20);
         assert_eq!(health, 70);
         assert_eq!(armor.points, 90);
+    }
+
+    #[test]
+    fn partial_invisibility_refreshes_and_makes_ranged_attacks_miss() {
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut health = 100;
+        let mut ammo = 50;
+        let mut keys = 0;
+        let mut armor = Armor::default();
+        let mut effects = PlayerEffects::default();
+        let mut pickups = [pickup(2024, 0.0, 0.0)];
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+                &mut effects,
+            ),
+            1
+        );
+        assert_eq!(effects.partial_invisibility_tics, INVISIBILITY_TICS);
+        effects.partial_invisibility_tics = 1.0;
+        pickups[0].active = true;
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+                &mut effects,
+            ),
+            1
+        );
+        assert_eq!(effects.partial_invisibility_tics, INVISIBILITY_TICS);
+
+        let make_actor = |sprite, x| Actor {
+            sprite,
+            x,
+            y: 0.0,
+            health: 60,
+            target_time_remaining: 2.0,
+            attack_cooldown: 0.0,
+            attack_animation_remaining: 0.0,
+            pain_animation_remaining: 0.0,
+            death_animation_time: None,
+            animation_time: 0.0,
+            angle: 0.0,
+        };
+        let mut ranged = [make_actor(*b"POSS", 100.0)];
+        assert!(enemy_attack_hits_player(&map, &ranged[0], player, 180.0));
+        assert!(!enemy_attack_hits_player(&map, &ranged[0], player, 166.0));
+        let mut projectiles = Vec::new();
+        let mut aim_rng = 20;
+        update_actors(
+            &map,
+            &mut ranged,
+            &mut projectiles,
+            player,
+            &mut health,
+            &mut armor,
+            &effects,
+            0.05,
+            &mut aim_rng,
+        );
+        assert_eq!(health, 100);
+
+        let mut imp = [make_actor(*b"TROO", 100.0)];
+        let mut aim_rng = 20;
+        update_actors(
+            &map,
+            &mut imp,
+            &mut projectiles,
+            player,
+            &mut health,
+            &mut armor,
+            &effects,
+            0.05,
+            &mut aim_rng,
+        );
+        assert_eq!(projectiles.len(), 1);
+        assert!(projectiles[0].velocity_y.abs() > 10.0);
+
+        let mut melee = [make_actor(*b"SARG", 40.0)];
+        update_actors(
+            &map,
+            &mut melee,
+            &mut projectiles,
+            player,
+            &mut health,
+            &mut armor,
+            &effects,
+            0.05,
+            &mut aim_rng,
+        );
+        assert_eq!(health, 92);
     }
 
     #[test]
