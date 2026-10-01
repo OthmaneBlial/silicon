@@ -29,6 +29,7 @@ storage-only dispatch. See the
 [compute contract](compute.md),
 [vector-add example](../examples/compute_vector_add.rs), and
 [SPIR-V vector-add example](../examples/compute_spirv_vector_add.rs),
+[SPIR-V inversion example](../examples/compute_spirv_invert.rs),
 [benchmark example](../examples/compute_bench.rs) and
 [atomic example](../examples/compute_atomics.rs).
 

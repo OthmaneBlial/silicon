@@ -108,21 +108,23 @@ zero. At most 12 input buffers are accepted. Loads and writes use shader
 indices, and every address is checked during dispatch; explicit writes are
 staged and only modify elements the shader writes.
 
-The checked-in GLSL vector-add kernel is compiled offline with glslang. Run it
-without a GPU or display:
+The checked-in GLSL vector-add and one-minus inversion kernels are compiled
+offline with glslang. Run them without a GPU or display:
 
 ```sh
 glslangValidator -V --target-env vulkan1.0 \
   assets/shaders/compute_vector_add.comp \
   -o assets/shaders/compute_vector_add.comp.spv
 cargo run --release --example compute_spirv_vector_add
+cargo run --release --example compute_spirv_invert
 ```
 
-This proves GLSL → SPIR-V → SIR → CPU storage-buffer execution. The host chooses
-the workgroup count, so this sample dispatches exactly 4,096 invocations for
-4,096 elements; shaders with a partial final workgroup must guard their own
-indices. Compute SPIR-V does not yet support shared memory, barriers, atomics,
-textures, uniforms, general integer arithmetic, loops, or storage images.
+These examples prove GLSL → SPIR-V → SIR → CPU storage-buffer execution with
+vector addition and one-minus inversion. The host chooses the workgroup count,
+so each sample dispatches exactly 4,096 invocations for 4,096 elements; shaders
+with a partial final workgroup must guard their own indices. Compute SPIR-V does
+not yet support shared memory, barriers, atomics, textures, uniforms, general
+integer arithmetic, loops, or storage images.
 
 This remains an initial data-parallel path, not general compute compatibility.
 Dispatch is synchronous; command-buffer capture/replay and C API support are not

@@ -15,7 +15,7 @@ The committed original GLSL sources and their `.spv` fixtures are in
 recompile fixtures, not to build, test or run SILICON:
 
 ```sh
-for shader in textured.vert textured.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag compute_vector_add.comp; do
+for shader in textured.vert textured.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag compute_vector_add.comp compute_invert.comp; do
   glslangValidator -V --target-env vulkan1.0 -o "assets/shaders/$shader.spv" "assets/shaders/$shader"
   spirv-val --target-env vulkan1.0 "assets/shaders/$shader.spv"
 done
@@ -35,6 +35,7 @@ cargo run --release -p silicon-cli -- run spirv_cube
 cargo run --release -p silicon-cli -- render spirv_cube --capture output/glsl.silicon
 cargo run --release -p silicon-cli -- replay output/glsl.silicon
 cargo run --release --example compute_spirv_vector_add
+cargo run --release --example compute_spirv_invert
 ```
 
 `render-shaders` loads the supplied binaries and uses the cube's ordinary vertex,
@@ -179,8 +180,8 @@ returns zero; undefined GLSL inputs do not establish a conformance guarantee.
 
 Tests compare compiled GLSL with an independent hand-written SIR reference at
 exact framebuffer bytes, then capture/replay and SIMD/four-band rendering.
-The compute fixture dispatches the checked-in GLSL vec4 vector-add shader over
-64 workgroups and checks every output against Rust's scalar result.
+The compute fixtures dispatch the checked-in GLSL vec4 add and invert shaders
+over 64 workgroups and check every output against Rust's scalar result.
 A second GLSL fixture checks vector shuffle, add/sub/divide, dot, scalar multiply
 and implicit sampling against numeric expectations. The lit scene matches native
 coverage/depth exactly and colors within one RGBA8 quantization unit; captures
