@@ -8,7 +8,8 @@ produce/check bytecode; SILICON parses, translates and executes it entirely on
 the CPU.
 
 `textured.vert` + `textured.frag` power `spirv_cube`. `arithmetic.frag` covers
-vec2/shuffle/division/dot/sampling; `negate.frag` checks float sign-bit
+vec2/shuffle/division/dot/sampling; `math.frag` checks GLSL floor, fract, sin
+and cos in scalar and packet execution; `negate.frag` checks float sign-bit
 negation, including signed zero. `lit.vert` +
 `lit.frag` power the full `spirv_showcase` lighting pipeline, and `shadow.frag`
 powers the depth-textured `shadow_showcase`. `locals.frag` checks

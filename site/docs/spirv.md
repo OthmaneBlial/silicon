@@ -15,7 +15,7 @@ The committed original GLSL sources and their `.spv` fixtures are in
 recompile fixtures, not to build, test or run SILICON:
 
 ```sh
-for shader in textured.vert textured.frag mrt.vert mrt.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag compute_vector_add.comp compute_invert.comp compute_shared.comp compute_shared_multi.comp; do
+for shader in textured.vert textured.frag mrt.vert mrt.frag arithmetic.frag math.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag compute_vector_add.comp compute_invert.comp compute_shared.comp compute_shared_multi.comp; do
   glslangValidator -V --target-env vulkan1.0 -o "assets/shaders/$shader.spv" "assets/shaders/$shader"
   spirv-val --target-env vulkan1.0 "assets/shaders/$shader.spv"
 done
@@ -68,8 +68,9 @@ faces. This environment term is not split-sum image-based lighting.
 - One `main` entry point: Vertex, Fragment or the documented narrow Compute
   subset, one `void()` function, acyclic structured selection blocks, `OpReturn`,
   Logical/GLSL450 memory model and Shader capability. Fragment requires
-  OriginUpperLeft; compute requires `LocalSize`. GLSL.std.450 supports `Pow`, `FMin`, `FMax`,
-  `FClamp`, `FMix`, `Length` and `Normalize` with checked operand counts/types.
+  OriginUpperLeft; compute requires `LocalSize`. GLSL.std.450 supports `Floor`,
+  `Fract`, `Sin`, `Cos`, `Pow`, `FMin`, `FMax`, `FClamp`, `FMix`, `Length` and
+  `Normalize` with checked operand counts/types.
 - Float32 scalars, vec2/3/4, mat4 and scalar bool; int32 constants for graphics
   member indices. Graphics supports logical input/output/uniform/sampler/Function
   pointers and one-member structs. Float/vector/bool locals must be declared first
@@ -203,6 +204,8 @@ returns zero; undefined GLSL inputs do not establish a conformance guarantee.
 
 Tests compare compiled GLSL with an independent hand-written SIR reference at
 exact framebuffer bytes, then capture/replay and SIMD/four-band rendering.
+`math.frag` checks floor, fract, sine and cosine against Rust scalar results in
+both scalar and four-lane SIR execution.
 The compute fixtures dispatch the checked-in GLSL vec4 add shader over 64
 workgroups and the guarded inversion shader over 65; the latter skips 60
 out-of-range invocations and checks all 4,100 outputs against Rust's scalar result.
