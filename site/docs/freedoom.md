@@ -47,16 +47,19 @@ to open ordinary doors, operate manual lifts, or use the exit, and Escape to
 exit. Every frame submits the scene again through SILICON; movement stays inside
 a BSP-leaf floor, keeps a 16-unit margin from one-sided or explicitly blocking
 lines, limits steps to 24 units, and requires 56 units of ceiling clearance.
-WAD stim packs, medikits, health bonuses, soul spheres, clips, ammo boxes,
-green/blue armor, armor bonuses, and keys render as cutout billboards. Pickups
-require clear sight and a 24-unit range. Health/ammo and armor upgrades stay on
-the map when they cannot improve the player's inventory; repeated keys, health
-bonuses, soul spheres, and armor bonuses are consumed on contact. Standard
-health pickups stop at 100; health bonuses and soul spheres can raise health to
-200. Armor caps at 200 and pistol ammo at 200. Green armor absorbs one third of
-damage, blue armor one half, and armor bonuses add one point up to 200. These
+WAD stim packs, medikits, health bonuses, soul spheres, radiation suits, clips,
+ammo boxes, green/blue armor, armor bonuses, and keys render as cutout
+billboards. Pickups require clear sight and a 24-unit range. Health/ammo and
+armor upgrades stay on the map when they cannot improve the player's inventory;
+repeated keys, health bonuses, soul spheres, and armor bonuses are consumed on
+contact. Health pickups cap at 100; bonuses and soul spheres can raise health to
+200. Armor and pistol ammo cap at 200. Green armor absorbs one third of damage,
+blue armor one half, and armor bonuses add one point up to 200. These
 rules follow id Software's [`P_GiveBody`, `P_GiveArmor`,
 `P_TouchSpecialThing`, and `P_DamageMobj`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c).
+Radiation suits set or refresh a 60-second timer and prevent sector-7 nukage
+damage while active, following id Software's [`P_GivePower`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c)
+and [`P_PlayerInSpecialSector`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_spec.c).
 The player starts with
 50 pistol rounds. Press `E` within 64 units from the front of a special-1 door
 to raise its back sector at 70 units per second, wait 150 tics (about 4.3
@@ -176,9 +179,10 @@ bands reach the depth test first. This can reject hidden fragments before the
 fragment shader runs, while preserving the framebuffer; it does not implement
 Doom's BSP wall occlusion or per-column portal clipping. At the checked-in
 960×720 start view, 570 of 682 subsectors remain in the horizontal BSP view and
-SILICON submits 5,711 triangles across 259 draws. The WAD's 59 pickup things
-include nine health/ammo items, 30 health bonuses, one blue card, one green
-armor, and 18 armor bonuses; the armor items do not appear in the capture.
+SILICON submits 5,711 triangles across 259 draws. The checked-in camera view
+contains 59 visible pickup billboards: nine health/ammo items, 30 health
+bonuses, one blue card, one green armor, and 18 armor bonuses; the armor items
+do not appear in that capture.
 The sky draw follows opaque map batches with `LessEqual` depth testing and depth
 writes disabled, so the rasterizer rejects sky samples behind nearer map
 geometry before it runs the sky shader. The panorama sits 64 map units inside
@@ -209,6 +213,10 @@ checksum is SHA-256 `3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db96
 ![Freedoom E1M2 start view rendered through SILICON with the episode sky texture](../assets/screenshots/freedoom_e1m2.png)
 
 *E1M2 capture after splitting BSP cells at sector boundaries and adding the WAD sky texture.*
+
+![Freedoom E1M4 start view rendered through SILICON with a radiation-suit pickup in view](../assets/screenshots/freedoom_e1m4.png)
+
+*E1M4 start view: 8,912 triangles across 379 draws in 829 of 1,202 horizontal leaves.*
 
 *Sprite verification view from the same WAD with only the player start moved into the enemy corridor; the temporary WAD is not included.*
 

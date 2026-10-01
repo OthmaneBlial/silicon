@@ -10,6 +10,8 @@
   melee, hitscan, fireball, and nukage attacks.
 - Render and collect Doom health bonuses and soul spheres, following their
   separate 100/200 health caps.
+- Render and collect radiation suits; active suits prevent nukage-sector damage
+  for 60 seconds and refresh when another suit is collected.
 
 ## 0.7.0 — 2026-10-01
 

@@ -141,11 +141,12 @@ subset. The original positions and RGB colors, adapted vertex shader, and
 unchanged upstream fragment shader run through SILICON. See the
 [source, license, and adaptation notes](docs/third-party-demo.md).
 
-Phase 70 renders Freedoom E1M1 geometry, textures, all 29 normal-skill enemy
-sprites, nine health/ammo pickups, 30 health bonuses, one blue keycard, one
-green armor pickup, 18 armor bonuses, and the pistol through SILICON. Its map
-loader also renders and collects matching red, yellow, and blue keycards and
-skulls on maps that contain them. BSP child bounds cull the
+Phase 70 renders selected Freedoom maps through SILICON. The checked-in E1M1
+start view shows 29 cutout enemy billboards and 59 pickup billboards: nine
+health/ammo items, 30 health bonuses, one blue card, one green armor, and 18
+armor bonuses. The map loader also renders and collects matching red, yellow,
+and blue keycards and skulls, plus radiation suits on maps that contain them.
+BSP child bounds cull the
 horizontal view cone, and per-mesh bounds test all six frustum planes.
 The checked-in start view submits 5,711 triangles across 259 draws in 570 of
 682 horizontal BSP leaves. The armor items do not appear in the captured pixels.
@@ -174,12 +175,12 @@ skulls open special-28, special-27, and special-26 doors. Other locked-door
 types and other crossing-triggered specials remain unsupported.
 E1M1's four special-9 sectors add to a once-per-sector secret counter in the
 window title. Its three special-7 nukage sectors deal 5 HP every 32 game tics
-spent on them.
+spent on them. A collected radiation suit prevents that damage for 60 seconds
+and refreshes its timer when collected again.
 Enemies cycle four WAD walk frames,
 play attack and death poses, leave corpses,
 and select among eight camera-relative sprite views; fireballs show WAD impact
-frames. It remains
-a limited E1M1 gameplay slice, not a complete Doom game;
+frames. It remains a limited Doom gameplay prototype, not a complete game;
 BSP wall occlusion, per-column portal clipping, and broader game rules remain. The [WAD source,
 controls, screenshots, license, and limits](docs/freedoom.md) are documented.
 The Freedoom WAD stays external.
@@ -190,6 +191,8 @@ capture fixture.
 ![Freedoom E1M1 map with the WAD pistol and medikit rendered through SILICON](assets/screenshots/freedoom_e1m1.png)
 
 *Static E1M1 view from the player start; this camera does not show an enemy. WAD flats, walls, and gameplay sprites use SILICON's texture and shader paths.*
+
+![Freedoom E1M4 map with a radiation-suit pickup rendered through SILICON](assets/screenshots/freedoom_e1m4.png)
 
 ## Programmable, observable, reproducible
 
