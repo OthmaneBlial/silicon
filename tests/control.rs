@@ -463,6 +463,104 @@ fn nested_loops_keep_independent_conditions_and_counters() {
 }
 
 #[test]
+fn bounded_loops_survive_capture_round_trip() {
+    use silicon::{
+        Color, Device, FrameCapture, Pipeline, SampleCount, ShaderPipeline, Vec3, Vertex,
+    };
+    use std::sync::Arc;
+
+    let vertex = Program::new(vec![
+        Input { dst: 0, slot: 0 },
+        Output { slot: 0, src: 0 },
+        Input { dst: 1, slot: 2 },
+        Output { slot: 2, src: 1 },
+    ])
+    .unwrap();
+    let fragment = Program::new(vec![
+        Const {
+            dst: 0,
+            value: Vec4::ZERO,
+        },
+        Const {
+            dst: 1,
+            value: Vec4::ZERO,
+        },
+        Const {
+            dst: 2,
+            value: Vec4::new(1., 1., 1., 1.),
+        },
+        Const {
+            dst: 3,
+            value: Vec4::new(0.25, 0.1, 0., 0.25),
+        },
+        Const {
+            dst: 4,
+            value: Vec4::new(2., 2., 2., 2.),
+        },
+        Compare {
+            dst: 5,
+            a: 0,
+            b: 4,
+            kind: Comparison::Less,
+        },
+        LoopStart { condition: 5 },
+        Add { dst: 0, a: 0, b: 2 },
+        Add { dst: 1, a: 1, b: 3 },
+        Compare {
+            dst: 5,
+            a: 0,
+            b: 4,
+            kind: Comparison::Less,
+        },
+        LoopEnd,
+        Output { slot: 0, src: 1 },
+    ])
+    .unwrap();
+    let mut commands = Device.commands();
+    commands.begin_render_pass(Color::BLACK);
+    commands.bind_pipeline(Arc::new(ShaderPipeline {
+        vertex,
+        fragment,
+        state: Pipeline::default(),
+    }));
+    let vertices = [(-1., -1.), (1., -1.), (1., 1.), (-1., 1.)]
+        .map(|(x, y)| Vertex::new(Vec3::new(x, y, 0.5), Color::WHITE));
+    commands.bind_vertex_buffer(Device.create_vertex_buffer(vertices.to_vec()).unwrap());
+    commands.bind_index_buffer(Device.create_index_buffer(vec![0, 1, 2, 0, 2, 3]).unwrap());
+    commands.draw_indexed(0, 6);
+    commands.end_render_pass();
+    let capture = FrameCapture {
+        version: 2,
+        width: 8,
+        height: 8,
+        sample_count: SampleCount::One,
+        commands,
+    };
+    let before = capture.replay().unwrap();
+    let path = std::env::temp_dir().join(format!(
+        "silicon-loop-capture-{}.silicon",
+        std::process::id()
+    ));
+    capture.save(&path).unwrap();
+    let replay = FrameCapture::load(&path).unwrap().replay().unwrap();
+    std::fs::remove_file(path).unwrap();
+
+    assert!(before.stats.shader_instructions > 0);
+    assert_eq!(
+        before.stats.shader_instructions,
+        replay.stats.shader_instructions
+    );
+    for y in 0..8 {
+        for x in 0..8 {
+            assert_eq!(
+                before.framebuffer.pixel(x, y).unwrap().rgba8(),
+                replay.framebuffer.pixel(x, y).unwrap().rgba8()
+            );
+        }
+    }
+}
+
+#[test]
 fn glsl_selections_locals_phi_and_early_returns_match_independent_reference() {
     use shader::spirv::{Module, link};
     let vertex = Module::parse(include_bytes!("../assets/shaders/textured.vert.spv"))
