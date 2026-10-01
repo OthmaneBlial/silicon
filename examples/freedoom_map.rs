@@ -37,6 +37,7 @@ const LINE_YELLOW_LOCKED_DOOR_OPEN: u16 = 34;
 const LINE_RED_LOCKED_DOOR: u16 = 28;
 const LINE_BLAZING_DOOR_RAISE: u16 = 117;
 const LINE_WALK_OPEN_DOOR: u16 = 2;
+const LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM: u16 = 10;
 const LINE_USE_DOWN_WAIT_UP_PLATFORM: u16 = 62;
 const LINE_USE_LOWER_FLOOR_TO_LOWEST: u16 = 23;
 const LINE_PLAT_DOWN_WAIT_UP: u16 = 88;
@@ -2993,8 +2994,12 @@ fn move_player(map: &Map, player: &mut Player, controls: Controls, delta: f32) -
                 y: candidate.y,
             };
             crossed.extend(map.lines.iter().enumerate().filter_map(|(index, &line)| {
-                (matches!(line[5], LINE_WALK_OPEN_DOOR | LINE_PLAT_DOWN_WAIT_UP)
-                    && crossed_line(map, origin, destination, line))
+                (matches!(
+                    line[5],
+                    LINE_WALK_OPEN_DOOR
+                        | LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM
+                        | LINE_PLAT_DOWN_WAIT_UP
+                ) && crossed_line(map, origin, destination, line))
                 .then_some(index)
             }));
             *player = candidate;
@@ -3230,7 +3235,9 @@ fn down_wait_up_platforms(map: &Map, line_index: usize, active: &[Platform]) -> 
     };
     if !matches!(
         line[5],
-        LINE_USE_DOWN_WAIT_UP_PLATFORM | LINE_PLAT_DOWN_WAIT_UP
+        LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM
+            | LINE_USE_DOWN_WAIT_UP_PLATFORM
+            | LINE_PLAT_DOWN_WAIT_UP
     ) || line[6] == 0
     {
         return Vec::new();
@@ -3248,6 +3255,24 @@ fn down_wait_up_platforms(map: &Map, line_index: usize, active: &[Platform]) -> 
             }
         })
         .collect()
+}
+
+fn activate_walk_platform(map: &mut Map, line_index: usize, active: &[Platform]) -> Vec<Platform> {
+    let Some(line) = map.lines.get(line_index) else {
+        return Vec::new();
+    };
+    if !matches!(
+        line[5],
+        LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM | LINE_PLAT_DOWN_WAIT_UP
+    ) {
+        return Vec::new();
+    }
+    let one_shot = line[5] == LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM;
+    let started = down_wait_up_platforms(map, line_index, active);
+    if one_shot {
+        map.lines[line_index][5] = 0;
+    }
+    started
 }
 
 fn update_platforms(map: &mut Map, platforms: &mut Vec<Platform>, delta: f32) -> bool {
@@ -3756,7 +3781,12 @@ fn update_actors(
                     delta,
                 )
                 .into_iter()
-                .filter(|&line| map.lines[line][5] == LINE_PLAT_DOWN_WAIT_UP),
+                .filter(|&line| {
+                    matches!(
+                        map.lines[line][5],
+                        LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM | LINE_PLAT_DOWN_WAIT_UP
+                    )
+                }),
             );
             actor.x = enemy.x;
             actor.y = enemy.y;
@@ -4488,8 +4518,8 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                         activated_sectors += started.len();
                         doors.extend(started);
                     }
-                    LINE_PLAT_DOWN_WAIT_UP => {
-                        let started = down_wait_up_platforms(&scene.map, line, &platforms);
+                    LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM | LINE_PLAT_DOWN_WAIT_UP => {
+                        let started = activate_walk_platform(&mut scene.map, line, &platforms);
                         activated_sectors += started.len();
                         platforms.extend(started);
                     }
@@ -4617,7 +4647,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 &mut gameplay_rng,
             );
             for line in crossed_platform_lines {
-                let started = down_wait_up_platforms(&scene.map, line, &platforms);
+                let started = activate_walk_platform(&mut scene.map, line, &platforms);
                 activated_sectors += started.len();
                 platforms.extend(started);
             }
@@ -6011,6 +6041,10 @@ mod tests {
         assert_eq!(move_player(&map, &mut player, controls, 0.05), vec![0]);
         assert_eq!(map.lines[0][5], LINE_PLAT_DOWN_WAIT_UP);
 
+        map.lines[0][5] = LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM;
+        player.x = 0.0;
+        assert_eq!(move_player(&map, &mut player, controls, 0.05), vec![0]);
+
         map.lines[0][2] = 0;
         map.lines[0][4] = u16::MAX;
         player.x = 0.0;
@@ -6176,6 +6210,12 @@ mod tests {
         let manual = down_wait_up_platforms(&map, 0, &[]);
         assert_eq!(manual.len(), 1);
         assert!(down_wait_up_platforms(&map, 0, &manual).is_empty());
+
+        map.lines[0][5] = LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM;
+        let one_shot = activate_walk_platform(&mut map, 0, &[]);
+        assert_eq!(one_shot.len(), 1);
+        assert_eq!(map.lines[0][5], 0);
+        assert!(activate_walk_platform(&mut map, 0, &[]).is_empty());
 
         map.sectors[2].tag = 5;
         map.lines[0][5] = LINE_USE_LOWER_FLOOR_TO_LOWEST;
@@ -6402,7 +6442,7 @@ mod tests {
         let mut sectors = vec![sector; 3];
         sectors[2].floor = 24.0;
         sectors[2].tag = 5;
-        let map = Map {
+        let mut map = Map {
             vertices: vec![
                 Vertex2 { x: 10.0, y: -64.0 },
                 Vertex2 { x: 10.0, y: 64.0 },
@@ -6503,6 +6543,25 @@ mod tests {
         assert_eq!(crossed, [0]);
         assert_eq!(down_wait_up_platforms(&map, crossed[0], &[])[0].sector, 2);
         assert_eq!(health, 100);
+
+        map.lines[0][5] = LINE_WALK_ONCE_DOWN_WAIT_UP_PLATFORM;
+        actors[0].x = 0.0;
+        actors[0].y = -10.0;
+        let crossed = update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            &PlayerEffects::default(),
+            0.5,
+            &mut 1u32,
+        );
+        assert_eq!(crossed, [0]);
+        let platforms = activate_walk_platform(&mut map, crossed[0], &[]);
+        assert_eq!(platforms.len(), 1);
+        assert_eq!(map.lines[0][5], 0);
     }
 
     #[test]

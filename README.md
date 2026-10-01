@@ -194,9 +194,10 @@ close with matching map geometry and collision. Its special-117 use door raises
 at four times normal speed, then closes after the same wait. Crossing a WAD
 special-2 line opens sectors with its tag and leaves them open. Normal exits
 advance when the next WAD map exists; special-51 exits route through episode
-secret maps. The player or a living enemy can cross a special-88 line, or the
-player can use a special-62 line to move its tagged platform down, wait, then return it to its
-starting height. Map thing 2022 grants 30 seconds of invulnerability against
+secret maps. The player or a living enemy can cross a one-shot special-10 line
+or a repeatable special-88 line to move its tagged platform down, wait, then
+return it to its starting height; the player can also use a special-62 line.
+Map thing 2022 grants 30 seconds of invulnerability against
 all implemented player damage. Map thing 2024 grants 60 seconds of partial
 invisibility: human and shotgunner hitscan attacks can miss, and imp fireballs
 can veer off target; melee remains accurate. The sample uses one ray per
