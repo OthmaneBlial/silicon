@@ -23,14 +23,16 @@ per-workgroup vec4 memory and `WorkgroupBarrier`; `dispatch_compute_with_atomics
 and its layout/SIMD variants accept separate mutable bindings for scalar f32
 storage atomics. Shared and atomic programs use the scalar workgroup scheduler.
 Command-buffer integration, cross-workgroup barriers, integer/vector atomics and
-general compute-stage SPIR-V are unsupported. `create_compute_pipeline_from_spirv`
+compute-stage SPIR-V beyond the documented subset are unsupported. `create_compute_pipeline_from_spirv`
 translates the documented narrow SPIR-V 1.0 storage-buffer subset into
-storage-only dispatch. See the
+storage-only dispatch. Its compute subset includes one fixed `vec4[N]`
+workgroup array and GLSL `barrier()`; see the
 [compute contract](compute.md),
-[vector-add example](../examples/compute_vector_add.rs), and
+[vector-add example](../examples/compute_vector_add.rs),
 [SPIR-V vector-add example](../examples/compute_spirv_vector_add.rs),
 [SPIR-V inversion example](../examples/compute_spirv_invert.rs),
-[benchmark example](../examples/compute_bench.rs) and
+[SPIR-V shared-memory example](../examples/compute_spirv_shared.rs),
+[benchmark example](../examples/compute_bench.rs), and
 [atomic example](../examples/compute_atomics.rs).
 
 Shader creation accepts at most 1 MiB per SPIR-V 1.0 module and translates only

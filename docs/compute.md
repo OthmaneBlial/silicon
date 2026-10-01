@@ -108,6 +108,13 @@ zero. At most 12 input buffers are accepted. Loads and writes use shader
 indices, and every address is checked during dispatch; explicit writes are
 staged and only modify elements the shader writes.
 
+The SPIR-V subset also accepts one fixed `shared vec4 scratch[N]` array, where
+`1 <= N <= 4096`, and GLSL `barrier()` with Workgroup execution and memory
+scope. It uses the existing per-workgroup shared-memory race checks and
+synchronized scalar scheduler. Other shared types/layouts, multiple arrays,
+other barrier scopes/semantics and cross-workgroup synchronization are not
+supported.
+
 The checked-in GLSL compute kernels are compiled offline with glslang. Run them
 without a GPU or display:
 
@@ -118,8 +125,12 @@ glslangValidator -V --target-env vulkan1.0 \
 glslangValidator -V --target-env vulkan1.0 \
   assets/shaders/compute_invert.comp \
   -o assets/shaders/compute_invert.comp.spv
+glslangValidator -V --target-env vulkan1.0 \
+  assets/shaders/compute_shared.comp \
+  -o assets/shaders/compute_shared.comp.spv
 cargo run --release --example compute_spirv_vector_add
 cargo run --release --example compute_spirv_invert
+cargo run --release --example compute_spirv_shared
 ```
 
 These examples prove GLSL → SPIR-V → SIR → CPU storage-buffer execution with
@@ -129,8 +140,9 @@ dispatches 4,160 invocations; its `index >= 4100u` guard makes the final 60
 invocations return before reading or writing storage. Scalar unsigned SPIR-V
 comparisons use exact float-backed SIR values: dispatch IDs are bounded to
 1,048,576 and comparison constants to 16,777,216. Other integer arithmetic is
-not supported. Compute SPIR-V does not yet support shared memory, barriers,
-atomics, textures, uniforms, loops, or storage images.
+not supported. The shared-memory example broadcasts the first input value in
+each 64-invocation group and verifies 4,096 outputs. Compute SPIR-V does not
+support atomics, textures, uniforms, loops, or storage images.
 
 This remains an initial data-parallel path, not general compute compatibility.
 Dispatch is synchronous; command-buffer capture/replay and C API support are not

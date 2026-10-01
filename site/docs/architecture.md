@@ -49,10 +49,10 @@ vec4 indexes and stage single-writer stores into the output. Workgroups can use
 zeroed shared vec4 memory and explicit barriers; the scalar scheduler checks
 barrier convergence and shared-memory races. Separate mutable storage bindings
 support scalar f32 atomic add, exchange and compare-exchange with transactional
-commit. A strict SPIR-V 1.0 storage-buffer subset lowers GLSL compute vector-add
-and one-minus inversion into the same CPU path. These synchronous paths are
-outside the graphics command stream; cross-workgroup barriers and broader
-compute-SPIR-V remain unsupported. See the
+commit. A strict SPIR-V 1.0 storage-buffer subset lowers GLSL compute vector-add,
+one-minus inversion and one fixed-vec4-array shared broadcast into the same CPU
+path. These synchronous paths are outside the graphics command stream;
+cross-workgroup barriers and broader compute-SPIR-V remain unsupported. See the
 [compute contract](compute.md).
 
 Resources use typed, reference-counted owned buffers. Commands keep their data
