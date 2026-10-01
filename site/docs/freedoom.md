@@ -156,11 +156,14 @@ camera-relative views using Doom's state durations; killed enemies remain as
 their final corpse frame. Paired Freedoom patches are horizontally flipped
 where Doom does so. Cutout billboards use a SILICON fragment shader. Space
 fires a seeded 5, 10, or 15-damage hitscan with a 0.35-second cooldown; pistol ammo caps at 200. Damage follows id Software's [`P_GunShot`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c).
-Press `Q` for a fist punch with a separate 0.35-second cooldown, no ammo cost,
+Press `Q` for a fist punch with a 22-tic (about 0.63-second) cooldown, no ammo cost,
 and Doom's randomized 2–20 damage. It hits the nearest living enemy whose
 16-unit radius intersects the forward trace within 64 units, unless a blocking
-line comes first. The WAD's PUNGC0 patch shows the punch. Its range and damage
-follow id Software's [`A_Punch`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c)
+line comes first. The hit is immediate; PUNGC0, PUNGD0, PUNGC0, and PUNGB0
+play afterward for 4, 5, 4, and 5 Doom tics. The startup frame is omitted; the
+remaining pose durations follow id Software's
+[weapon states](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/info.c).
+The punch range and damage follow id Software's [`A_Punch`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c)
 and [`MELEERANGE`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_local.h).
 A PSTR berserk pack restores up to 100 health without reducing health above 100,
 then multiplies fist damage by ten until the map ends. Its healing and power
@@ -246,8 +249,8 @@ power-up effects beyond health bonuses, soul spheres, radiation suits,
 invulnerability spheres, partial-invisibility spheres, and light-amplification
 visors, locked-door action variants, crossing specials other than 2 and 88,
 other use specials, episode finales, weapon switching, weapons beyond the pistol
-and fist and their ammunition, and full multi-frame weapon animations remain
-unimplemented.
+and fist and their ammunition, and complete weapon state sequences beyond the
+implemented pistol and fist poses remain unimplemented.
 `F_SKY1` ceilings use the map's episode sky texture, sampled by view angle. The
 checked-in [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was
 rendered from the unmodified release WAD. The WAD itself is not included. The release archive

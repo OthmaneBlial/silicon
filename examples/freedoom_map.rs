@@ -1533,6 +1533,8 @@ struct PreparedScene {
     weapon_fire: SpriteTexture,
     weapon_recover: SpriteTexture,
     fist_fire: SpriteTexture,
+    fist_followthrough: SpriteTexture,
+    fist_return: SpriteTexture,
     projectile_sprite: SpriteTexture,
     projectile_explosion: [SpriteTexture; 3],
     actors: Vec<Actor>,
@@ -1626,12 +1628,34 @@ enum PistolPose {
     Recover,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FistPose {
+    Impact,
+    FollowThrough,
+    RepeatImpact,
+    Return,
+}
+
 fn pistol_pose(remaining_tics: f32) -> Option<PistolPose> {
     (remaining_tics > 0.0).then_some(if remaining_tics > 5.0 {
         PistolPose::Recoil
     } else {
         PistolPose::Recover
     })
+}
+
+fn fist_pose(remaining_tics: f32) -> Option<FistPose> {
+    if remaining_tics > 14.0 {
+        Some(FistPose::Impact)
+    } else if remaining_tics > 9.0 {
+        Some(FistPose::FollowThrough)
+    } else if remaining_tics > 5.0 {
+        Some(FistPose::RepeatImpact)
+    } else if remaining_tics > 0.0 {
+        Some(FistPose::Return)
+    } else {
+        None
+    }
 }
 
 struct WallSection {
@@ -3820,6 +3844,8 @@ impl PreparedScene {
         let weapon_fire = sprite_patch_texture(&data, *b"PISGC0\0\0")?;
         let weapon_recover = sprite_patch_texture(&data, *b"PISGB0\0\0")?;
         let fist_fire = sprite_patch_texture(&data, *b"PUNGC0\0\0")?;
+        let fist_followthrough = sprite_patch_texture(&data, *b"PUNGD0\0\0")?;
+        let fist_return = sprite_patch_texture(&data, *b"PUNGB0\0\0")?;
         let projectile_sprite = sprite_patch_texture(&data, *b"BAL1A0\0\0")?;
         let projectile_explosion = [
             sprite_patch_texture(&data, *b"BAL1C0\0\0")?,
@@ -3897,6 +3923,8 @@ impl PreparedScene {
             weapon_fire,
             weapon_recover,
             fist_fire,
+            fist_followthrough,
+            fist_return,
             projectile_sprite,
             projectile_explosion,
             actors,
@@ -3926,7 +3954,7 @@ impl PreparedScene {
         projectiles: &[Projectile],
         pickups: &[Pickup],
         weapon_firing_tics: f32,
-        fist_firing: bool,
+        fist_firing_tics: f32,
         effects: &PlayerEffects,
         renderer: &mut Renderer,
     ) -> api::Result<(api::Submission, usize)> {
@@ -4118,14 +4146,15 @@ impl PreparedScene {
             commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
             commands.draw(0, count);
         }
-        let weapon = if fist_firing {
-            &self.fist_fire
-        } else {
-            match pistol_pose(weapon_firing_tics * DOOM_TICS_PER_SECOND) {
+        let weapon = match fist_pose(fist_firing_tics * DOOM_TICS_PER_SECOND) {
+            Some(FistPose::Impact | FistPose::RepeatImpact) => &self.fist_fire,
+            Some(FistPose::FollowThrough) => &self.fist_followthrough,
+            Some(FistPose::Return) => &self.fist_return,
+            None => match pistol_pose(weapon_firing_tics * DOOM_TICS_PER_SECOND) {
                 Some(PistolPose::Recoil) => &self.weapon_fire,
                 Some(PistolPose::Recover) => &self.weapon_recover,
                 None => &self.weapon_idle,
-            }
+            },
         };
         let mut vertices = weapon_vertices(player, weapon, sector);
         if light_amplification {
@@ -4194,7 +4223,7 @@ fn render(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
         &[],
         &scene.pickups,
         0.0,
-        false,
+        0.0,
         &effects,
         &mut renderer,
     )?;
@@ -4461,8 +4490,8 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     ));
                 }
                 if window.is_key_pressed(Key::Q, KeyRepeat::No) && punch_cooldown == 0.0 {
-                    punch_cooldown = 0.35;
-                    punch_flash = 0.16;
+                    punch_cooldown = 22.0 / DOOM_TICS_PER_SECOND;
+                    punch_flash = 18.0 / DOOM_TICS_PER_SECOND;
                     kills += usize::from(punch_weapon(
                         &scene.map,
                         &mut actors,
@@ -4518,7 +4547,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             &projectiles,
             &pickups,
             weapon_flash,
-            punch_flash > 0.0,
+            punch_flash,
             &effects,
             &mut renderer,
         )?;
@@ -6731,6 +6760,15 @@ mod tests {
         assert_eq!(pistol_pose(5.0), Some(PistolPose::Recover));
         assert_eq!(pistol_pose(1.0), Some(PistolPose::Recover));
         assert_eq!(pistol_pose(0.0), None);
+    }
+
+    #[test]
+    fn fist_followthrough_uses_doom_frame_durations() {
+        assert_eq!(fist_pose(18.0), Some(FistPose::Impact));
+        assert_eq!(fist_pose(14.0), Some(FistPose::FollowThrough));
+        assert_eq!(fist_pose(9.0), Some(FistPose::RepeatImpact));
+        assert_eq!(fist_pose(5.0), Some(FistPose::Return));
+        assert_eq!(fist_pose(0.0), None);
     }
 
     #[test]
