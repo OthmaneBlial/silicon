@@ -296,7 +296,7 @@ flowchart LR
 | Attachments | RGBA8/BGRA8, depth with 8 compare modes, stencil masks/operations |
 | Texturing | RGBA8/RGB8/R8 2D, array and 3D textures; depth textures and cube maps; nearest/bilinear/trilinear, clamp/repeat/mirror and mip generation/LOD |
 | Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 graphics subset plus narrow vec4 storage-buffer compute subset → SIR; nested selections, Phi, early return/discard |
-| Compute | Experimental SIR dispatch, 3D IDs, up to 12 indexed read buffers, checked record layouts, staged indexed writes, 64 KiB per-workgroup shared memory and barriers, scalar f32 storage atomics, and bounded GLSL/SPIR-V vec4 addition, guarded inversion and one-array shared broadcast; divergent barriers and shared-memory races fail safely; synchronized kernels use the scalar scheduler |
+| Compute | Experimental SIR dispatch, 3D IDs, up to 12 indexed read buffers, checked record layouts, staged indexed writes, 64 KiB per-workgroup shared memory and barriers, scalar f32 storage atomics, and bounded GLSL/SPIR-V vec4 addition, guarded inversion and shared-array broadcast; divergent barriers and shared-memory races fail safely; synchronized kernels use the scalar scheduler |
 | Output merger | Replace, source alpha, additive and multiplicative blending; color/depth write enables |
 | Execution | Scalar reference, optional SIMD coverage4 and NEON/SSE four-fragment SIR, disjoint worker bands |
 | Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling, pipeline-cache probe, cargo-fuzz targets |

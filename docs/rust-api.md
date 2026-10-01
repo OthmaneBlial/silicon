@@ -25,8 +25,8 @@ storage atomics. Shared and atomic programs use the scalar workgroup scheduler.
 Command-buffer integration, cross-workgroup barriers, integer/vector atomics and
 compute-stage SPIR-V beyond the documented subset are unsupported. `create_compute_pipeline_from_spirv`
 translates the documented narrow SPIR-V 1.0 storage-buffer subset into
-storage-only dispatch. Its compute subset includes one fixed `vec4[N]`
-workgroup array and GLSL `barrier()`; see the
+storage-only dispatch. Its compute subset includes fixed `vec4[N]` workgroup
+arrays up to 4,096 values total and GLSL `barrier()`; see the
 [compute contract](compute.md),
 [vector-add example](../examples/compute_vector_add.rs),
 [SPIR-V vector-add example](../examples/compute_spirv_vector_add.rs),

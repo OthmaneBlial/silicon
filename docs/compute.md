@@ -108,12 +108,12 @@ zero. At most 12 input buffers are accepted. Loads and writes use shader
 indices, and every address is checked during dispatch; explicit writes are
 staged and only modify elements the shader writes.
 
-The SPIR-V subset also accepts one fixed `shared vec4 scratch[N]` array, where
-`1 <= N <= 4096`, and GLSL `barrier()` with Workgroup execution and memory
-scope. It uses the existing per-workgroup shared-memory race checks and
-synchronized scalar scheduler. Other shared types/layouts, multiple arrays,
-other barrier scopes/semantics and cross-workgroup synchronization are not
-supported.
+The SPIR-V subset also accepts fixed `shared vec4 scratch[N]` arrays whose
+combined length is at most 4,096, and GLSL `barrier()` with Workgroup execution
+and memory scope. Each array gets a distinct range in per-workgroup memory. The
+existing race checks and synchronized scalar scheduler handle the accesses.
+Other shared types/layouts, other barrier scopes/semantics and cross-workgroup
+synchronization are not supported.
 
 The checked-in GLSL compute kernels are compiled offline with glslang. Run them
 without a GPU or display:
@@ -128,6 +128,9 @@ glslangValidator -V --target-env vulkan1.0 \
 glslangValidator -V --target-env vulkan1.0 \
   assets/shaders/compute_shared.comp \
   -o assets/shaders/compute_shared.comp.spv
+glslangValidator -V --target-env vulkan1.0 \
+  assets/shaders/compute_shared_multi.comp \
+  -o assets/shaders/compute_shared_multi.comp.spv
 cargo run --release --example compute_spirv_vector_add
 cargo run --release --example compute_spirv_invert
 cargo run --release --example compute_spirv_shared

@@ -15,7 +15,7 @@ The committed original GLSL sources and their `.spv` fixtures are in
 recompile fixtures, not to build, test or run SILICON:
 
 ```sh
-for shader in textured.vert textured.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag compute_vector_add.comp compute_invert.comp compute_shared.comp; do
+for shader in textured.vert textured.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag compute_vector_add.comp compute_invert.comp compute_shared.comp compute_shared_multi.comp; do
   glslangValidator -V --target-env vulkan1.0 -o "assets/shaders/$shader.spv" "assets/shaders/$shader"
   spirv-val --target-env vulkan1.0 "assets/shaders/$shader.spv"
 done
@@ -99,9 +99,9 @@ faces. This environment term is not split-sum image-based lighting.
   and `NumWorkgroups` inputs plus set-0 vec4 storage buffers. Read-only bindings
   are contiguous from 0; one write-only output follows them. Each buffer must be
   one runtime vec4 array at offset 0 with stride 16. The shader supplies the
-  element indices; the dispatcher checks every load and staged store. One fixed
-  Workgroup `OpTypeArray` of vec4 values (length 1..4096) is accepted, along
-  with `OpControlBarrier` only for Workgroup execution/memory scope and
+  element indices; the dispatcher checks every load and staged store. Fixed
+  Workgroup `OpTypeArray` vec4 values are accepted up to 4,096 total elements,
+  along with `OpControlBarrier` only for Workgroup execution/memory scope and
   AcquireRelease WorkgroupMemory semantics (`barrier()` in GLSL).
   Debug names and source-language metadata are read without executing them.
 
@@ -134,7 +134,7 @@ approximation even in divergent branches, not hardware derivative conformance.
 | Compute invocation BuiltIns | `GlobalInvocationId`, `LocalInvocationId`, `WorkgroupId` and `NumWorkgroups` map to SIR inputs 0..3 |
 | Set 0, bindings 0..N-1 | Read-only `vec4[]` buffers with 16-byte stride and member offset 0, passed to `dispatch_compute` in binding order |
 | Set 0, binding N | One write-only `vec4[]` output with the same layout; only shader-written elements are committed |
-| Workgroup storage | One fixed `vec4[N]` array, `1 <= N <= 4096`; shared loads/stores use checked per-workgroup memory |
+| Workgroup storage | Fixed `vec4[N]` arrays with at most 4,096 elements total; shared loads/stores use distinct, checked per-workgroup ranges |
 | `OpControlBarrier` | Workgroup execution/memory scope with AcquireRelease WorkgroupMemory semantics; divergent paths fail dispatch |
 
 The shadow shader binds the single-level 32-bit float depth texture at set 1,
@@ -180,8 +180,8 @@ constants, arbitrary SSBO layouts, storage images, implicit samples from
 transformed coordinates, explicit sample offsets/gradients, general shared-memory
 layouts/barriers, WGSL or GLSL compiler. The compute subset accepts up to 12
 read-only vec4 arrays at bindings 0..N-1 and exactly one write-only vec4 output
-at N, plus at most one fixed Workgroup `vec4[N]` array and the GLSL `barrier()`
-semantics above; it does not support atomics, textures or uniforms. Unreachable
+at N, plus fixed Workgroup `vec4[N]` arrays up to 4,096 elements total and the
+GLSL `barrier()` semantics above; it does not support atomics, textures or uniforms. Unreachable
 blocks are accepted only as isolated `OpUnreachable` merge blocks.
 Conditional targets must be distinct; overlapping regions, back edges and branches
 outside their structured region fail. Phi pairs must match all predecessors,
@@ -197,8 +197,9 @@ out-of-range invocations and checks all 4,100 outputs against Rust's scalar resu
 A shared-memory fixture broadcasts one value across each 64-invocation group;
 its integration test checks the 128 outputs across two groups in scalar and
 SIMD-requested dispatch, and the runnable example verifies 4,096 outputs over
-64 groups. A malformed barrier-semantics test confirms unsupported scopes are
-rejected.
+64 groups. A second fixture checks that two arrays do not alias, and a malformed
+module test confirms aggregate shared allocation above 4,096 values is rejected.
+A malformed barrier-semantics test confirms unsupported scopes are rejected.
 A second GLSL fixture checks vector shuffle, add/sub/divide, dot, scalar multiply
 and implicit sampling against numeric expectations. The lit scene matches native
 coverage/depth exactly and colors within one RGBA8 quantization unit; captures
