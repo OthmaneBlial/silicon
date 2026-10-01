@@ -65,7 +65,17 @@ struct Map {
     lines: Vec<[u16; 5]>, // endpoints, flags, side 0, side 1
     segs: Vec<[u16; 5]>,  // endpoints, linedef, side, texture offset
     subsectors: Vec<[u16; 2]>,
+    nodes: Vec<Node>,
     things: Vec<(i16, i16, u16, u16, u16)>, // x, y, angle, type, flags
+}
+
+#[derive(Clone, Copy)]
+struct Node {
+    x: i16,
+    y: i16,
+    dx: i16,
+    dy: i16,
+    children: [u16; 2],
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -224,6 +234,18 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
         .into_iter()
         .map(|r| Ok([u16_at(r, 0)?, u16_at(r, 2)?]))
         .collect::<Result<_, io::Error>>()?;
+    let nodes: Vec<Node> = records(7, 28)?
+        .into_iter()
+        .map(|r| {
+            Ok(Node {
+                x: i16_at(r, 0)?,
+                y: i16_at(r, 2)?,
+                dx: i16_at(r, 4)?,
+                dy: i16_at(r, 6)?,
+                children: [u16_at(r, 24)?, u16_at(r, 26)?],
+            })
+        })
+        .collect::<Result<_, io::Error>>()?;
     let things: Vec<(i16, i16, u16, u16, u16)> = records(1, 10)?
         .into_iter()
         .map(|r| {
@@ -269,6 +291,23 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
             return Err(invalid("SSECTORS references invalid SEGS"));
         }
     }
+    if subsectors.is_empty() || (nodes.is_empty() && subsectors.len() != 1) || nodes.len() > 0x8000
+    {
+        return Err(invalid("NODES and SSECTORS do not form a supported BSP"));
+    }
+    for node in &nodes {
+        if node.dx == 0 && node.dy == 0 {
+            return Err(invalid("NODES contains a zero-length partition"));
+        }
+        for &child in &node.children {
+            let index = (child & 0x7fff) as usize;
+            if (child & 0x8000 != 0 && index >= subsectors.len())
+                || (child & 0x8000 == 0 && index >= nodes.len())
+            {
+                return Err(invalid("NODES references an invalid node or subsector"));
+            }
+        }
+    }
     Ok(Map {
         vertices,
         sectors,
@@ -276,6 +315,7 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
         lines,
         segs,
         subsectors,
+        nodes,
         things,
     })
 }
@@ -688,13 +728,6 @@ fn convex_hull(mut points: Vec<Vertex2>) -> Vec<Vertex2> {
 struct Geometry {
     flats: BTreeMap<[u8; 8], Vec<Vertex>>,
     walls: BTreeMap<[u8; 8], Vec<Vertex>>,
-    regions: Vec<Region>,
-}
-
-#[derive(Clone)]
-struct Region {
-    polygon: Vec<Vertex2>,
-    sector: Sector,
 }
 
 #[derive(Clone, Copy)]
@@ -725,7 +758,6 @@ struct PreparedScene {
     sprite_pipeline: Arc<ShaderPipeline>,
     sampler: Sampler,
     draws: Vec<Draw>,
-    regions: Vec<Region>,
     sprites: BTreeMap<[u8; 4], SpriteTexture>,
     actors: Vec<Actor>,
     start: Player,
@@ -863,10 +895,6 @@ fn geometry(map: &Map, textures: &BTreeMap<[u8; 8], Arc<Texture>>) -> Result<Geo
         if polygon.len() < 3 {
             continue;
         }
-        out.regions.push(Region {
-            polygon: polygon.clone(),
-            sector,
-        });
         let root = world(polygon[0], sector.floor);
         let light = 0.38 + sector.light as f32 / 255.0 * 0.62;
         let floor = Vec4::new(light, light, light, 1.0);
@@ -1011,22 +1039,43 @@ fn flat_uv(point: Vertex2) -> Vec2 {
     Vec2::new(point.x / 64.0, point.y / 64.0)
 }
 
-fn contains(polygon: &[Vertex2], point: Vertex2) -> bool {
-    if polygon.len() < 3 {
-        return false;
+fn point_on_node_side(point: Vertex2, node: Node) -> usize {
+    if node.dx == 0 {
+        return usize::from((point.x <= node.x as f32) == (node.dy > 0));
     }
-    polygon.iter().enumerate().all(|(index, a)| {
-        let b = polygon[(index + 1) % polygon.len()];
-        (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x) >= -0.01
-    })
+    if node.dy == 0 {
+        return usize::from((point.y <= node.y as f32) == (node.dx < 0));
+    }
+    let dx = point.x as f64 - node.x as f64;
+    let dy = point.y as f64 - node.y as f64;
+    usize::from(node.dx as f64 * dy - node.dy as f64 * dx >= 0.0)
 }
 
-fn sector_at(regions: &[Region], x: f32, y: f32) -> Option<Sector> {
-    let point = Vertex2 { x, y };
-    regions
-        .iter()
-        .find(|region| contains(&region.polygon, point))
-        .map(|region| region.sector)
+fn subsector_at(map: &Map, point: Vertex2) -> Option<usize> {
+    if map.nodes.is_empty() {
+        return (map.subsectors.len() == 1).then_some(0);
+    }
+    let mut child = u16::try_from(map.nodes.len().checked_sub(1)?).ok()?;
+    for _ in 0..=map.nodes.len() {
+        if child & 0x8000 != 0 {
+            let index = (child & 0x7fff) as usize;
+            return (index < map.subsectors.len()).then_some(index);
+        }
+        let node = *map.nodes.get(child as usize)?;
+        child = node.children[point_on_node_side(point, node)];
+    }
+    None
+}
+
+fn bsp_sector_at(map: &Map, x: f32, y: f32) -> Option<Sector> {
+    let leaf = map.subsectors.get(subsector_at(map, Vertex2 { x, y })?)?;
+    if leaf[0] == 0 {
+        return None;
+    }
+    let seg = map.segs.get(leaf[1] as usize)?;
+    let line = map.lines.get(seg[2] as usize)?;
+    let sidedef = map.sides.get(*line.get(3 + seg[3] as usize)? as usize)?;
+    map.sectors.get(sidedef.sector as usize).copied()
 }
 
 fn distance_to_segment_squared(point: Vertex2, a: Vertex2, b: Vertex2) -> f32 {
@@ -1041,8 +1090,8 @@ fn distance_to_segment_squared(point: Vertex2, a: Vertex2, b: Vertex2) -> f32 {
     (point.x - (a.x + t * dx)).powi(2) + (point.y - (a.y + t * dy)).powi(2)
 }
 
-fn can_occupy(map: &Map, regions: &[Region], player: Player, from: Sector) -> bool {
-    let Some(sector) = sector_at(regions, player.x, player.y) else {
+fn can_occupy(map: &Map, player: Player, from: Sector) -> bool {
+    let Some(sector) = bsp_sector_at(map, player.x, player.y) else {
         return false;
     };
     if sector.floor > from.floor + 24.0 || sector.ceiling < sector.floor + 56.0 {
@@ -1065,7 +1114,7 @@ fn can_occupy(map: &Map, regions: &[Region], player: Player, from: Sector) -> bo
     true
 }
 
-fn move_player(map: &Map, regions: &[Region], player: &mut Player, controls: Controls, delta: f32) {
+fn move_player(map: &Map, player: &mut Player, controls: Controls, delta: f32) {
     player.angle = (player.angle + controls.turn * delta).rem_euclid(360.0);
     let angle = player.angle.to_radians();
     let dx =
@@ -1076,7 +1125,7 @@ fn move_player(map: &Map, regions: &[Region], player: &mut Player, controls: Con
         if amount == 0.0 {
             continue;
         }
-        let Some(from) = sector_at(regions, player.x, player.y) else {
+        let Some(from) = bsp_sector_at(map, player.x, player.y) else {
             break;
         };
         let mut candidate = *player;
@@ -1085,7 +1134,7 @@ fn move_player(map: &Map, regions: &[Region], player: &mut Player, controls: Con
         } else {
             candidate.y += amount;
         }
-        if can_occupy(map, regions, candidate, from) {
+        if can_occupy(map, candidate, from) {
             *player = candidate;
         }
     }
@@ -1169,14 +1218,7 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player) -> bool {
     }
 }
 
-fn update_actors(
-    map: &Map,
-    regions: &[Region],
-    actors: &mut [Actor],
-    player: Player,
-    health: &mut i32,
-    delta: f32,
-) {
+fn update_actors(map: &Map, actors: &mut [Actor], player: Player, health: &mut i32, delta: f32) {
     for actor in actors.iter_mut().filter(|actor| actor.health > 0) {
         actor.attack_cooldown = (actor.attack_cooldown - delta).max(0.0);
         let dx = player.x - actor.x;
@@ -1195,7 +1237,6 @@ fn update_actors(
             };
             move_player(
                 map,
-                regions,
                 &mut enemy,
                 Controls {
                     forward: 1.0,
@@ -1258,8 +1299,7 @@ impl PreparedScene {
             if flags & 2 == 0 || flags & 16 != 0 {
                 continue;
             }
-            if sector_at(&geometry.regions, x as f32, y as f32).is_none() {
-                // ponytail: convex-hull sector lookup skips five placements; BSP point traversal can restore them.
+            if bsp_sector_at(&map, x as f32, y as f32).is_none() {
                 continue;
             }
             if let Entry::Vacant(entry) = sprites.entry(prefix) {
@@ -1317,7 +1357,6 @@ impl PreparedScene {
             sprite_pipeline,
             sampler,
             draws,
-            regions: geometry.regions,
             sprites,
             actors,
             start: Player {
@@ -1335,7 +1374,7 @@ impl PreparedScene {
         actors: &[Actor],
         renderer: &mut Renderer,
     ) -> api::Result<api::Submission> {
-        let sector = sector_at(&self.regions, player.x, player.y)
+        let sector = bsp_sector_at(&self.map, player.x, player.y)
             .ok_or_else(|| invalid("player is outside every E1M1 BSP leaf"))?;
         let eye = Vec3::new(player.x, sector.floor + 41.0, -player.y);
         let radians = player.angle.to_radians();
@@ -1360,7 +1399,7 @@ impl PreparedScene {
         commands.bind_pipeline(self.sprite_pipeline.clone());
         commands.bind_uniform_buffer(uniform_buffer);
         for actor in actors.iter().filter(|actor| actor.health > 0) {
-            let Some(sector) = sector_at(&self.regions, actor.x, actor.y) else {
+            let Some(sector) = bsp_sector_at(&self.map, actor.x, actor.y) else {
                 continue;
             };
             let Some(sprite) = self.sprites.get(&actor.sprite) else {
@@ -1436,7 +1475,6 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
             };
             move_player(
                 &scene.map,
-                &scene.regions,
                 &mut player,
                 Controls {
                     forward: axis(Key::W, Key::S),
@@ -1459,14 +1497,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 shot_cooldown = 0.35;
                 kills += usize::from(fire_weapon(&scene.map, &mut actors, player));
             }
-            update_actors(
-                &scene.map,
-                &scene.regions,
-                &mut actors,
-                player,
-                &mut health,
-                delta,
-            );
+            update_actors(&scene.map, &mut actors, player, &mut health, delta);
             health = health.max(0);
         }
         let submission = scene.draw(player, &actors, &mut renderer)?;
@@ -1598,7 +1629,7 @@ mod tests {
     }
 
     #[test]
-    fn selects_the_containing_leaf_and_rejects_solid_wall_overlap() {
+    fn bsp_selects_the_sector_and_rejects_solid_wall_overlap() {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
@@ -1606,30 +1637,52 @@ mod tests {
             floor_flat: *b"FLOOR0_1",
             ceiling_flat: *b"CEIL1_1\0",
         };
-        let regions = vec![Region {
-            polygon: vec![
-                Vertex2 { x: 0.0, y: 0.0 },
-                Vertex2 { x: 128.0, y: 0.0 },
-                Vertex2 { x: 128.0, y: 128.0 },
-                Vertex2 { x: 0.0, y: 128.0 },
-            ],
+        let raised = Sector {
+            floor: 32.0,
+            ..sector
+        };
+        let side = |sector| SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper: [0; 8],
+            lower: [0; 8],
+            middle: [0; 8],
             sector,
-        }];
-        assert!(sector_at(&regions, 64.0, 64.0).is_some());
-        assert!(sector_at(&regions, 129.0, 64.0).is_none());
-
+        };
         let map = Map {
-            vertices: vec![Vertex2 { x: 96.0, y: 0.0 }, Vertex2 { x: 96.0, y: 128.0 }],
-            sectors: vec![sector],
-            sides: vec![],
-            lines: vec![[0, 1, 0, u16::MAX, u16::MAX]],
-            segs: vec![],
-            subsectors: vec![],
+            vertices: vec![
+                Vertex2 { x: 96.0, y: 0.0 },
+                Vertex2 { x: 96.0, y: 128.0 },
+                Vertex2 { x: 160.0, y: 0.0 },
+                Vertex2 { x: 160.0, y: 128.0 },
+            ],
+            sectors: vec![sector, raised],
+            sides: vec![side(0), side(1)],
+            lines: vec![[0, 1, 1, 0, u16::MAX], [2, 3, 1, 1, u16::MAX]],
+            segs: vec![[0, 1, 0, 0, 0], [2, 3, 1, 0, 0]],
+            subsectors: vec![[1, 0], [1, 1]],
+            nodes: vec![Node {
+                x: 128,
+                y: 0,
+                dx: 0,
+                dy: 1,
+                children: [0x8001, 0x8000],
+            }],
             things: vec![],
         };
+        assert_eq!(bsp_sector_at(&map, 64.0, 64.0).unwrap().floor, 0.0);
+        assert_eq!(bsp_sector_at(&map, 200.0, 64.0).unwrap().floor, 32.0);
+        let diagonal = Node {
+            x: 0,
+            y: 0,
+            dx: 1,
+            dy: 1,
+            children: [0, 0],
+        };
+        assert_eq!(point_on_node_side(Vertex2 { x: 2.0, y: 0.0 }, diagonal), 0);
+        assert_eq!(point_on_node_side(Vertex2 { x: 0.0, y: 2.0 }, diagonal), 1);
         assert!(!can_occupy(
             &map,
-            &regions,
             Player {
                 x: 104.0,
                 y: 64.0,
@@ -1639,7 +1692,6 @@ mod tests {
         ));
         assert!(can_occupy(
             &map,
-            &regions,
             Player {
                 x: 64.0,
                 y: 64.0,
@@ -1654,7 +1706,6 @@ mod tests {
         };
         move_player(
             &map,
-            &regions,
             &mut player,
             Controls {
                 forward: 1.0,
@@ -1666,6 +1717,10 @@ mod tests {
         );
         assert_eq!(player.x, 80.0);
         assert_eq!(player.angle, 0.5);
+
+        let mut cyclic = map;
+        cyclic.nodes[0].children = [0, 0];
+        assert_eq!(subsector_at(&cyclic, Vertex2 { x: 0.0, y: 0.0 }), None);
     }
 
     #[test]
@@ -1689,6 +1744,7 @@ mod tests {
             lines: vec![],
             segs: vec![],
             subsectors: vec![],
+            nodes: vec![],
             things: vec![],
         };
         assert!(fire_weapon(&map, &mut actors, player));
@@ -1706,15 +1762,6 @@ mod tests {
 
     #[test]
     fn enemies_chase_and_melee_on_a_cooldown() {
-        let map = Map {
-            vertices: vec![],
-            sectors: vec![],
-            sides: vec![],
-            lines: vec![],
-            segs: vec![],
-            subsectors: vec![],
-            things: vec![],
-        };
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
@@ -1722,24 +1769,32 @@ mod tests {
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
         };
-        let regions = [Region {
-            polygon: vec![
+        let map = Map {
+            vertices: vec![
                 Vertex2 {
                     x: -200.0,
                     y: -200.0,
                 },
-                Vertex2 {
-                    x: 200.0,
-                    y: -200.0,
-                },
-                Vertex2 { x: 200.0, y: 200.0 },
                 Vertex2 {
                     x: -200.0,
                     y: 200.0,
                 },
             ],
-            sector,
-        }];
+            sectors: vec![sector],
+            sides: vec![SideDef {
+                x_offset: 0,
+                y_offset: 0,
+                upper: [0; 8],
+                lower: [0; 8],
+                middle: [0; 8],
+                sector: 0,
+            }],
+            lines: vec![[0, 1, 1, 0, u16::MAX]],
+            segs: vec![[0, 1, 0, 0, 0]],
+            subsectors: vec![[1, 0]],
+            nodes: vec![],
+            things: vec![],
+        };
         let mut actors = [Actor {
             sprite: *b"TROO",
             x: 100.0,
@@ -1753,15 +1808,15 @@ mod tests {
             angle: 0.0,
         };
         let mut health = 100;
-        update_actors(&map, &regions, &mut actors, player, &mut health, 1.0);
+        update_actors(&map, &mut actors, player, &mut health, 1.0);
         assert_eq!(actors[0].x, 64.0);
         assert_eq!(health, 100);
 
         actors[0].x = 40.0;
-        update_actors(&map, &regions, &mut actors, player, &mut health, 0.05);
-        update_actors(&map, &regions, &mut actors, player, &mut health, 0.84);
+        update_actors(&map, &mut actors, player, &mut health, 0.05);
+        update_actors(&map, &mut actors, player, &mut health, 0.84);
         assert_eq!(health, 92);
-        update_actors(&map, &regions, &mut actors, player, &mut health, 0.02);
+        update_actors(&map, &mut actors, player, &mut health, 0.02);
         assert_eq!(health, 84);
     }
 }

@@ -105,14 +105,17 @@ subset. The original positions and RGB colors, adapted vertex shader, and
 unchanged upstream fragment shader run through SILICON. See the
 [source, license, and adaptation notes](docs/third-party-demo.md).
 
-Phase 70 renders Freedoom E1M1 geometry, textures, and cutout actor sprites
-through SILICON. The static capture submits 4,860 triangles across 165 draws:
-4,812 map triangles and 24 enemy billboards. The interactive prototype adds
-first-person movement, basic collision, hitscan shooting, health, ammunition,
-and simple pursuing melee enemies. It remains a limited E1M1 gameplay slice,
-not a complete Doom game; five enemy placements, BSP visibility, masked walls,
+Phase 70 renders Freedoom E1M1 geometry, textures, and all 29 normal-skill
+enemy sprites through SILICON. The static capture submits 4,870 triangles across
+170 draws: 4,812 map triangles and 29 enemy billboards. The interactive
+prototype adds first-person movement, basic collision, hitscan shooting,
+health, ammunition, and simple pursuing melee enemies. It remains a limited
+E1M1 gameplay slice, not a complete Doom game; BSP visibility, masked walls,
 and broader game rules remain. The [WAD source, controls, screenshot, license,
 and limits](docs/freedoom.md) are documented. The Freedoom WAD stays external.
+An [enemy sprite verification frame](assets/screenshots/freedoom_e1m1_enemy.png)
+shows a real WAD actor through the same pipeline from a temporary start-only
+capture fixture.
 
 ![Freedoom E1M1 geometry rendered from its player start by SILICON](assets/screenshots/freedoom_e1m1.png)
 
