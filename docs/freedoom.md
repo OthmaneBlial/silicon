@@ -71,6 +71,11 @@ checks for the blue card or skull before opening these doors in
 Other key colors, enemy-triggered platforms, and other line specials remain
 unsupported.
 
+E1M1 contains four secret sectors (sector special 9). Entering one increments
+the secret counter in the window title once and clears its secret flag, matching
+the original engine's
+[`P_PlayerInSpecialSector`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_spec.c).
+
 The combat slice loads four normal-skill enemy types from WAD things and their
 classic `A1`–`D1` walk and `E1`–`G1` attack sprite patches: former humans (20
 health), shotgunners (30), imps (60), and demons (150), including their
@@ -131,7 +136,7 @@ Doom's BSP wall occlusion or per-column portal clipping. At the checked-in
 960×720 start view, 567 of 682 subsectors remain in the horizontal BSP view and
 SILICON submits 4,048 triangles across 209 draws, including the newly rendered
 masked middle textures. Five release renders on Apple M2 measured median process
-CPU time of 0.52 s. The earlier depth-band comparison measured 0.62 s against
+CPU time of 0.70 s. The earlier depth-band comparison measured 0.62 s against
 0.69 s at its predecessor. This fixed-pose measurement is not an engine-wide
 benchmark. Earlier opaque-only counts were
 3,896 triangles and 164 draws for this view. The screenshot shows the player

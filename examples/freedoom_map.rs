@@ -41,6 +41,7 @@ const DOOR_WAIT: f32 = 150.0 / 35.0;
 const PLATFORM_SPEED: f32 = 140.0;
 const PLATFORM_WAIT: f32 = 3.0;
 const FLOOR_SPEED: f32 = 35.0;
+const SECTOR_SECRET: u16 = 9;
 
 #[derive(Clone, Copy)]
 struct Lump {
@@ -67,6 +68,7 @@ struct Vertex2 {
 struct Sector {
     floor: f32,
     ceiling: f32,
+    secret: bool,
     light: u8,
     tag: u16,
     floor_flat: [u8; 8],
@@ -227,6 +229,7 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
             Ok(Sector {
                 floor: i16_at(r, 0)? as f32,
                 ceiling: i16_at(r, 2)? as f32,
+                secret: u16_at(r, 22)? == SECTOR_SECRET,
                 light,
                 tag: u16_at(r, 24)?,
                 floor_flat: r[4..12].try_into().unwrap(),
@@ -1750,6 +1753,15 @@ fn bsp_sector_index_at(map: &Map, x: f32, y: f32) -> Option<u16> {
         .map(|_| sidedef.sector)
 }
 
+fn discover_secret(map: &mut Map, player: Player) -> bool {
+    let Some(index) = bsp_sector_index_at(map, player.x, player.y) else {
+        return false;
+    };
+    map.sectors
+        .get_mut(index as usize)
+        .is_some_and(|sector| std::mem::replace(&mut sector.secret, false))
+}
+
 fn portal_is_walkable(map: &Map, line: [u16; 7], from: u16, to: u16) -> bool {
     if line[2] & 1 != 0 || line[4] == u16::MAX {
         return false;
@@ -3039,8 +3051,14 @@ fn render(path: &Path, output: &Path) -> api::Result<()> {
         .iter()
         .filter(|line| line[5] == LINE_EXIT_USE)
         .count();
+    let secrets = scene
+        .map
+        .sectors
+        .iter()
+        .filter(|sector| sector.secret)
+        .count();
     println!(
-        "E1M1: {triangles} triangles, {} SILICON draw(s), {visible}/{} horizontal BSP leaves, {exits} use-exit line(s), player start ({}, {}, {}°)",
+        "E1M1: {triangles} triangles, {} SILICON draw(s), {visible}/{} horizontal BSP leaves, {exits} use-exit line(s), {secrets} secret sector(s), player start ({}, {}, {}°)",
         submission.draws,
         scene.map.subsectors.len(),
         scene.start.x,
@@ -3070,6 +3088,13 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     let mut health = 100;
     let mut ammo = 50;
     let mut blue_key = false;
+    let total_secrets = scene
+        .map
+        .sectors
+        .iter()
+        .filter(|sector| sector.secret)
+        .count();
+    let mut secrets_found = 0;
     let mut kills = 0;
     let mut collected = 0;
     let mut activated_sectors = 0;
@@ -3124,6 +3149,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                     _ => {}
                 }
             }
+            secrets_found += usize::from(discover_secret(&mut scene.map, player));
             if window.is_key_pressed(Key::E, KeyRepeat::No)
                 && let Some((line, special)) = use_line(&scene.map, player)
             {
@@ -3207,7 +3233,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_subsector_order(&scene.map, player).len();
         window.set_title(&format!(
-            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | blue key {blue_key} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | blue key {blue_key} | secrets {secrets_found}/{total_secrets} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.actors.len(),
             triangles,
             submission.draws,
@@ -3218,7 +3244,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     }
     save_frame(&renderer, output)?;
     println!(
-        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, {activated_sectors} sector actions, health {health}, blue key {blue_key}, exited {exited}; saved {}",
+        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, {activated_sectors} sector actions, {secrets_found}/{total_secrets} secrets, health {health}, blue key {blue_key}, exited {exited}; saved {}",
         scene.actors.len(),
         output.display()
     );
@@ -3491,6 +3517,7 @@ mod tests {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
@@ -3570,6 +3597,7 @@ mod tests {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
@@ -3590,6 +3618,7 @@ mod tests {
                 Sector {
                     floor: 16.0,
                     ceiling: 112.0,
+                    secret: false,
                     ..sector
                 },
             ],
@@ -3632,6 +3661,7 @@ mod tests {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: *b"FLOOR0_1",
             ceiling_flat: *b"CEIL1_1\0",
@@ -3727,10 +3757,49 @@ mod tests {
     }
 
     #[test]
+    fn secret_sectors_are_discovered_once_per_sector() {
+        let sector = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            secret: true,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+            tag: 0,
+        };
+        let map = &mut Map {
+            vertices: vec![Vertex2 { x: 0.0, y: 0.0 }, Vertex2 { x: 32.0, y: 0.0 }],
+            sectors: vec![sector],
+            sides: vec![SideDef {
+                x_offset: 0,
+                y_offset: 0,
+                upper: [0; 8],
+                lower: [0; 8],
+                middle: [0; 8],
+                sector: 0,
+            }],
+            lines: vec![[0, 1, 0, 0, u16::MAX, 0, 0]],
+            segs: vec![[0, 1, 0, 0, 0]],
+            subsectors: vec![[1, 0]],
+            nodes: vec![],
+            things: vec![],
+        };
+        let player = Player {
+            x: 8.0,
+            y: 8.0,
+            angle: 0.0,
+        };
+        assert!(discover_secret(map, player));
+        assert!(!map.sectors[0].secret);
+        assert!(!discover_secret(map, player));
+    }
+
+    #[test]
     fn use_activates_the_front_of_an_exit_line_through_open_space() {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
@@ -3793,6 +3862,7 @@ mod tests {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
@@ -3800,6 +3870,7 @@ mod tests {
         };
         let closed_door = Sector {
             ceiling: 0.0,
+            secret: false,
             ..sector
         };
         let side = |sector| SideDef {
@@ -3909,6 +3980,7 @@ mod tests {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
@@ -3963,6 +4035,7 @@ mod tests {
         let open = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
@@ -3987,11 +4060,13 @@ mod tests {
                 open,
                 Sector {
                     ceiling: 0.0,
+                    secret: false,
                     tag: 5,
                     ..open
                 },
                 Sector {
                     ceiling: 0.0,
+                    secret: false,
                     tag: 7,
                     ..open
                 },
@@ -4032,6 +4107,7 @@ mod tests {
         let open = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
@@ -4145,6 +4221,7 @@ mod tests {
         let open = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
@@ -4166,6 +4243,7 @@ mod tests {
                 open,
                 Sector {
                     ceiling: 55.0,
+                    secret: false,
                     ..open
                 },
                 Sector {
@@ -4199,6 +4277,7 @@ mod tests {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
@@ -4318,6 +4397,7 @@ mod tests {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
@@ -4681,6 +4761,7 @@ mod tests {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
@@ -4872,6 +4953,7 @@ mod tests {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
+            secret: false,
             light: 255,
             floor_flat: [0; 8],
             ceiling_flat: [0; 8],
