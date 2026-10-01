@@ -32,7 +32,7 @@ stencil and blending generate scene pixels entirely on the CPU.
 
 [Watch the CPU-rendered animation](assets/demos/spirv_showcase.mp4) ·
 [Architecture](docs/architecture.md) · [Pipeline](docs/graphics-pipeline.md) ·
-[Shader VM](docs/sir.md) · [SIMD](docs/simd.md) · [SPIR-V subset](docs/spirv.md) · [Vulkan-like Rust subset](docs/vulkan-like.md) · [Roadmap](docs/roadmap.md)
+[Shader VM](docs/sir.md) · [SIMD](docs/simd.md) · [SPIR-V subset](docs/spirv.md) · [Vulkan-like Rust subset](docs/vulkan-like.md) · [Third-party demo](docs/third-party-demo.md) · [Roadmap](docs/roadmap.md)
 
 ## Run it
 
@@ -63,6 +63,7 @@ cargo run --release --example textured_cube
 cargo run --release --example stencil
 cargo run --release --example rust_api
 cargo run --release --example vulkan_like
+cargo run --release --example khronos_hello_triangle
 ```
 
 Requires Rust 1.95.0 (pinned). macOS ARM64 was run locally, including the window.
@@ -98,6 +99,11 @@ with instance/device setup, typed resources, descriptor-like bindings, an
 offscreen render pass and synchronous indexed drawing. `examples/vulkan_like.rs`
 writes `output/vulkan_like_triangle.png`. It is not a Vulkan loader, ABI, or
 conformant implementation.
+
+Phase 69 adapts KhronosGroup's Apache-2.0 Vulkan `hello_triangle` through that
+subset. The original positions and RGB colors, adapted vertex shader, and
+unchanged upstream fragment shader run through SILICON. See the
+[source, license, and adaptation notes](docs/third-party-demo.md).
 
 ## Programmable, observable, reproducible
 
