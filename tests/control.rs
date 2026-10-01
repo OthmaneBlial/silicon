@@ -374,7 +374,7 @@ fn discard_preserves_color_depth_stencil_and_capture_in_every_backend() {
     commands.draw_indexed(0, 6);
     commands.end_render_pass();
     let capture = FrameCapture {
-        version: 1,
+        version: 2,
         width: 4,
         height: 2,
         sample_count: SampleCount::One,

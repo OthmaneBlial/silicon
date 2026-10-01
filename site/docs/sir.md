@@ -62,10 +62,11 @@ shaders may also return `None` to discard.
 `demo::shader_cube` supplies MVP/model rows and the lighting binding contract, and
 binds a checker texture. It records vertex/index/uniform buffers, pipeline state,
 shader bytecode and textures into an owned command stream. `FrameCapture` embeds
-all of those resources, the sample count, and commands in versioned JSON. A
-replay does not reconstruct a scene from its name; it submits the captured bytes
-and programs. Older captures without a sample-count field replay as
-single-sample frames. The roundtrip test compares exact framebuffer bytes.
+all of those resources, the sample count, and commands in versioned JSON.
+Version 2 records multisample state; legacy version-1 captures without a
+sample-count field remain single-sample. A replay does not reconstruct a scene
+from its name; it submits the captured bytes and programs. The roundtrip test
+compares exact framebuffer bytes.
 Golden tests additionally compare an approved PNG with one quantization step of
 cross-platform tolerance.
 

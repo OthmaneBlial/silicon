@@ -708,7 +708,7 @@ pub fn shader_cube_with_pipeline(
     commands.draw_indexed(0, mesh.indices.len() as u32);
     commands.end_render_pass();
     Ok(FrameCapture {
-        version: 1,
+        version: 2,
         width,
         height,
         sample_count: SampleCount::One,
@@ -955,7 +955,7 @@ fn material_showcase(
     })?;
     commands.end_render_pass();
     Ok(FrameCapture {
-        version: 1,
+        version: 2,
         width,
         height,
         sample_count: SampleCount::One,
@@ -1093,7 +1093,7 @@ pub fn shadow_showcase(width: u32, height: u32, time: f32) -> Result<(FrameCaptu
     commands.end_render_pass();
     Ok((
         FrameCapture {
-            version: 1,
+            version: 2,
             width,
             height,
             sample_count: SampleCount::One,

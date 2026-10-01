@@ -783,7 +783,16 @@ impl CommandBuffer {
     }
 }
 impl FrameCapture {
+    fn validate_version(&self) -> Result<()> {
+        match self.version {
+            1 if self.sample_count == SampleCount::One => Ok(()),
+            1 => Err("version 1 captures only support single-sample rendering".into()),
+            2 => Ok(()),
+            _ => Err("unsupported capture version".into()),
+        }
+    }
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.validate_version()?;
         self.commands.validate()?;
         let path = path.as_ref();
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -804,17 +813,13 @@ impl FrameCapture {
             return Err("capture exceeds 64 MiB".into());
         }
         let capture: Self = serde_json::from_slice(&bytes)?;
-        if capture.version != 1 {
-            return Err("unsupported capture version".into());
-        }
+        capture.validate_version()?;
         Framebuffer::new(capture.width, capture.height)?;
         capture.commands.validate()?;
         Ok(capture)
     }
     pub fn replay(&self) -> Result<Renderer> {
-        if self.version != 1 {
-            return Err("unsupported capture version".into());
-        }
+        self.validate_version()?;
         let mut r = Renderer::new(self.width, self.height)?;
         r.set_sample_count(self.sample_count)?;
         Device.submit(&self.commands, &mut r)?;

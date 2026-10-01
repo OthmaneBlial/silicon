@@ -52,7 +52,7 @@ fn render_capture<F: Fn(&mut CommandBuffer)>(
     name: &str,
 ) -> Vec<u8> {
     let capture = FrameCapture {
-        version: 1,
+        version: 2,
         width: 32,
         height: 32,
         sample_count: SampleCount::One,

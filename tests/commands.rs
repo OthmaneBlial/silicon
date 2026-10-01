@@ -22,6 +22,7 @@ fn capture_replay_is_exact_and_owns_resources() {
 #[test]
 fn capture_preserves_multisample_state_and_reads_legacy_captures() {
     let mut capture = demo::shader_cube(64, 48, 0.).unwrap();
+    assert_eq!(capture.version, 2);
     capture.sample_count = SampleCount::Four;
     let expected = capture.replay().unwrap();
     assert_eq!(expected.sample_count(), SampleCount::Four);
@@ -43,6 +44,9 @@ fn capture_preserves_multisample_state_and_reads_legacy_captures() {
     ))
     .unwrap();
     assert_eq!(legacy.sample_count, SampleCount::One);
+    let mut invalid_legacy = legacy;
+    invalid_legacy.sample_count = SampleCount::Four;
+    assert!(invalid_legacy.replay().is_err());
 }
 #[test]
 fn invalid_command_stream_never_changes_target() {
