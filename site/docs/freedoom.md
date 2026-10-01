@@ -48,7 +48,8 @@ to raise its back sector at 70 units per second, wait 150 tics (about 4.3
 seconds), then close it. If the player or a living enemy is in the sector, the
 door reverses and opens again. The ceiling geometry and collision update while
 it moves. Press `E` from the front of E1M1's one-sided special-11 exit line to
-stop gameplay and report `EXITED`; the prototype does not load another map.
+report `EXITED` for one frame, then load E1M2 when its WAD marker exists, as
+described above.
 The WAD's single special-117 use door follows the same wait-and-close behavior
 at 280 units per second, four times the normal door speed, as in id Software's
 [`EV_VerticalDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c).
