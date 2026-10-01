@@ -634,11 +634,32 @@ fn monster_sprite(kind: u16) -> Option<([u8; 4], i32)> {
     }
 }
 
-fn sprite_texture(data: &[u8], prefix: [u8; 4]) -> api::Result<SpriteTexture> {
-    let mut name = [0; 8];
-    name[..4].copy_from_slice(&prefix);
-    name[4..6].copy_from_slice(b"A1");
-    sprite_patch_texture(data, name)
+fn sprite_walk_textures(data: &[u8], prefix: [u8; 4]) -> api::Result<Vec<SpriteTexture>> {
+    b"ABCD"
+        .iter()
+        .map(|frame| {
+            let mut name = [0; 8];
+            name[..4].copy_from_slice(&prefix);
+            name[4] = *frame;
+            name[5] = b'1';
+            sprite_patch_texture(data, name)
+        })
+        .collect()
+}
+
+fn actor_walk_frame_tics(sprite: [u8; 4]) -> f32 {
+    match &sprite {
+        b"TROO" | b"SPOS" => 6.0,
+        b"POSS" => 8.0,
+        b"SARG" => 4.0,
+        _ => 6.0,
+    }
+}
+
+fn actor_walk_frame(sprite: [u8; 4], animation_time: f32) -> usize {
+    let frame_tics = actor_walk_frame_tics(sprite);
+    let cycle_seconds = frame_tics * 4.0 / 35.0;
+    (animation_time.rem_euclid(cycle_seconds) * 35.0 / frame_tics).floor() as usize
 }
 
 fn sprite_patch_texture(data: &[u8], name: [u8; 8]) -> api::Result<SpriteTexture> {
@@ -763,7 +784,7 @@ struct PreparedScene {
     weapon_pipeline: Arc<ShaderPipeline>,
     sampler: Sampler,
     draws: Vec<Draw>,
-    sprites: BTreeMap<[u8; 4], SpriteTexture>,
+    sprites: BTreeMap<[u8; 4], Vec<SpriteTexture>>,
     pickup_sprites: BTreeMap<[u8; 4], SpriteTexture>,
     weapon_idle: SpriteTexture,
     weapon_fire: SpriteTexture,
@@ -788,6 +809,7 @@ struct Actor {
     y: f32,
     health: i32,
     attack_cooldown: f32,
+    animation_time: f32,
 }
 
 struct Projectile {
@@ -1375,6 +1397,7 @@ fn update_actors(
     delta: f32,
 ) {
     for actor in actors.iter_mut().filter(|actor| actor.health > 0) {
+        let previous_position = (actor.x, actor.y);
         actor.attack_cooldown = (actor.attack_cooldown - delta).max(0.0);
         let dx = player.x - actor.x;
         let dy = player.y - actor.y;
@@ -1446,6 +1469,12 @@ fn update_actors(
             );
             actor.x = enemy.x;
             actor.y = enemy.y;
+        }
+        if (actor.x, actor.y) != previous_position {
+            let cycle_seconds = actor_walk_frame_tics(actor.sprite) * 4.0 / 35.0;
+            actor.animation_time = (actor.animation_time + delta) % cycle_seconds;
+        } else {
+            actor.animation_time = 0.0;
         }
     }
 }
@@ -1549,7 +1578,7 @@ impl PreparedScene {
             }
             if let Some((prefix, health)) = monster_sprite(kind) {
                 if let Entry::Vacant(entry) = sprites.entry(prefix) {
-                    entry.insert(sprite_texture(&data, prefix)?);
+                    entry.insert(sprite_walk_textures(&data, prefix)?);
                 }
                 actors.push(Actor {
                     sprite: prefix,
@@ -1557,6 +1586,7 @@ impl PreparedScene {
                     y: y as f32,
                     health,
                     attack_cooldown: 0.0,
+                    animation_time: 0.0,
                 });
             } else if let Some((prefix, health, ammo)) = pickup_definition(kind) {
                 if let Entry::Vacant(entry) = pickup_sprites.entry(prefix) {
@@ -1673,9 +1703,10 @@ impl PreparedScene {
             let Some(sector) = bsp_sector_at(&self.map, actor.x, actor.y) else {
                 continue;
             };
-            let Some(sprite) = self.sprites.get(&actor.sprite) else {
+            let Some(frames) = self.sprites.get(&actor.sprite) else {
                 continue;
             };
+            let sprite = &frames[actor_walk_frame(actor.sprite, actor.animation_time)];
             let vertices =
                 sprite_vertices(actor.x, actor.y, sprite, player.angle, sector, sector.floor);
             if vertices.is_empty() {
@@ -1920,6 +1951,21 @@ mod tests {
     }
 
     #[test]
+    fn enemy_walk_cycles_use_their_doom_state_durations() {
+        for (sprite, frame_tics) in [
+            (*b"TROO", 6.0),
+            (*b"SPOS", 6.0),
+            (*b"POSS", 8.0),
+            (*b"SARG", 4.0),
+        ] {
+            for (frame, expected) in [0, 1, 2, 3, 0].into_iter().enumerate() {
+                let elapsed = frame as f32 * frame_tics / 35.0 + 0.001;
+                assert_eq!(actor_walk_frame(sprite, elapsed), expected);
+            }
+        }
+    }
+
+    #[test]
     fn convex_hull_discards_interior_bsp_vertices() {
         let hull = convex_hull(vec![
             Vertex2 { x: 0.0, y: 0.0 },
@@ -2078,6 +2124,7 @@ mod tests {
             y: 0.0,
             health: 20,
             attack_cooldown: 0.0,
+            animation_time: 0.0,
         }];
         let player = Player {
             x: 0.0,
@@ -2148,6 +2195,7 @@ mod tests {
             y: 0.0,
             health: 60,
             attack_cooldown: 0.0,
+            animation_time: 0.0,
         }];
         let mut projectiles = Vec::new();
         let player = Player {
@@ -2166,6 +2214,7 @@ mod tests {
         );
         assert_eq!(actors[0].x, 64.0);
         assert_eq!(health, 100);
+        assert!(actors[0].animation_time > 0.0);
 
         actors[0].x = 40.0;
         update_actors(
@@ -2176,6 +2225,7 @@ mod tests {
             &mut health,
             0.05,
         );
+        assert_eq!(actors[0].animation_time, 0.0);
         update_actors(
             &map,
             &mut actors,
@@ -2214,6 +2264,7 @@ mod tests {
             y: 0.0,
             health: 20,
             attack_cooldown: 0.0,
+            animation_time: 0.0,
         }];
         let mut projectiles = Vec::new();
         let player = Player {
@@ -2283,6 +2334,7 @@ mod tests {
             y: 0.0,
             health: 60,
             attack_cooldown: 0.0,
+            animation_time: 0.0,
         }];
         let mut projectiles = Vec::new();
         let player = Player {

@@ -31,8 +31,9 @@ when health or pistol ammo is below its 100 or 200 cap. The player starts with
 50 pistol rounds.
 
 The combat slice loads four normal-skill enemy types from WAD things and their
-classic `A1` sprite patches: former humans (20 health), shotgunners (30), imps
-(60), and demons (150). Cutout billboards use a SILICON fragment shader. Space
+classic `A1`–`D1` walk sprite patches: former humans (20 health), shotgunners
+(30), imps (60), and demons (150). Moving enemies cycle those four frames using
+the original Doom state durations. Cutout billboards use a SILICON fragment shader. Space
 fires a 20-damage hitscan with a 0.35-second cooldown; pistol ammo caps at 200.
 Enemies chase within 640 map units and deal 8 melee damage within 48 units, at
 most once every 0.85 seconds. Former humans fire 3-damage hitscan attacks and
@@ -60,8 +61,8 @@ fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Every BSP leaf is drawn; view-frustum traversal and BSP visibility
-culling, masked two-sided middle textures, animated or rotated enemy sprites,
-projectile explosion frames and vertical motion, keys, exits, other weapons and
+culling, masked two-sided middle textures, enemy rotation and idle/attack/death
+states, projectile explosion frames and vertical motion, keys, exits, other weapons and
 their ammunition, full weapon animation beyond the brief idle/fire pose, and
 sound remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in
@@ -84,4 +85,6 @@ and id Software's [WAD](https://github.com/id-Software/DOOM/blob/master/linuxdoo
 [map and BSP record](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/doomdata.h),
 [BSP point traversal](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/r_main.c),
 and [wall rendering](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/r_segs.c)
-references.
+references. The walk frame sequence and durations follow id Software's
+[monster states](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/info.c)
+and [35-tic game clock](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/doomdef.h).
