@@ -188,9 +188,12 @@ to 3 seconds, and deals 8 damage on contact when the projectile height overlaps
 the player, with a 2-second launch cooldown. Its z position follows a straight
 line between the shooter and player's floor-based body midpoints. On wall or
 player impact it plays BAL1C0–BAL1E0 for six Doom tics each. The WAD
-pistol's PISGA0 patch is the idle camera-aligned billboard; firing briefly uses
-its PISGC0 patch for 0.16 seconds. Both weapon poses use SILICON's cutout shader
-and draw pipeline. Enemies cycle their A/B ten-tic stand states while unaware.
+pistol's PISGA0 patch is the idle camera-aligned billboard. On Space, the hit
+happens immediately, then PISGC0 shows recoil for four Doom tics and PISGB0
+shows recovery for five; those pose lengths follow id Software's
+[pistol states](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/info.c).
+Both weapon poses use SILICON's cutout shader and draw pipeline. The four-tic
+pre-shot windup and remaining idle tics are not modeled. Enemies cycle their A/B ten-tic stand states while unaware.
 They wake within 640 map units on clear sight or when hit; sight refreshes a
 100-tic target timeout, during which they pursue through lost sight. All enemy
 attacks require clear sight. When both positions resolve to BSP sectors, a

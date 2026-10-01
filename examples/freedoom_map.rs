@@ -1531,6 +1531,7 @@ struct PreparedScene {
     pickup_sprites: BTreeMap<[u8; 4], SpriteTexture>,
     weapon_idle: SpriteTexture,
     weapon_fire: SpriteTexture,
+    weapon_recover: SpriteTexture,
     fist_fire: SpriteTexture,
     projectile_sprite: SpriteTexture,
     projectile_explosion: [SpriteTexture; 3],
@@ -1617,6 +1618,20 @@ struct PlayerEffects {
     invulnerability_tics: f32,
     partial_invisibility_tics: f32,
     light_amplification_tics: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PistolPose {
+    Recoil,
+    Recover,
+}
+
+fn pistol_pose(remaining_tics: f32) -> Option<PistolPose> {
+    (remaining_tics > 0.0).then_some(if remaining_tics > 5.0 {
+        PistolPose::Recoil
+    } else {
+        PistolPose::Recover
+    })
 }
 
 struct WallSection {
@@ -3803,6 +3818,7 @@ impl PreparedScene {
         )?;
         let weapon_idle = sprite_patch_texture(&data, *b"PISGA0\0\0")?;
         let weapon_fire = sprite_patch_texture(&data, *b"PISGC0\0\0")?;
+        let weapon_recover = sprite_patch_texture(&data, *b"PISGB0\0\0")?;
         let fist_fire = sprite_patch_texture(&data, *b"PUNGC0\0\0")?;
         let projectile_sprite = sprite_patch_texture(&data, *b"BAL1A0\0\0")?;
         let projectile_explosion = [
@@ -3879,6 +3895,7 @@ impl PreparedScene {
             pickup_sprites,
             weapon_idle,
             weapon_fire,
+            weapon_recover,
             fist_fire,
             projectile_sprite,
             projectile_explosion,
@@ -3908,7 +3925,7 @@ impl PreparedScene {
         actors: &[Actor],
         projectiles: &[Projectile],
         pickups: &[Pickup],
-        weapon_firing: bool,
+        weapon_firing_tics: f32,
         fist_firing: bool,
         effects: &PlayerEffects,
         renderer: &mut Renderer,
@@ -4103,10 +4120,12 @@ impl PreparedScene {
         }
         let weapon = if fist_firing {
             &self.fist_fire
-        } else if weapon_firing {
-            &self.weapon_fire
         } else {
-            &self.weapon_idle
+            match pistol_pose(weapon_firing_tics * DOOM_TICS_PER_SECOND) {
+                Some(PistolPose::Recoil) => &self.weapon_fire,
+                Some(PistolPose::Recover) => &self.weapon_recover,
+                None => &self.weapon_idle,
+            }
         };
         let mut vertices = weapon_vertices(player, weapon, sector);
         if light_amplification {
@@ -4174,7 +4193,7 @@ fn render(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
         &scene.actors,
         &[],
         &scene.pickups,
-        false,
+        0.0,
         false,
         &effects,
         &mut renderer,
@@ -4433,7 +4452,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 {
                     ammo -= 1;
                     shot_cooldown = 0.35;
-                    weapon_flash = 0.16;
+                    weapon_flash = 9.0 / DOOM_TICS_PER_SECOND;
                     kills += usize::from(fire_weapon(
                         &scene.map,
                         &mut actors,
@@ -4498,7 +4517,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             &actors,
             &projectiles,
             &pickups,
-            weapon_flash > 0.0,
+            weapon_flash,
             punch_flash > 0.0,
             &effects,
             &mut renderer,
@@ -6704,6 +6723,14 @@ mod tests {
             observed[damage as usize / 5 - 1] = true;
         }
         assert_eq!(observed, [true; 3]);
+    }
+
+    #[test]
+    fn pistol_recoil_and_recovery_follow_doom_tics() {
+        assert_eq!(pistol_pose(9.0), Some(PistolPose::Recoil));
+        assert_eq!(pistol_pose(5.0), Some(PistolPose::Recover));
+        assert_eq!(pistol_pose(1.0), Some(PistolPose::Recover));
+        assert_eq!(pistol_pose(0.0), None);
     }
 
     #[test]
