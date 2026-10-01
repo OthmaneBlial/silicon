@@ -20,6 +20,10 @@ stencil and blending generate scene pixels entirely on the CPU.
 
 *Cook-Torrance GGX shading. The shader, rasterizer and framebuffer all run on the CPU.*
 
+![A CPU-rendered sky environment reflected by the SILICON sculpture and metal rings](assets/screenshots/cubemap_showcase.png)
+
+*Six-face cube-map skybox and roughness-selected environment reflections in the native Rust reference scene.*
+
 [Watch the CPU-rendered animation](assets/demos/spirv_showcase.mp4) ·
 [Architecture](docs/architecture.md) · [Pipeline](docs/graphics-pipeline.md) ·
 [Shader VM](docs/sir.md) · [SIMD](docs/simd.md) · [SPIR-V subset](docs/spirv.md) · [Roadmap](docs/roadmap.md)
@@ -43,6 +47,7 @@ Headless rendering requires no graphics device or display.
 ```sh
 cargo run --release -p silicon-cli -- render assets/scenes/showcase.json --output output/scene.png
 cargo run --release -p silicon-cli -- render assets/scenes/pbr_showcase.json --backend simd --threads 4 --output output/pbr.png
+cargo run --release -p silicon-cli -- render assets/scenes/cubemap_showcase.json --backend simd --threads 4 --output output/cubemap.png
 cargo run --release -p silicon-cli -- render showcase --width 640 --height 400 --threads 4
 cargo run --release -p silicon-cli -- render stencil --backend simd --threads 4 --output output/stencil.png
 cargo run --release --example triangle
@@ -71,6 +76,10 @@ its depth texture from an ordinary GLSL fragment shader through explicit-LOD SPI
 The `pbr_showcase` runs a GLSL metallic/roughness Cook-Torrance GGX shader through
 SPIR-V and the same CPU SIR pipeline. It uses direct lighting and a procedural
 tangent-space normal map; image-based lighting remains future work.
+The `cubemap_showcase` samples a six-face `CubeMap` for a skybox and reflected
+environment color in a native Rust shader. Material roughness selects a
+box-filtered mip level as a compact reflection-blur approximation. This is not
+split-sum IBL and is not yet a `samplerCube` binding in the SPIR-V command path.
 The `stencil` scene uses a circular portal mask for both a textured cube and a
 translucent overlay.
 

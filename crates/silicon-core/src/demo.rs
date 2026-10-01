@@ -59,14 +59,18 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
     r.clear(Color::new(0.022, 0.032, 0.05, 1.));
     static TEXTURE: OnceLock<Texture> = OnceLock::new();
     let texture = TEXTURE.get_or_init(|| Texture::checker(128).expect("valid built-in checker"));
-    let eye = if name == "showcase" {
-        Vec3::new(7.5, 5.8, 10.)
+    let eye = if matches!(name, "showcase" | "cubemap_showcase") {
+        if name == "cubemap_showcase" {
+            Vec3::new(7.5, 4.6, 10.)
+        } else {
+            Vec3::new(7.5, 5.8, 10.)
+        }
     } else {
         Vec3::new(4., 3., 5.)
     };
     let view = Mat4::look_at(
         eye,
-        if name == "showcase" {
+        if matches!(name, "showcase" | "cubemap_showcase") {
             Vec3::new(0., 1.2, 0.)
         } else {
             Vec3::ZERO
@@ -79,6 +83,54 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
         0.1,
         60.,
     );
+    let environment = if name == "cubemap_showcase" {
+        static ENVIRONMENT: OnceLock<CubeMap> = OnceLock::new();
+        Some(ENVIRONMENT.get_or_init(|| environment_cubemap().expect("valid built-in cubemap")))
+    } else {
+        None
+    };
+    if let Some(environment) = environment {
+        let sky = Mesh::cube();
+        let model = Mat4::translation(eye) * Mat4::scale(Vec3::new(25., 25., 25.));
+        let mvp = proj * view * model;
+        let display = |v: f32| (v.max(0.) / (1. + v.max(0.))).powf(1. / 2.2);
+        r.draw(
+            &sky.vertices,
+            Some(&sky.indices),
+            Pipeline {
+                cull: Cull::None,
+                depth_compare: Compare::LessEqual,
+                ..Default::default()
+            },
+            |v| {
+                let world = model.transform(v.position.extend(1.));
+                VertexOutput {
+                    position: mvp.transform(v.position.extend(1.)),
+                    varyings: [world, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO],
+                }
+            },
+            |f| {
+                let direction = (f.varyings[0].xyz() - eye).normalize();
+                let color = environment
+                    .sample(
+                        direction,
+                        0.,
+                        Sampler {
+                            mip: MipFilter::None,
+                            ..Default::default()
+                        },
+                    )
+                    .expect("finite sky direction")
+                    .0;
+                Some(Color::new(
+                    display(color.x),
+                    display(color.y),
+                    display(color.z),
+                    1.,
+                ))
+            },
+        )?;
+    }
     let draw = |mesh: &Mesh, model: Mat4, mat: Material, blend: Blend| -> Result<()> {
         let mvp = proj * view * model;
         let normal = Mat3::normal_matrix(model).ok_or("singular model transform")?;
@@ -105,7 +157,7 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
                 }
             },
             |f| {
-                let tex = if mat.textured {
+                let tex = if mat.textured && environment.is_none() {
                     texture
                         .sample(f.uv(), texture.lod(f.uv_dx, f.uv_dy), Sampler::default())
                         .expect("finite raster UV")
@@ -127,6 +179,22 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
                 let rgb = base.xyz() * (ambient + diffuse * 0.85 + mat.emission)
                     + Vec3::new(1., 0.86, 0.68) * spec
                     + Vec3::new(0.08, 0.65, 0.95) * point;
+                let rgb = if let Some(environment) = environment {
+                    let incident = (world - eye).normalize();
+                    let reflected = incident - n * (2. * incident.dot(n));
+                    let env = environment
+                        .sample(
+                            reflected,
+                            mat.roughness.clamp(0., 1.) * (environment.mip_levels() - 1) as f32,
+                            Sampler::default(),
+                        )
+                        .expect("finite reflection direction")
+                        .0
+                        .xyz();
+                    rgb.lerp(env, 0.12 + mat.metallic.clamp(0., 1.) * 0.68)
+                } else {
+                    rgb
+                };
                 let fog = (world - eye).length() / 45.;
                 let rgb = rgb.lerp(Vec3::new(0.022, 0.032, 0.05), fog.clamp(0., 0.7));
                 // A display transfer is part of this demo shader, not the framebuffer.
@@ -143,7 +211,49 @@ pub fn render_into(r: &mut Renderer, name: &str, time: f32) -> Result<()> {
             },
         )
     };
-    visit_scene(name, time, draw)
+    visit_scene(
+        if name == "cubemap_showcase" {
+            "showcase"
+        } else {
+            name
+        },
+        time,
+        draw,
+    )
+}
+
+fn environment_cubemap() -> Result<CubeMap> {
+    let sun = Vec3::new(-0.45, 0.68, 0.58).normalize();
+    let mut faces = Vec::with_capacity(6);
+    for face in CubeFace::ALL {
+        let mut pixels = Vec::with_capacity(128 * 128 * 4);
+        for y in 0..128 {
+            for x in 0..128 {
+                let d =
+                    CubeMap::face_direction(face, (x as f32 + 0.5) / 128., (y as f32 + 0.5) / 128.);
+                let horizon = Vec3::new(0.92, 0.38, 0.16);
+                let ground = Vec3::new(0.16, 0.09, 0.07);
+                let sky = Vec3::new(0.015, 0.09, 0.34);
+                let color = if d.y >= 0. {
+                    horizon.lerp(sky, (d.y / 0.08).clamp(0., 1.))
+                } else {
+                    horizon.lerp(ground, (-d.y / 0.18).clamp(0., 1.))
+                };
+                let sun_disk = ((d.dot(sun) - 0.992) / 0.008).clamp(0., 1.);
+                let color = color + Vec3::new(1., 0.58, 0.22) * sun_disk;
+                pixels.extend([
+                    (color.x.clamp(0., 1.) * 255.).round() as u8,
+                    (color.y.clamp(0., 1.) * 255.).round() as u8,
+                    (color.z.clamp(0., 1.) * 255.).round() as u8,
+                    255,
+                ]);
+            }
+        }
+        let mut texture = Texture::new(128, 128, TextureFormat::Rgba8, &pixels)?;
+        texture.generate_mips();
+        faces.push(texture);
+    }
+    CubeMap::new(faces.try_into().expect("six cubemap faces"))
 }
 
 fn stencil_vertex(v: &Vertex) -> VertexOutput {

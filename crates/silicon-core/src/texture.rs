@@ -1,4 +1,4 @@
-use crate::{Color, Result, Vec2, Vec4};
+use crate::{Color, Result, Vec2, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub enum TextureFormat {
@@ -45,6 +45,127 @@ pub struct MipLevel {
 pub struct Texture {
     pub format: TextureFormat,
     pub levels: Vec<MipLevel>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CubeFace {
+    PositiveX,
+    NegativeX,
+    PositiveY,
+    NegativeY,
+    PositiveZ,
+    NegativeZ,
+}
+impl CubeFace {
+    pub const ALL: [Self; 6] = [
+        Self::PositiveX,
+        Self::NegativeX,
+        Self::PositiveY,
+        Self::NegativeY,
+        Self::PositiveZ,
+        Self::NegativeZ,
+    ];
+}
+
+/// Six square color textures in +X, -X, +Y, -Y, +Z, -Z order.
+#[derive(Clone, Debug)]
+pub struct CubeMap {
+    faces: [Texture; 6],
+}
+impl CubeMap {
+    pub fn new(faces: [Texture; 6]) -> Result<Self> {
+        let map = Self { faces };
+        map.validate()?;
+        Ok(map)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let first = &self.faces[0];
+        first.validate()?;
+        let base = &first.levels[0];
+        if base.width != base.height || matches!(first.format, TextureFormat::Depth32Float) {
+            return Err("cube faces must be square color textures".into());
+        }
+        let mut texels = 0usize;
+        for face in &self.faces {
+            face.validate()?;
+            if matches!(face.format, TextureFormat::Depth32Float)
+                || face.levels.len() != first.levels.len()
+                || face
+                    .levels
+                    .iter()
+                    .zip(&first.levels)
+                    .any(|(a, b)| a.width != b.width || a.height != b.height)
+            {
+                return Err("cube faces require matching color mip dimensions".into());
+            }
+            for level in &face.levels {
+                texels = texels
+                    .checked_add(level.width as usize * level.height as usize)
+                    .ok_or("cube map size overflow")?;
+            }
+        }
+        if texels > 16_777_216 {
+            return Err("cube map exceeds 16M total mip texels".into());
+        }
+        Ok(())
+    }
+
+    /// Direction represented by a point on one face, with UV in [0, 1].
+    pub fn face_direction(face: CubeFace, u: f32, v: f32) -> Vec3 {
+        let s = u * 2. - 1.;
+        let t = v * 2. - 1.;
+        match face {
+            CubeFace::PositiveX => Vec3::new(1., -t, -s),
+            CubeFace::NegativeX => Vec3::new(-1., -t, s),
+            CubeFace::PositiveY => Vec3::new(s, 1., t),
+            CubeFace::NegativeY => Vec3::new(s, -1., -t),
+            CubeFace::PositiveZ => Vec3::new(s, -t, 1.),
+            CubeFace::NegativeZ => Vec3::new(-s, -t, -1.),
+        }
+        .normalize()
+    }
+
+    pub fn mip_levels(&self) -> usize {
+        self.faces[0].levels.len()
+    }
+
+    pub fn sample(&self, direction: Vec3, lod: f32, sampler: Sampler) -> Result<Color> {
+        if !direction.is_finite() || !lod.is_finite() {
+            return Err("cube direction and LOD must be finite".into());
+        }
+        let (x, y, z) = (direction.x, direction.y, direction.z);
+        let (ax, ay, az) = (x.abs(), y.abs(), z.abs());
+        let (face, s, t, major) = if ax >= ay && ax >= az {
+            if x >= 0. {
+                (0, -z, -y, ax)
+            } else {
+                (1, z, -y, ax)
+            }
+        } else if ay >= az {
+            if y >= 0. {
+                (2, x, z, ay)
+            } else {
+                (3, x, -z, ay)
+            }
+        } else if z >= 0. {
+            (4, x, -y, az)
+        } else {
+            (5, -x, -y, az)
+        };
+        if major == 0. {
+            return Err("cube direction must be nonzero".into());
+        }
+        let uv = Vec2::new((s / major + 1.) * 0.5, (t / major + 1.) * 0.5);
+        self.faces[face].sample(
+            uv,
+            lod,
+            Sampler {
+                address: Address::Clamp,
+                ..sampler
+            },
+        )
+    }
 }
 impl Texture {
     pub fn validate(&self) -> Result<()> {
@@ -418,5 +539,75 @@ mod tests {
         assert!(Texture::new(1, 1, TextureFormat::Depth32Float, &[0]).is_err());
         depth.levels[0].depth.as_mut().unwrap()[0] = f32::INFINITY;
         assert!(depth.validate().is_err());
+    }
+
+    #[test]
+    fn cube_map_selects_faces_and_rejects_invalid_directions() {
+        let colors = [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 0, 255],
+            [255, 0, 255, 255],
+            [0, 255, 255, 255],
+        ];
+        let faces = colors.map(|color| Texture::new(1, 1, TextureFormat::Rgba8, &color).unwrap());
+        let cube = CubeMap::new(faces).unwrap();
+        let sampler = Sampler {
+            filter: Filter::Nearest,
+            mip: MipFilter::None,
+            ..Default::default()
+        };
+        for (face, color) in CubeFace::ALL.into_iter().zip(colors) {
+            let direction = CubeMap::face_direction(face, 0.5, 0.5);
+            assert_eq!(
+                cube.sample(direction * 7., 0., sampler).unwrap().rgba8(),
+                color
+            );
+        }
+        assert_eq!(
+            cube.sample(Vec3::new(1., 1., 0.), 0., sampler)
+                .unwrap()
+                .rgba8(),
+            colors[0]
+        );
+        assert!(cube.sample(Vec3::ZERO, 0., sampler).is_err());
+        assert!(
+            cube.sample(Vec3::new(f32::NAN, 0., 1.), 0., sampler)
+                .is_err()
+        );
+        assert!(
+            cube.sample(Vec3::new(0., 0., 1.), f32::INFINITY, sampler)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cube_map_requires_matching_square_color_faces() {
+        let rgba = |w, h| {
+            Texture::new(
+                w,
+                h,
+                TextureFormat::Rgba8,
+                &vec![0; w as usize * h as usize * 4],
+            )
+            .unwrap()
+        };
+        let mut faces = std::array::from_fn(|_| rgba(2, 2));
+        faces[5] = rgba(2, 1);
+        assert!(CubeMap::new(faces).is_err());
+        let mut faces = std::array::from_fn(|_| rgba(2, 2));
+        faces[5].generate_mips();
+        assert!(CubeMap::new(faces).is_err());
+        let depth = Texture::depth32(2, 2, &[0.5; 4]).unwrap();
+        let faces = [
+            depth,
+            rgba(2, 2),
+            rgba(2, 2),
+            rgba(2, 2),
+            rgba(2, 2),
+            rgba(2, 2),
+        ];
+        assert!(CubeMap::new(faces).is_err());
     }
 }
