@@ -24,6 +24,8 @@ const ACTOR_RADIUS: f32 = 16.0;
 const ACTOR_WAKE_RANGE: f32 = 640.0;
 const ACTOR_TARGET_THRESHOLD: f32 = 100.0 / 35.0;
 const ACTOR_IDLE_CYCLE: f32 = 20.0 / 35.0;
+const LINE_TWO_SIDED: u16 = 4;
+const LINE_SOUND_BLOCK: u16 = 64;
 
 #[derive(Clone, Copy)]
 struct Lump {
@@ -1882,11 +1884,80 @@ fn has_line_of_sight(map: &Map, from: Vertex2, to: Vertex2) -> bool {
     nearest_blocking_wall(map, from, direction) >= distance
 }
 
+fn sound_reachable_sectors(map: &Map, source: u16) -> Vec<bool> {
+    let mut neighbors = vec![Vec::new(); map.sectors.len()];
+    for &line in &map.lines {
+        if line[2] & LINE_TWO_SIDED == 0 || line[4] == u16::MAX {
+            continue;
+        }
+        let (Some(side0), Some(side1)) = (
+            map.sides.get(line[3] as usize),
+            map.sides.get(line[4] as usize),
+        ) else {
+            continue;
+        };
+        let (Some(sector0), Some(sector1)) = (
+            map.sectors.get(side0.sector as usize),
+            map.sectors.get(side1.sector as usize),
+        ) else {
+            continue;
+        };
+        if sector0.ceiling.min(sector1.ceiling) <= sector0.floor.max(sector1.floor) {
+            continue;
+        }
+        let sound_blocking = line[2] & LINE_SOUND_BLOCK != 0;
+        neighbors[side0.sector as usize].push((side1.sector, sound_blocking));
+        neighbors[side1.sector as usize].push((side0.sector, sound_blocking));
+    }
+
+    let mut sound_blocks = vec![u8::MAX; map.sectors.len()];
+    let Some(source_blocks) = sound_blocks.get_mut(source as usize) else {
+        return vec![false; map.sectors.len()];
+    };
+    *source_blocks = 0;
+    let mut pending = vec![source];
+    let mut head = 0;
+    while head < pending.len() {
+        let current = pending[head];
+        head += 1;
+        for &(next, sound_blocking) in &neighbors[current as usize] {
+            let blocks = sound_blocks[current as usize] + u8::from(sound_blocking);
+            if blocks <= 1 && blocks < sound_blocks[next as usize] {
+                sound_blocks[next as usize] = blocks;
+                pending.push(next);
+            }
+        }
+    }
+    sound_blocks
+        .into_iter()
+        .map(|blocks| blocks != u8::MAX)
+        .collect()
+}
+
+fn alert_actors_on_noise(map: &Map, actors: &mut [Actor], source: Vertex2) {
+    let Some(source_sector) = bsp_sector_index_at(map, source.x, source.y) else {
+        return;
+    };
+    let audible = sound_reachable_sectors(map, source_sector);
+    for actor in actors.iter_mut().filter(|actor| actor.health > 0) {
+        let Some(sector) = bsp_sector_index_at(map, actor.x, actor.y) else {
+            continue;
+        };
+        if audible[sector as usize] {
+            if actor.target_time_remaining == 0.0 {
+                actor.animation_time = 0.0;
+            }
+            actor.target_time_remaining = ACTOR_TARGET_THRESHOLD;
+        }
+    }
+}
+
 fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, pain_rng: &mut u32) -> bool {
     let origin = Vertex2 {
         x: player.x,
         y: player.y,
     };
+    alert_actors_on_noise(map, actors, origin);
     let radians = player.angle.to_radians();
     let direction = Vertex2 {
         x: radians.cos(),
@@ -3191,6 +3262,124 @@ mod tests {
         assert_eq!(first_route_portal(&routes, 1, 2), Some((1, 2)));
         assert_eq!(first_route_portal(&routes, 0, 3), None);
         assert_eq!(first_route_portal(&routes, 0, 4), None);
+    }
+
+    #[test]
+    fn missed_pistol_shots_alert_monsters_through_one_sound_blocking_line() {
+        let sector = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+        };
+        let side = |sector| SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper: [0; 8],
+            lower: [0; 8],
+            middle: [0; 8],
+            sector,
+        };
+        let map = Map {
+            vertices: [30.0, 40.0, 50.0, 60.0]
+                .into_iter()
+                .flat_map(|x| [Vertex2 { x, y: -64.0 }, Vertex2 { x, y: 64.0 }])
+                .collect(),
+            sectors: vec![sector; 5],
+            sides: vec![
+                side(0),
+                side(1),
+                side(1),
+                side(2),
+                side(2),
+                side(3),
+                side(3),
+                side(4),
+            ],
+            lines: vec![
+                [0, 1, LINE_TWO_SIDED, 0, 1],
+                [2, 3, LINE_TWO_SIDED | LINE_SOUND_BLOCK, 2, 3],
+                [4, 5, LINE_TWO_SIDED | LINE_SOUND_BLOCK, 4, 5],
+                [6, 7, LINE_TWO_SIDED, 6, 7],
+            ],
+            segs: vec![
+                [0, 1, 0, 0, 0],
+                [0, 1, 0, 1, 0],
+                [2, 3, 1, 1, 0],
+                [4, 5, 2, 1, 0],
+                [6, 7, 3, 1, 0],
+            ],
+            subsectors: vec![[1, 0], [1, 1], [1, 2], [1, 3], [1, 4]],
+            nodes: vec![
+                Node {
+                    x: 60,
+                    y: 0,
+                    dx: 0,
+                    dy: 1,
+                    child_bounds: [Bounds2::default(); 2],
+                    children: [0x8004, 0x8003],
+                },
+                Node {
+                    x: 50,
+                    y: 0,
+                    dx: 0,
+                    dy: 1,
+                    child_bounds: [Bounds2::default(); 2],
+                    children: [0, 0x8002],
+                },
+                Node {
+                    x: 40,
+                    y: 0,
+                    dx: 0,
+                    dy: 1,
+                    child_bounds: [Bounds2::default(); 2],
+                    children: [1, 0x8001],
+                },
+                Node {
+                    x: 30,
+                    y: 0,
+                    dx: 0,
+                    dy: 1,
+                    child_bounds: [Bounds2::default(); 2],
+                    children: [2, 0x8000],
+                },
+            ],
+            things: vec![],
+        };
+        assert_eq!(
+            sound_reachable_sectors(&map, 0),
+            [true, true, true, false, false]
+        );
+
+        let actor = |x| Actor {
+            sprite: *b"SARG",
+            x,
+            y: 0.0,
+            health: 60,
+            target_time_remaining: 0.0,
+            attack_cooldown: 0.0,
+            attack_animation_remaining: 0.0,
+            pain_animation_remaining: 0.0,
+            death_animation_time: None,
+            animation_time: 0.25,
+            angle: 0.0,
+        };
+        let mut actors = [actor(45.0), actor(55.0)];
+        let mut pain_rng = 1;
+        assert!(!fire_weapon(
+            &map,
+            &mut actors,
+            Player {
+                x: 15.0,
+                y: 0.0,
+                angle: 90.0,
+            },
+            &mut pain_rng,
+        ));
+        assert_eq!(actors[0].target_time_remaining, ACTOR_TARGET_THRESHOLD);
+        assert_eq!(actors[0].animation_time, 0.0);
+        assert_eq!(actors[1].target_time_remaining, 0.0);
     }
 
     #[test]

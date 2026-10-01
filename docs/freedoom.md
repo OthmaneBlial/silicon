@@ -41,6 +41,9 @@ camera-relative views using Doom's state durations; killed enemies remain as
 their final corpse frame. Paired Freedoom patches are horizontally flipped
 where Doom does so. Cutout billboards use a SILICON fragment shader. Space
 fires a 20-damage hitscan with a 0.35-second cooldown; pistol ammo caps at 200.
+Every fired shot alerts living enemies through open two-sided sectors, even
+when it misses, crossing at most one sound-blocking linedef. This models Doom's
+pistol noise alert and recursive sector sound flood, not every sound event.
 Awake enemies deal 8 melee damage within 48 units, at most once every 0.85
 seconds. Former humans fire 3-damage hitscan attacks and
 shotgunners fire 6-damage hitscan attacks within 512 units, at most once every
@@ -70,8 +73,11 @@ the opening must fit the actor and allow an upward step of at most 24 units. The
 router samples portal points and picks one with a clear 16-unit swept margin
 from blocking lines, allowing simple pursuit around walls. If map data yields
 no waypoint, direct pursuit remains the fallback. This sector graph is not
-Doom's full actor navigation and does not model sound propagation or full
-target-selection rules.
+Doom's full actor navigation; full target-selection rules and other sound
+events remain unimplemented. See id Software's [`P_NoiseAlert` and
+`P_RecursiveSound`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_enemy.c)
+and [`P_FireWeapon`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c)
+for the original sector sound flood and pistol alert call.
 
 Freedoom 0.13.0 E1M1 has 29 normal-skill enemy placements. The sample parses
 the WAD node partition tree to locate each thing's subsector and sector and to
@@ -96,7 +102,7 @@ that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
-gib states, Doom's detailed actor navigation, sound propagation, keys, exits,
+gib states, Doom's detailed actor navigation, other sound events, keys, exits,
 other weapons and their ammunition, and full weapon animation beyond the brief
 idle/fire pose remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in

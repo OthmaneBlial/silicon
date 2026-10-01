@@ -151,8 +151,9 @@ nearer ranges reach the depth test first. The frame matches the baseline pixels.
 The interactive prototype adds first-person movement, basic collision, player
 hitscan, health and ammo pickups, Doom-timed enemy idle and chance-based pain
 poses, sight-based wake-up with a 100-tic target timeout, sector-portal enemy
-pursuit around blocked corridors, melee attacks,
-line-of-sight hitscan for humans and shotgunners, and imp fireballs. Moving
+pursuit around blocked corridors, pistol-noise alerts that wake enemies through
+open sectors even when a shot misses, melee attacks, line-of-sight hitscan for
+humans and shotgunners, and imp fireballs. Moving
 enemies cycle four WAD walk frames, play attack and death poses, leave corpses,
 and select among eight camera-relative sprite views; fireballs show WAD impact
 frames. It remains
