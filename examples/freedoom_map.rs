@@ -634,17 +634,48 @@ fn monster_sprite(kind: u16) -> Option<([u8; 4], i32)> {
     }
 }
 
-fn sprite_walk_textures(data: &[u8], prefix: [u8; 4]) -> api::Result<Vec<SpriteTexture>> {
+fn sprite_walk_textures(data: &[u8], prefix: [u8; 4]) -> api::Result<Vec<Vec<SpriteTexture>>> {
+    let lumps = wad_lumps(data)?;
     b"ABCD"
         .iter()
-        .map(|frame| {
-            let mut name = [0; 8];
-            name[..4].copy_from_slice(&prefix);
-            name[4] = *frame;
-            name[5] = b'1';
-            sprite_patch_texture(data, name)
+        .map(|&frame| {
+            (1..=8)
+                .map(|rotation| {
+                    let (mut name, mut flip) = sprite_view_name(prefix, frame, rotation);
+                    if !lumps.iter().any(|lump| lump.name == name) {
+                        name = [0; 8];
+                        name[..4].copy_from_slice(&prefix);
+                        name[4] = frame;
+                        name[5] = b'0' + rotation;
+                        flip = false;
+                    }
+                    let mut texture = sprite_patch_texture(data, name)?;
+                    texture.horizontal_flip = flip;
+                    Ok(texture)
+                })
+                .collect()
         })
         .collect()
+}
+
+fn sprite_view_name(prefix: [u8; 4], frame: u8, rotation: u8) -> ([u8; 8], bool) {
+    let (first, second, flip): (u8, Option<u8>, bool) = match rotation {
+        1 => (b'1', None, false),
+        2 | 8 => (b'2', Some(b'8'), rotation == 8),
+        3 | 7 => (b'3', Some(b'7'), rotation == 7),
+        4 | 6 => (b'4', Some(b'6'), rotation == 6),
+        5 => (b'5', None, false),
+        _ => unreachable!("sprite rotation must be between one and eight"),
+    };
+    let mut name = [0; 8];
+    name[..4].copy_from_slice(&prefix);
+    name[4] = frame;
+    name[5] = first;
+    if let Some(second) = second {
+        name[6] = frame;
+        name[7] = second;
+    }
+    (name, flip)
 }
 
 fn actor_walk_frame_tics(sprite: [u8; 4]) -> f32 {
@@ -660,6 +691,10 @@ fn actor_walk_frame(sprite: [u8; 4], animation_time: f32) -> usize {
     let frame_tics = actor_walk_frame_tics(sprite);
     let cycle_seconds = frame_tics * 4.0 / 35.0;
     (animation_time.rem_euclid(cycle_seconds) * 35.0 / frame_tics).floor() as usize
+}
+
+fn actor_view_rotation(actor_angle: f32, viewer_to_actor_angle: f32) -> usize {
+    ((viewer_to_actor_angle - actor_angle + 202.5).rem_euclid(360.0) / 45.0).floor() as usize
 }
 
 fn sprite_patch_texture(data: &[u8], name: [u8; 8]) -> api::Result<SpriteTexture> {
@@ -692,6 +727,7 @@ fn sprite_patch_texture(data: &[u8], name: [u8; 8]) -> api::Result<SpriteTexture
         width: width as f32,
         height: height as f32,
         left_offset: left_offset as f32,
+        horizontal_flip: false,
     })
 }
 
@@ -784,7 +820,7 @@ struct PreparedScene {
     weapon_pipeline: Arc<ShaderPipeline>,
     sampler: Sampler,
     draws: Vec<Draw>,
-    sprites: BTreeMap<[u8; 4], Vec<SpriteTexture>>,
+    sprites: BTreeMap<[u8; 4], Vec<Vec<SpriteTexture>>>,
     pickup_sprites: BTreeMap<[u8; 4], SpriteTexture>,
     weapon_idle: SpriteTexture,
     weapon_fire: SpriteTexture,
@@ -800,6 +836,7 @@ struct SpriteTexture {
     width: f32,
     height: f32,
     left_offset: f32,
+    horizontal_flip: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -810,6 +847,7 @@ struct Actor {
     health: i32,
     attack_cooldown: f32,
     animation_time: f32,
+    angle: f32,
 }
 
 struct Projectile {
@@ -890,6 +928,7 @@ fn billboard_vertices(
     bottom: f32,
     height: f32,
     sector: Sector,
+    horizontal_flip: bool,
 ) -> Vec<Vertex> {
     let right = Vertex2 {
         x: left.x + axis.x * width,
@@ -900,22 +939,27 @@ fn billboard_vertices(
     let top_left = world(left, bottom + height);
     let top_right = world(right, bottom + height);
     let color = shaded([1.0; 3], sector);
+    let (left_u, right_u) = if horizontal_flip {
+        (1.0, 0.0)
+    } else {
+        (0.0, 1.0)
+    };
     let mut vertices = Vec::with_capacity(6);
     push_triangle_uv(
         &mut vertices,
         [
-            (bottom_left, Vec2::new(0.0, 1.0)),
-            (bottom_right, Vec2::new(1.0, 1.0)),
-            (top_right, Vec2::new(1.0, 0.0)),
+            (bottom_left, Vec2::new(left_u, 1.0)),
+            (bottom_right, Vec2::new(right_u, 1.0)),
+            (top_right, Vec2::new(right_u, 0.0)),
         ],
         color,
     );
     push_triangle_uv(
         &mut vertices,
         [
-            (bottom_left, Vec2::new(0.0, 1.0)),
-            (top_right, Vec2::new(1.0, 0.0)),
-            (top_left, Vec2::new(0.0, 0.0)),
+            (bottom_left, Vec2::new(left_u, 1.0)),
+            (top_right, Vec2::new(right_u, 0.0)),
+            (top_left, Vec2::new(left_u, 0.0)),
         ],
         color,
     );
@@ -939,7 +983,15 @@ fn sprite_vertices(
         x: x - axis.x * sprite.left_offset,
         y: y - axis.y * sprite.left_offset,
     };
-    billboard_vertices(left, axis, sprite.width, bottom, sprite.height, sector)
+    billboard_vertices(
+        left,
+        axis,
+        sprite.width,
+        bottom,
+        sprite.height,
+        sector,
+        sprite.horizontal_flip,
+    )
 }
 
 fn projectile_vertices(
@@ -1027,7 +1079,7 @@ fn weapon_vertices(player: Player, sprite: &SpriteTexture, sector: Sector) -> Ve
         x: center.x - axis.x * width * 0.5,
         y: center.y - axis.y * width * 0.5,
     };
-    billboard_vertices(left, axis, width, sector.floor + 5.0, height, sector)
+    billboard_vertices(left, axis, width, sector.floor + 5.0, height, sector, false)
 }
 
 fn geometry(map: &Map, textures: &BTreeMap<[u8; 8], Arc<Texture>>) -> Result<Geometry, io::Error> {
@@ -1402,6 +1454,9 @@ fn update_actors(
         let dx = player.x - actor.x;
         let dy = player.y - actor.y;
         let distance = (dx * dx + dy * dy).sqrt();
+        if distance < 640.0 {
+            actor.angle = dy.atan2(dx).to_degrees().rem_euclid(360.0);
+        }
         if distance < 48.0 {
             if actor.attack_cooldown == 0.0 {
                 *health -= 8;
@@ -1569,7 +1624,7 @@ impl PreparedScene {
         let mut pickup_sprites = BTreeMap::new();
         let mut actors = Vec::new();
         let mut pickups = Vec::new();
-        for &(x, y, _, kind, flags) in &map.things {
+        for &(x, y, thing_angle, kind, flags) in &map.things {
             if flags & 2 == 0 || flags & 16 != 0 {
                 continue;
             }
@@ -1587,6 +1642,7 @@ impl PreparedScene {
                     health,
                     attack_cooldown: 0.0,
                     animation_time: 0.0,
+                    angle: thing_angle as f32,
                 });
             } else if let Some((prefix, health, ammo)) = pickup_definition(kind) {
                 if let Entry::Vacant(entry) = pickup_sprites.entry(prefix) {
@@ -1706,7 +1762,9 @@ impl PreparedScene {
             let Some(frames) = self.sprites.get(&actor.sprite) else {
                 continue;
             };
-            let sprite = &frames[actor_walk_frame(actor.sprite, actor.animation_time)];
+            let view_to_actor = (actor.y - player.y).atan2(actor.x - player.x).to_degrees();
+            let sprite = &frames[actor_walk_frame(actor.sprite, actor.animation_time)]
+                [actor_view_rotation(actor.angle, view_to_actor)];
             let vertices =
                 sprite_vertices(actor.x, actor.y, sprite, player.angle, sector, sector.floor);
             if vertices.is_empty() {
@@ -1966,6 +2024,42 @@ mod tests {
     }
 
     #[test]
+    fn enemy_sprite_views_use_doom_names_and_view_angle_buckets() {
+        assert_eq!(sprite_view_name(*b"TROO", b'A', 1), (*b"TROOA1\0\0", false));
+        assert_eq!(sprite_view_name(*b"TROO", b'A', 8), (*b"TROOA2A8", true));
+        assert_eq!(sprite_view_name(*b"TROO", b'A', 7), (*b"TROOA3A7", true));
+        assert_eq!(sprite_view_name(*b"TROO", b'A', 6), (*b"TROOA4A6", true));
+        assert_eq!(sprite_view_name(*b"TROO", b'A', 5), (*b"TROOA5\0\0", false));
+        assert_eq!(sprite_view_name(*b"SARG", b'B', 8), (*b"SARGB2B8", true));
+        assert_eq!(actor_view_rotation(0.0, 180.0), 0);
+        assert_eq!(actor_view_rotation(0.0, 90.0), 6);
+        assert_eq!(actor_view_rotation(0.0, 0.0), 4);
+        assert_eq!(actor_view_rotation(0.0, 270.0), 2);
+    }
+
+    #[test]
+    fn mirrored_sprite_views_reverse_billboard_texture_coordinates() {
+        let sector = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+        };
+        let vertices = billboard_vertices(
+            Vertex2 { x: 0.0, y: 0.0 },
+            Vertex2 { x: 1.0, y: 0.0 },
+            10.0,
+            0.0,
+            10.0,
+            sector,
+            true,
+        );
+        assert_eq!(vertices[0].uv.x, 1.0);
+        assert_eq!(vertices[1].uv.x, 0.0);
+    }
+
+    #[test]
     fn convex_hull_discards_interior_bsp_vertices() {
         let hull = convex_hull(vec![
             Vertex2 { x: 0.0, y: 0.0 },
@@ -2125,6 +2219,7 @@ mod tests {
             health: 20,
             attack_cooldown: 0.0,
             animation_time: 0.0,
+            angle: 0.0,
         }];
         let player = Player {
             x: 0.0,
@@ -2196,6 +2291,7 @@ mod tests {
             health: 60,
             attack_cooldown: 0.0,
             animation_time: 0.0,
+            angle: 0.0,
         }];
         let mut projectiles = Vec::new();
         let player = Player {
@@ -2214,6 +2310,7 @@ mod tests {
         );
         assert_eq!(actors[0].x, 64.0);
         assert_eq!(health, 100);
+        assert_eq!(actors[0].angle, 180.0);
         assert!(actors[0].animation_time > 0.0);
 
         actors[0].x = 40.0;
@@ -2265,6 +2362,7 @@ mod tests {
             health: 20,
             attack_cooldown: 0.0,
             animation_time: 0.0,
+            angle: 0.0,
         }];
         let mut projectiles = Vec::new();
         let player = Player {
@@ -2335,6 +2433,7 @@ mod tests {
             health: 60,
             attack_cooldown: 0.0,
             animation_time: 0.0,
+            angle: 0.0,
         }];
         let mut projectiles = Vec::new();
         let player = Player {
