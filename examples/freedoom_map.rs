@@ -1351,6 +1351,7 @@ struct PreparedScene {
     weapon_pipeline: Arc<ShaderPipeline>,
     sampler: Sampler,
     draws: Vec<Vec<Draw>>,
+    visibility_fallbacks: Vec<(usize, Bounds2)>,
     sprites: BTreeMap<[u8; 4], Vec<Vec<SpriteTexture>>>,
     pickup_sprites: BTreeMap<[u8; 4], SpriteTexture>,
     weapon_idle: SpriteTexture,
@@ -2052,6 +2053,102 @@ fn visible_subsector_order(map: &Map, player: Player) -> Vec<usize> {
         },
     ) && !std::mem::replace(&mut visited_leaves[leaf], true)
     {
+        visible.push(leaf);
+    }
+    visible
+}
+
+fn horizontal_bounds(bounds: Bounds3) -> Bounds2 {
+    Bounds2 {
+        min_x: bounds.min.x,
+        min_y: -bounds.max.z,
+        max_x: bounds.max.x,
+        max_y: -bounds.min.z,
+    }
+}
+
+fn contains_bounds(outer: Bounds2, inner: Bounds2) -> bool {
+    outer.min_x <= inner.min_x
+        && outer.min_y <= inner.min_y
+        && outer.max_x >= inner.max_x
+        && outer.max_y >= inner.max_y
+}
+
+fn intersect_bounds(a: Bounds2, b: Bounds2) -> Bounds2 {
+    Bounds2 {
+        min_x: a.min_x.max(b.min_x),
+        min_y: a.min_y.max(b.min_y),
+        max_x: a.max_x.min(b.max_x),
+        max_y: a.max_y.min(b.max_y),
+    }
+}
+
+fn visibility_fallback_bounds(map: &Map, draws: &[Vec<Draw>]) -> Vec<(usize, Bounds2)> {
+    if map.nodes.is_empty() {
+        return Vec::new();
+    }
+    let mut geometry_bounds = vec![None; map.subsectors.len()];
+    for (leaf, leaf_draws) in draws.iter().enumerate().take(geometry_bounds.len()) {
+        for bounds in leaf_draws
+            .iter()
+            .filter_map(|draw| draw.bounds.map(horizontal_bounds))
+        {
+            let combined = geometry_bounds[leaf].get_or_insert(bounds);
+            combined.min_x = combined.min_x.min(bounds.min_x);
+            combined.min_y = combined.min_y.min(bounds.min_y);
+            combined.max_x = combined.max_x.max(bounds.max_x);
+            combined.max_y = combined.max_y.max(bounds.max_y);
+        }
+    }
+    let mut fallback = Vec::new();
+    let mut visited_nodes = vec![false; map.nodes.len()];
+    let mut visited_leaves = vec![false; map.subsectors.len()];
+    let mut pending = vec![(map.nodes.len() - 1, None)];
+    while let Some((child, bounds)) = pending.pop() {
+        if child & 0x8000 != 0 {
+            let leaf = child & 0x7fff;
+            if leaf < geometry_bounds.len()
+                && !std::mem::replace(&mut visited_leaves[leaf], true)
+                && let (Some(actual), Some(node_bounds)) = (geometry_bounds[leaf], bounds)
+                && !contains_bounds(node_bounds, actual)
+            {
+                fallback.push((leaf, actual));
+            }
+            continue;
+        }
+        let Some(seen) = visited_nodes.get_mut(child) else {
+            continue;
+        };
+        if std::mem::replace(seen, true) {
+            continue;
+        }
+        let node = map.nodes[child];
+        for side in 0..2 {
+            let child_bounds = node.child_bounds[side];
+            let bounds = bounds.map_or(child_bounds, |parent| {
+                intersect_bounds(parent, child_bounds)
+            });
+            pending.push((node.children[side] as usize, Some(bounds)));
+        }
+    }
+    fallback
+}
+
+fn visible_geometry_order(
+    map: &Map,
+    player: Player,
+    fallback_bounds: &[(usize, Bounds2)],
+) -> Vec<usize> {
+    let mut visible = visible_subsector_order(map, player);
+    let mut included = vec![false; map.subsectors.len()];
+    for &leaf in &visible {
+        included[leaf] = true;
+    }
+    for &(leaf, bounds) in fallback_bounds {
+        if leaf >= included.len() || included[leaf] || !bounds_in_view(bounds, player) {
+            continue;
+        }
+        included[leaf] = true;
         visible.push(leaf);
     }
     visible
@@ -3236,6 +3333,7 @@ impl PreparedScene {
             }
         }
         let draws = build_draws(geometry, &flat_textures, &wall_textures)?;
+        let visibility_fallbacks = visibility_fallback_bounds(&map, &draws);
         Ok(Self {
             map_name: map_name.to_owned(),
             map,
@@ -3247,6 +3345,7 @@ impl PreparedScene {
             weapon_pipeline,
             sampler,
             draws,
+            visibility_fallbacks,
             sprites,
             pickup_sprites,
             weapon_idle,
@@ -3269,6 +3368,7 @@ impl PreparedScene {
             &self.flat_textures,
             &self.wall_textures,
         )?;
+        self.visibility_fallbacks = visibility_fallback_bounds(&self.map, &self.draws);
         Ok(())
     }
 
@@ -3287,7 +3387,7 @@ impl PreparedScene {
                 self.map_name
             ))
         })?;
-        let visible_order = visible_subsector_order(&self.map, player);
+        let visible_order = visible_geometry_order(&self.map, player, &self.visibility_fallbacks);
         let mut visible = vec![false; self.map.subsectors.len()];
         for &leaf in &visible_order {
             visible[leaf] = true;
@@ -3482,7 +3582,7 @@ fn frame_triangles(
         ))
     })?;
     let eye_height = sector.floor + 41.0;
-    let visible = visible_subsector_order(&scene.map, player);
+    let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks);
     let static_triangles = visible
         .iter()
         .flat_map(|&leaf| &scene.draws[leaf])
@@ -3508,7 +3608,8 @@ fn render(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
     )?;
     save_frame(&renderer, output)?;
     let triangles = frame_triangles(&scene, scene.start, static_draws, submission.draws)?;
-    let visible = visible_subsector_order(&scene.map, scene.start).len();
+    let visible =
+        visible_geometry_order(&scene.map, scene.start, &scene.visibility_fallbacks).len();
     let exits = scene
         .map
         .lines
@@ -3767,7 +3868,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             "PLAYING"
         };
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
-        let visible = visible_subsector_order(&scene.map, player).len();
+        let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks).len();
         window.set_title(&format!(
             "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | blue key {blue_key} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.map_name,
@@ -5407,6 +5508,71 @@ mod tests {
         assert!(visible_subsector_order(&map, player).is_empty());
         map.nodes[0].children = [0x8000, 0x8000];
         assert_eq!(visible_subsector_order(&map, player), vec![0]);
+    }
+
+    #[test]
+    fn visible_mesh_bounds_recover_leaves_culled_by_bad_bsp_bounds() {
+        let bounds = |min_x, min_y, max_x, max_y| Bounds2 {
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+        };
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![[0, 0], [0, 0]],
+            nodes: vec![Node {
+                x: 0,
+                y: 0,
+                dx: 0,
+                dy: 1,
+                child_bounds: [
+                    bounds(-300.0, -20.0, -100.0, 20.0),
+                    bounds(100.0, -20.0, 300.0, 20.0),
+                ],
+                children: [0x8000, 0x8001],
+            }],
+            things: vec![],
+        };
+        let player = Player {
+            x: -1.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let texture = Arc::new(Texture::new(1, 1, TextureFormat::Rgba8, &[0, 0, 0, 255]).unwrap());
+        let draws = vec![
+            vec![Draw {
+                name: [0; 8],
+                wall: false,
+                masked: false,
+                texture,
+                vertices: vec![],
+                bounds: Some(Bounds3 {
+                    min: Vec3::new(30.0, 0.0, -4.0),
+                    max: Vec3::new(80.0, 10.0, 4.0),
+                }),
+            }],
+            vec![],
+        ];
+
+        assert_eq!(visible_subsector_order(&map, player), vec![1]);
+        let fallback = visibility_fallback_bounds(&map, &draws);
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].0, 0);
+        assert_eq!(
+            (
+                fallback[0].1.min_x,
+                fallback[0].1.min_y,
+                fallback[0].1.max_x,
+                fallback[0].1.max_y,
+            ),
+            (30.0, -4.0, 80.0, 4.0)
+        );
+        assert_eq!(visible_geometry_order(&map, player, &fallback), vec![1, 0]);
     }
 
     #[test]
