@@ -28,6 +28,7 @@ const LINE_TWO_SIDED: u16 = 4;
 const LINE_SOUND_BLOCK: u16 = 64;
 const LINE_DOOR_RAISE: u16 = 1;
 const LINE_WALK_OPEN_DOOR: u16 = 2;
+const LINE_USE_DOWN_WAIT_UP_PLATFORM: u16 = 62;
 const LINE_PLAT_DOWN_WAIT_UP: u16 = 88;
 const LINE_EXIT_USE: u16 = 11;
 const USE_RANGE: f32 = 64.0;
@@ -2125,11 +2126,15 @@ fn sector_platform(map: &Map, platform_sector: u16) -> Option<Platform> {
     })
 }
 
-fn walk_down_wait_up_platforms(map: &Map, line_index: usize, active: &[Platform]) -> Vec<Platform> {
+fn down_wait_up_platforms(map: &Map, line_index: usize, active: &[Platform]) -> Vec<Platform> {
     let Some(line) = map.lines.get(line_index) else {
         return Vec::new();
     };
-    if line[5] != LINE_PLAT_DOWN_WAIT_UP || line[6] == 0 {
+    if !matches!(
+        line[5],
+        LINE_USE_DOWN_WAIT_UP_PLATFORM | LINE_PLAT_DOWN_WAIT_UP
+    ) || line[6] == 0
+    {
         return Vec::new();
     }
     map.sectors
@@ -3049,7 +3054,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                         doors.extend(started);
                     }
                     LINE_PLAT_DOWN_WAIT_UP => {
-                        let started = walk_down_wait_up_platforms(&scene.map, line, &platforms);
+                        let started = down_wait_up_platforms(&scene.map, line, &platforms);
                         activated_sectors += started.len();
                         platforms.extend(started);
                     }
@@ -3069,6 +3074,10 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 {
                     doors.push(door);
                     activated_sectors += 1;
+                } else if special == LINE_USE_DOWN_WAIT_UP_PLATFORM {
+                    let started = down_wait_up_platforms(&scene.map, line, &platforms);
+                    activated_sectors += started.len();
+                    platforms.extend(started);
                 }
             }
             if !exited {
@@ -3959,7 +3968,7 @@ mod tests {
             nodes: vec![],
             things: vec![],
         };
-        let mut platforms = walk_down_wait_up_platforms(&map, 0, &[]);
+        let mut platforms = down_wait_up_platforms(&map, 0, &[]);
         assert_eq!(platforms.len(), 1);
         assert_eq!((platforms[0].low, platforms[0].high), (0.0, 64.0));
         assert!(!portal_is_walkable(&map, map.lines[0], 0, 1));
@@ -3981,7 +3990,21 @@ mod tests {
         assert!(platforms.is_empty());
         assert_eq!(map.sectors[2].floor, 32.0);
         assert_eq!(map.lines[0][5], LINE_PLAT_DOWN_WAIT_UP);
-        assert_eq!(walk_down_wait_up_platforms(&map, 0, &[]).len(), 1);
+        assert_eq!(down_wait_up_platforms(&map, 0, &[]).len(), 1);
+
+        map.lines[0][5] = LINE_USE_DOWN_WAIT_UP_PLATFORM;
+        let player = Player {
+            x: 20.0,
+            y: 0.0,
+            angle: 180.0,
+        };
+        assert_eq!(
+            use_line(&map, player),
+            Some((0, LINE_USE_DOWN_WAIT_UP_PLATFORM))
+        );
+        let manual = down_wait_up_platforms(&map, 0, &[]);
+        assert_eq!(manual.len(), 1);
+        assert!(down_wait_up_platforms(&map, 0, &manual).is_empty());
     }
 
     #[test]

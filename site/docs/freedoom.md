@@ -24,10 +24,10 @@ cargo run --release --example freedoom_map -- /path/to/freedoom1.wad --interacti
 
 The first command writes `output/freedoom_map.png`. The interactive view uses
 WASD to move and strafe, arrow keys to turn, Shift to run, Space to fire, `E`
-to open ordinary doors or use the exit, and Escape to exit. Every frame
-submits the scene again through SILICON; movement stays inside a BSP-leaf floor,
-keeps a 16-unit margin from one-sided or explicitly blocking lines, limits
-steps to 24 units, and requires 56 units of ceiling clearance. Interactive WAD
+to open ordinary doors, operate manual lifts, or use the exit, and Escape to
+exit. Every frame submits the scene again through SILICON; movement stays inside
+a BSP-leaf floor, keeps a 16-unit margin from one-sided or explicitly blocking
+lines, limits steps to 24 units, and requires 56 units of ceiling clearance. Interactive WAD
 stim packs, medikits, clips, and ammo boxes render as cutout billboards and can
 be collected within 24 units when health or pistol ammo is below its cap of
 100 or 200. The player starts with
@@ -48,8 +48,14 @@ descend at 140 units per second to the lowest neighboring floor, wait 105 tics
 lines for tags 1 and 2, targeting sectors 98 and 103. Platform floors and their
 collision and rendered geometry move together. The speed and timing follow
 id Software's [`T_PlatRaise` and `downWaitUpStay` action](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_plats.c).
-Locked doors, enemy-triggered platforms, and other walk-triggered specials
-remain unsupported.
+Press `E` from the front of a special-62 line to activate the same repeatable
+down-wait-up action. E1M1 has four such lines for tags 1 and 2, targeting the
+same sectors 98 and 103. The original engine routes special 62 to the same
+`downWaitUpStay` platform action as special 88, but through the use control
+instead of a walk crossing, as shown in id Software's
+[`P_UseSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c).
+Locked doors, enemy-triggered platforms, and other line specials remain
+unsupported.
 
 The combat slice loads four normal-skill enemy types from WAD things and their
 classic `A1`–`D1` walk and `E1`–`G1` attack sprite patches: former humans (20
@@ -122,9 +128,9 @@ that test fixture is not included.
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
 gib states, Doom's detailed actor navigation, other sound events, keys and
-locked doors, crossing specials other than special 2, level progression after
-E1M1, other weapons and their ammunition, and full weapon animation beyond the
-brief idle/fire pose remain unimplemented.
+locked doors, crossing specials other than special 2 and 88, other use specials,
+level progression after E1M1, other weapons and their ammunition, and full weapon
+animation beyond the brief idle/fire pose remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in
 [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was rendered from
 the unmodified release WAD. The WAD itself is not included. The release archive
