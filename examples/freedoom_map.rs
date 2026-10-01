@@ -50,6 +50,10 @@ const STROBE_BRIGHT_TICS: f32 = 5.0;
 const STROBE_SLOW_DARK_TICS: f32 = 35.0;
 const NUKAGE_DAMAGE_TICS: f32 = 32.0;
 const NUKAGE_DAMAGE: i32 = 5;
+const DOOM_SKY_MID: f32 = 100.0;
+const DOOM_SKY_BASE_WIDTH: f32 = 320.0;
+const DOOM_SKY_ANGLE_COLUMNS: f32 = 1024.0;
+const SKY_MESH_SEGMENTS: usize = 32;
 
 #[derive(Clone, Copy)]
 struct Lump {
@@ -611,7 +615,11 @@ fn composite_patch(
     Ok(())
 }
 
-fn wall_textures(data: &[u8], map: &Map) -> api::Result<BTreeMap<[u8; 8], Arc<Texture>>> {
+fn wall_textures(
+    data: &[u8],
+    map: &Map,
+    sky_name: Option<[u8; 8]>,
+) -> api::Result<BTreeMap<[u8; 8], Arc<Texture>>> {
     let lumps = wad_lumps(data)?;
     let palette = lump_bytes(data, &lumps, *b"PLAYPAL\0")?;
     if palette.len() < 256 * 3 {
@@ -647,12 +655,15 @@ fn wall_textures(data: &[u8], map: &Map) -> api::Result<BTreeMap<[u8; 8], Arc<Te
         texture_definitions(texture2, &mut definitions)?;
     }
 
-    let names = map
+    let mut names = map
         .sides
         .iter()
         .flat_map(|side| [side.upper, side.lower, side.middle])
         .filter(|name| name[0] != b'-' && name.iter().any(|&byte| byte != 0))
         .collect::<std::collections::BTreeSet<_>>();
+    if let Some(sky_name) = sky_name {
+        names.insert(sky_name);
+    }
     let mut textures = BTreeMap::new();
     let mut total_pixels = 0usize;
     let first_color = &palette[..3];
@@ -1295,6 +1306,150 @@ struct Player {
     angle: f32,
 }
 
+fn sky_texture_name(map: &Map, map_name: &str) -> Option<[u8; 8]> {
+    if !map
+        .sectors
+        .iter()
+        .any(|sector| sector.ceiling_flat == *b"F_SKY1\0\0")
+    {
+        return None;
+    }
+    let texture = if map_name.starts_with('E') {
+        match map_name.as_bytes().get(1).copied() {
+            Some(b'2') => *b"SKY2\0\0\0\0",
+            Some(b'3') => *b"SKY3\0\0\0\0",
+            Some(b'4') => *b"SKY4\0\0\0\0",
+            _ => *b"SKY1\0\0\0\0",
+        }
+    } else if map_name.starts_with("MAP") {
+        let map_number = map_name
+            .as_bytes()
+            .get(3..5)
+            .and_then(|digits| std::str::from_utf8(digits).ok())
+            .and_then(|digits| digits.parse::<u8>().ok())
+            .unwrap_or(1);
+        if map_number < 12 {
+            *b"SKY1\0\0\0\0"
+        } else if map_number < 21 {
+            *b"SKY2\0\0\0\0"
+        } else {
+            *b"SKY3\0\0\0\0"
+        }
+    } else {
+        *b"SKY1\0\0\0\0"
+    };
+    Some(texture)
+}
+
+fn sky_uv(
+    player: Player,
+    ndc_x: f32,
+    ndc_y: f32,
+    texture_width: u32,
+    texture_height: u32,
+    output_width: u32,
+    output_height: u32,
+) -> Vec2 {
+    let half_vertical_fov = 1.22_f32 * 0.5;
+    let camera_x = ndc_x * half_vertical_fov.tan() * output_width as f32 / output_height as f32;
+    let yaw = player.angle.to_radians() - camera_x.atan();
+    let source_y = DOOM_SKY_MID
+        - ndc_y * output_height as f32 * 0.5 * DOOM_SKY_BASE_WIDTH / output_width as f32;
+    Vec2::new(
+        yaw * DOOM_SKY_ANGLE_COLUMNS / (std::f32::consts::TAU * texture_width as f32),
+        source_y / texture_height as f32,
+    )
+}
+
+fn sky_vertices(
+    player: Player,
+    eye_height: f32,
+    texture_size: (u32, u32),
+    output_size: (u32, u32),
+) -> Vec<Vertex> {
+    let (texture_width, texture_height) = texture_size;
+    let (output_width, output_height) = output_size;
+    if texture_width == 0 || texture_height == 0 || output_width == 0 || output_height == 0 {
+        return Vec::new();
+    }
+    let angle = player.angle.to_radians();
+    let forward = Vec3::new(angle.cos(), 0.0, -angle.sin());
+    let up = Vec3::new(0.0, 1.0, 0.0);
+    let right = forward.cross(up);
+    let distance = 4096.0;
+    let center = Vec3::new(player.x, eye_height, -player.y) + forward * distance;
+    let half_height = distance * (1.22_f32 * 0.5).tan();
+    let aspect = output_width as f32 / output_height as f32;
+    let mut vertices = Vec::with_capacity(SKY_MESH_SEGMENTS * 6);
+    for segment in 0..SKY_MESH_SEGMENTS {
+        let ndc_left = segment as f32 / SKY_MESH_SEGMENTS as f32 * 2.0 - 1.0;
+        let ndc_right = (segment + 1) as f32 / SKY_MESH_SEGMENTS as f32 * 2.0 - 1.0;
+        let camera_left = ndc_left * (1.22_f32 * 0.5).tan() * aspect;
+        let camera_right = ndc_right * (1.22_f32 * 0.5).tan() * aspect;
+        let left_center = center + right * (camera_left * distance);
+        let right_center = center + right * (camera_right * distance);
+        let top_left = left_center + up * half_height;
+        let bottom_left = left_center - up * half_height;
+        let top_right = right_center + up * half_height;
+        let bottom_right = right_center - up * half_height;
+        let uv_top_left = sky_uv(
+            player,
+            ndc_left,
+            1.0,
+            texture_width,
+            texture_height,
+            output_width,
+            output_height,
+        );
+        let uv_bottom_left = sky_uv(
+            player,
+            ndc_left,
+            -1.0,
+            texture_width,
+            texture_height,
+            output_width,
+            output_height,
+        );
+        let uv_top_right = sky_uv(
+            player,
+            ndc_right,
+            1.0,
+            texture_width,
+            texture_height,
+            output_width,
+            output_height,
+        );
+        let uv_bottom_right = sky_uv(
+            player,
+            ndc_right,
+            -1.0,
+            texture_width,
+            texture_height,
+            output_width,
+            output_height,
+        );
+        push_triangle_uv(
+            &mut vertices,
+            [
+                (top_left, uv_top_left),
+                (bottom_left, uv_bottom_left),
+                (bottom_right, uv_bottom_right),
+            ],
+            Vec4::new(1.0, 1.0, 1.0, 1.0),
+        );
+        push_triangle_uv(
+            &mut vertices,
+            [
+                (top_left, uv_top_left),
+                (bottom_right, uv_bottom_right),
+                (top_right, uv_top_right),
+            ],
+            Vec4::new(1.0, 1.0, 1.0, 1.0),
+        );
+    }
+    vertices
+}
+
 struct Door {
     sector: u16,
     top: f32,
@@ -1345,8 +1500,10 @@ struct PreparedScene {
     map: Map,
     flat_textures: BTreeMap<[u8; 8], Arc<Texture>>,
     wall_textures: BTreeMap<[u8; 8], Arc<Texture>>,
+    sky_texture: Option<Arc<Texture>>,
     device: Device,
     pipeline: Arc<ShaderPipeline>,
+    sky_pipeline: Option<Arc<ShaderPipeline>>,
     sprite_pipeline: Arc<ShaderPipeline>,
     weapon_pipeline: Arc<ShaderPipeline>,
     sampler: Sampler,
@@ -3238,13 +3395,15 @@ impl PreparedScene {
         }
         let data = fs::read(path)?;
         let map = parse_map(&data, map_name)?;
+        let sky_name = sky_texture_name(&map, map_name);
         let (x, y, angle, _, _) = map
             .things
             .iter()
             .copied()
             .find(|thing| thing.3 == 1)
             .ok_or_else(|| invalid(format!("{map_name} has no player-1 start")))?;
-        let wall_textures = wall_textures(&data, &map)?;
+        let wall_textures = wall_textures(&data, &map, sky_name)?;
+        let sky_texture = sky_name.and_then(|name| wall_textures.get(&name).cloned());
         let flat_textures = flat_textures(&data, &map)?;
         let geometry = geometry(&map, &wall_textures)?;
         if geometry
@@ -3260,6 +3419,19 @@ impl PreparedScene {
             device.create_shader(include_bytes!("../assets/shaders/freedoom_map.frag.spv"))?;
         let pipeline =
             device.create_pipeline(&vertex_shader, &fragment_shader, Pipeline::default())?;
+        let sky_pipeline = if sky_texture.is_some() {
+            Some(device.create_pipeline(
+                &vertex_shader,
+                &fragment_shader,
+                Pipeline {
+                    depth_compare: api::Compare::Always,
+                    depth_write: false,
+                    ..Pipeline::default()
+                },
+            )?)
+        } else {
+            None
+        };
         let sprite_fragment =
             device.create_shader(include_bytes!("../assets/shaders/freedoom_sprite.frag.spv"))?;
         let sprite_pipeline =
@@ -3339,8 +3511,10 @@ impl PreparedScene {
             map,
             flat_textures,
             wall_textures,
+            sky_texture,
             device,
             pipeline,
+            sky_pipeline,
             sprite_pipeline,
             weapon_pipeline,
             sampler,
@@ -3407,6 +3581,23 @@ impl PreparedScene {
         commands.begin_render_pass(Color::new(0.12, 0.22, 0.36, 1.0));
         commands.bind_pipeline(self.pipeline.clone());
         commands.bind_uniform_buffer(uniform_buffer.clone());
+        if let (Some(texture), Some(pipeline)) = (&self.sky_texture, &self.sky_pipeline) {
+            let vertices = sky_vertices(
+                player,
+                eye_height,
+                (texture.levels[0].width, texture.levels[0].height),
+                (960, 720),
+            );
+            let count = u32::try_from(vertices.len())
+                .map_err(|_| invalid("sky vertex count exceeds SILICON draw range"))?;
+            if count > 0 {
+                commands.bind_pipeline(pipeline.clone());
+                commands.bind_texture(0, Arc::clone(texture), self.sampler);
+                commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
+                commands.draw(0, count);
+                commands.bind_pipeline(self.pipeline.clone());
+            }
+        }
         let mut batches = BTreeMap::new();
         for (leaf, draws) in self.draws.iter().enumerate() {
             if !visible[leaf] {
@@ -3591,7 +3782,9 @@ fn frame_triangles(
         })
         .map(|draw| draw.vertices.len() / 3)
         .sum::<usize>();
-    Ok(static_triangles + draws.saturating_sub(static_draws) * 2)
+    let sky_triangles = usize::from(scene.sky_texture.is_some()) * SKY_MESH_SEGMENTS * 2;
+    let sky_draws = usize::from(scene.sky_texture.is_some());
+    Ok(static_triangles + sky_triangles + draws.saturating_sub(static_draws + sky_draws) * 2)
 }
 
 fn render(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
@@ -3941,6 +4134,54 @@ fn main() -> api::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doom_sky_uses_angle_columns_and_episode_texture() {
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 90.0,
+        };
+        let center = sky_uv(player, 0.0, 0.0, 256, 128, 960, 720);
+        let left = sky_uv(player, -1.0, 0.0, 256, 128, 960, 720);
+        let right = sky_uv(player, 1.0, 0.0, 256, 128, 960, 720);
+        assert!((center.x - 1.0).abs() < 0.001);
+        assert!((center.y - 100.0 / 128.0).abs() < 0.001);
+        assert!(left.x > center.x && center.x > right.x);
+        assert!((sky_uv(player, 0.0, 1.0, 256, 128, 960, 720).y + 20.0 / 128.0).abs() < 0.001);
+        assert!((sky_uv(player, 0.0, -1.0, 256, 128, 960, 720).y - 220.0 / 128.0).abs() < 0.001);
+
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![Sector {
+                floor: 0.0,
+                ceiling: 128.0,
+                special: 0,
+                light: 255,
+                tag: 0,
+                floor_flat: [0; 8],
+                ceiling_flat: *b"F_SKY1\0\0",
+            }],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        assert_eq!(sky_texture_name(&map, "E1M2"), Some(*b"SKY1\0\0\0\0"));
+        assert_eq!(sky_texture_name(&map, "E2M1"), Some(*b"SKY2\0\0\0\0"));
+        assert_eq!(sky_texture_name(&map, "E3M1"), Some(*b"SKY3\0\0\0\0"));
+        assert_eq!(sky_texture_name(&map, "E4M1"), Some(*b"SKY4\0\0\0\0"));
+        assert_eq!(sky_texture_name(&map, "MAP01"), Some(*b"SKY1\0\0\0\0"));
+        assert_eq!(sky_texture_name(&map, "MAP12"), Some(*b"SKY2\0\0\0\0"));
+        assert_eq!(sky_texture_name(&map, "MAP21"), Some(*b"SKY3\0\0\0\0"));
+        let sky = sky_vertices(player, 41.0, (256, 128), (960, 720));
+        assert_eq!(sky.len(), SKY_MESH_SEGMENTS * 6);
+        let mut indoor_map = map;
+        indoor_map.sectors[0].ceiling_flat = [0; 8];
+        assert_eq!(sky_texture_name(&indoor_map, "E1M1"), None);
+    }
 
     #[test]
     fn batches_order_by_nearest_view_depth() {
