@@ -32,7 +32,7 @@ stencil and blending generate scene pixels entirely on the CPU.
 
 [Watch the CPU-rendered animation](assets/demos/spirv_showcase.mp4) ·
 [Architecture](docs/architecture.md) · [Pipeline](docs/graphics-pipeline.md) ·
-[Shader VM](docs/sir.md) · [SIMD](docs/simd.md) · [SPIR-V subset](docs/spirv.md) · [Vulkan-like Rust subset](docs/vulkan-like.md) · [Third-party demo](docs/third-party-demo.md) · [Roadmap](docs/roadmap.md)
+[Shader VM](docs/sir.md) · [Compute](docs/compute.md) · [SIMD](docs/simd.md) · [SPIR-V subset](docs/spirv.md) · [Vulkan-like Rust subset](docs/vulkan-like.md) · [Third-party demo](docs/third-party-demo.md) · [Roadmap](docs/roadmap.md)
 
 ## Run it
 
@@ -94,6 +94,20 @@ smoke test renders and reads back a triangle:
 sh crates/silicon-c-api/scripts/test.sh
 ```
 
+## First compute kernel
+
+The experimental SIR compute path dispatches a bounded 3D workgroup grid on the
+CPU. Each invocation reads matching vec4 elements from owned input buffers and
+writes one vec4 result. Run the vector-add proof; it verifies all 4,096 outputs
+and reports measured dispatch time:
+
+```sh
+cargo run --release --example compute_vector_add
+```
+
+This map-kernel contract has no shared memory, barriers, atomics, arbitrary
+storage addressing, or compute-stage SPIR-V. See the [compute limits](docs/compute.md).
+
 Phase 68 adds a separate Rust-only [Vulkan-like subset](docs/vulkan-like.md)
 with instance/device setup, typed resources, descriptor-like bindings, an
 offscreen render pass and synchronous indexed drawing. `examples/vulkan_like.rs`
@@ -108,15 +122,17 @@ unchanged upstream fragment shader run through SILICON. See the
 Phase 70 renders Freedoom E1M1 geometry, textures, all 29 normal-skill enemy
 sprites, nine WAD pickups, and the pistol through SILICON. BSP child bounds
 cull the horizontal view cone, and per-mesh bounds test all six frustum planes.
-The checked-in start view submits 3,896 triangles across 164 draws: 3,818 map
+The checked-in start view submits 4,046 triangles across 208 draws: 3,968 map
 triangles, 29 enemy billboards, nine pickup billboards, and one weapon billboard.
+View-visible map meshes are grouped by material inside coarse depth bands so
+nearer ranges reach the depth test first. The frame matches the baseline pixels.
 The interactive prototype adds first-person movement, basic collision, player
 hitscan, health and ammo pickups, pursuing melee enemies, line-of-sight hitscan
 for humans and shotgunners, and imp fireballs. Moving enemies cycle four WAD walk frames, play
 attack and death poses, leave corpses, and select among eight camera-relative
 sprite views; fireballs show WAD impact frames. It remains
 a limited E1M1 gameplay slice, not a complete Doom game;
-BSP wall occlusion, masked walls, and broader game rules remain. The [WAD source,
+BSP wall occlusion, per-column portal clipping, and broader game rules remain. The [WAD source,
 controls, screenshots, license, and limits](docs/freedoom.md) are documented.
 The Freedoom WAD stays external.
 An [enemy sprite verification frame](assets/screenshots/freedoom_e1m1_enemy.png)
@@ -209,6 +225,7 @@ flowchart LR
 | Attachments | RGBA8/BGRA8, depth with 8 compare modes, stencil masks/operations |
 | Texturing | RGBA8/RGB8/R8, nearest/bilinear/trilinear, clamp/repeat/mirror, mip generation/LOD |
 | Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 → SIR; nested selections, Phi, early return/discard |
+| Compute | Experimental scalar SIR map dispatch, 3D IDs, up to 12 read buffers and one vec4 output per invocation; bounded workgroups, no synchronization |
 | Output merger | Replace, source alpha, additive and multiplicative blending; color/depth write enables |
 | Execution | Scalar reference, optional SIMD coverage4 and NEON/SSE four-fragment SIR, disjoint worker bands |
 | Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling, pipeline-cache probe, cargo-fuzz targets |
@@ -259,8 +276,8 @@ PNG and scalar/SIMD/parallel equivalence. Golden changes require an explicit
 
 This is a research software GPU, not a conformant driver. SPIR-V support is
 a narrow graphics subset with acyclic structured selections with a fixed binding contract. **General
-SPIR-V/GLSL compatibility, WGSL, conformant Vulkan/OpenGL drivers, compute, JIT,
-and full-game compatibility are not implemented.** Phase 70 is a limited
+SPIR-V/GLSL compatibility, WGSL, conformant Vulkan/OpenGL drivers, general compute,
+compute-stage SPIR-V, JIT, and full-game compatibility are not implemented.** Phase 70 is a limited
 Freedoom E1M1 gameplay slice. The small Rust Vulkan-like subset is documented
 separately; it is not binary compatible with Vulkan. Do not infer support from the long-term roadmap. MSAA and
 GLSL shadow-map samples are implemented within the documented renderer subset. Multiple color

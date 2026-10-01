@@ -15,7 +15,9 @@ legacy normalize3; saturation; swizzle and lane composition; row-major matrix-ve
 multiply; filtered texture sample; output store; comparisons, logical operations,
 component selection, structured `If`/`Else`/`EndIf`, `Merge`, `Return` and `Discard`. Values are f32 vec4s, including
 scalar splats and boolean 0/1 components. There are no loops, integer types, shader depth writes,
-atomics, compute workgroups, JIT compilation or general SPIR-V compatibility. A [strict SPIR-V 1.0 subset](spirv.md)
+atomics or JIT compilation. A bounded scalar [SIR compute dispatcher](compute.md)
+is separate from the graphics shader path; compute-stage SPIR-V and general SPIR-V
+compatibility remain unsupported. A [strict SPIR-V 1.0 subset](spirv.md)
 translates externally compiled GLSL into these instructions.
 
 Selections nest at most 64 levels and require an `Else` (possibly empty). `If` tests

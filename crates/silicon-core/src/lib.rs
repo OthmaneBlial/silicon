@@ -18,6 +18,8 @@ pub mod demo;
 
 mod command;
 pub use command::*;
+mod compute;
+pub use compute::*;
 pub use silicon_shader as shader;
 
 pub mod simd;
