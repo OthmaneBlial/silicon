@@ -53,6 +53,7 @@ const PLATFORM_WAIT: f32 = 3.0;
 const FLOOR_SPEED: f32 = 35.0;
 const DOOM_TICS_PER_SECOND: f32 = 35.0;
 const RADIATION_SUIT_TICS: f32 = 60.0 * DOOM_TICS_PER_SECOND;
+const INVULNERABILITY_TICS: f32 = 30.0 * DOOM_TICS_PER_SECOND;
 const SECTOR_SECRET: u16 = 9;
 const SECTOR_NUKAGE_DAMAGE: u16 = 7;
 const SECTOR_LIGHT_FLASH: u16 = 1;
@@ -1593,12 +1594,19 @@ enum PickupEffect {
     },
     ArmorBonus,
     RadiationSuit,
+    Invulnerability,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Armor {
     points: i32,
     class: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct PlayerEffects {
+    radiation_suit_tics: f32,
+    invulnerability_tics: f32,
 }
 
 struct WallSection {
@@ -1801,6 +1809,7 @@ fn pickup_definition(kind: u16) -> Option<([u8; 4], PickupEffect)> {
         )),
         2015 => Some((*b"BON2", PickupEffect::ArmorBonus)),
         2025 => Some((*b"SUIT", PickupEffect::RadiationSuit)),
+        2022 => Some((*b"PINV", PickupEffect::Invulnerability)),
         _ => None,
     }
 }
@@ -1814,7 +1823,7 @@ fn collect_pickups(
     ammo: &mut i32,
     keys: &mut u8,
     armor: &mut Armor,
-    radiation_suit_tics: &mut f32,
+    effects: &mut PlayerEffects,
 ) -> usize {
     let mut collected = 0;
     for pickup in pickups.iter_mut().filter(|pickup| pickup.active) {
@@ -1840,7 +1849,7 @@ fn collect_pickups(
         let mut next_ammo = *ammo;
         let mut next_keys = *keys;
         let mut next_armor = *armor;
-        let mut next_radiation_suit_tics = *radiation_suit_tics;
+        let mut next_effects = *effects;
         match pickup.effect {
             PickupEffect::Health {
                 amount,
@@ -1867,16 +1876,23 @@ fn collect_pickups(
             }
             PickupEffect::ArmorBonus => {}
             PickupEffect::RadiationSuit => {
-                next_radiation_suit_tics = RADIATION_SUIT_TICS;
+                next_effects.radiation_suit_tics = RADIATION_SUIT_TICS;
+            }
+            PickupEffect::Invulnerability => {
+                next_effects.invulnerability_tics = INVULNERABILITY_TICS;
             }
         }
         if next_health == *health
             && next_ammo == *ammo
             && next_keys == *keys
             && next_armor == *armor
+            && next_effects == *effects
             && !matches!(
                 pickup.effect,
-                PickupEffect::Key(_) | PickupEffect::ArmorBonus | PickupEffect::RadiationSuit
+                PickupEffect::Key(_)
+                    | PickupEffect::ArmorBonus
+                    | PickupEffect::RadiationSuit
+                    | PickupEffect::Invulnerability
             )
             && !consume_at_max
         {
@@ -1886,7 +1902,7 @@ fn collect_pickups(
         *ammo = next_ammo;
         *keys = next_keys;
         *armor = next_armor;
-        *radiation_suit_tics = next_radiation_suit_tics;
+        *effects = next_effects;
         pickup.active = false;
         collected += 1;
     }
@@ -2475,7 +2491,10 @@ fn discover_secret(map: &mut Map, player: Player) -> bool {
     })
 }
 
-fn damage_player(health: &mut i32, armor: &mut Armor, amount: i32) {
+fn damage_player(health: &mut i32, armor: &mut Armor, effects: &PlayerEffects, amount: i32) {
+    if effects.invulnerability_tics > 0.0 {
+        return;
+    }
     let mut damage = amount;
     if armor.class > 0 {
         let saved = (if armor.class == 1 {
@@ -2499,7 +2518,7 @@ fn update_floor_damage(
     health: &mut i32,
     armor: &mut Armor,
     elapsed_tics: &mut f32,
-    radiation_suit_tics: f32,
+    effects: &PlayerEffects,
     delta: f32,
 ) {
     if bsp_sector_at(map, player.x, player.y)
@@ -2511,8 +2530,8 @@ fn update_floor_damage(
     *elapsed_tics += delta * DOOM_TICS_PER_SECOND;
     while *elapsed_tics >= NUKAGE_DAMAGE_TICS {
         *elapsed_tics -= NUKAGE_DAMAGE_TICS;
-        if radiation_suit_tics <= 0.0 {
-            damage_player(health, armor, NUKAGE_DAMAGE);
+        if effects.radiation_suit_tics <= 0.0 {
+            damage_player(health, armor, effects, NUKAGE_DAMAGE);
         }
     }
 }
@@ -3389,6 +3408,7 @@ fn update_actors(
     player: Player,
     health: &mut i32,
     armor: &mut Armor,
+    effects: &PlayerEffects,
     delta: f32,
 ) -> Vec<usize> {
     let routes = sector_routes(map);
@@ -3440,7 +3460,7 @@ fn update_actors(
         }
         if distance < 48.0 && can_see_player {
             if actor.attack_cooldown == 0.0 {
-                damage_player(health, armor, 8);
+                damage_player(health, armor, effects, 8);
                 actor.attack_cooldown = 0.85;
                 actor.attack_animation_remaining = actor_attack_duration(actor.sprite);
             }
@@ -3449,7 +3469,12 @@ fn update_actors(
             && can_see_player
         {
             if actor.attack_cooldown == 0.0 {
-                damage_player(health, armor, if actor.sprite == *b"SPOS" { 6 } else { 3 });
+                damage_player(
+                    health,
+                    armor,
+                    effects,
+                    if actor.sprite == *b"SPOS" { 6 } else { 3 },
+                );
                 actor.attack_cooldown = 1.4;
                 actor.attack_animation_remaining = actor_attack_duration(actor.sprite);
             }
@@ -3529,6 +3554,7 @@ fn update_projectiles(
     player: Player,
     health: &mut i32,
     armor: &mut Armor,
+    effects: &PlayerEffects,
     delta: f32,
 ) {
     projectiles.retain_mut(|projectile| {
@@ -3579,7 +3605,7 @@ fn update_projectiles(
             && (player_floor..=player_floor + ACTOR_HEIGHT).contains(&projectile.z)
         {
             if *health > 0 {
-                damage_player(health, armor, 8);
+                damage_player(health, armor, effects, 8);
             }
             projectile.explosion_time = Some(0.0);
         }
@@ -4078,7 +4104,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     let mut ammo = 50;
     let mut keys = 0;
     let mut armor = Armor::default();
-    let mut radiation_suit_tics = 0.0;
+    let mut effects = PlayerEffects::default();
     let mut light_rng = 0x4c49_4748u32;
     let mut sector_lights = spawn_sector_lights(&mut scene.map, &mut light_rng);
     let mut nukage_damage_tics = 0.0;
@@ -4138,7 +4164,10 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
         let delta = now.duration_since(last).as_secs_f32().min(0.05);
         last = now;
         if health > 0 && !exited {
-            radiation_suit_tics = (radiation_suit_tics - delta * DOOM_TICS_PER_SECOND).max(0.0);
+            effects.radiation_suit_tics =
+                (effects.radiation_suit_tics - delta * DOOM_TICS_PER_SECOND).max(0.0);
+            effects.invulnerability_tics =
+                (effects.invulnerability_tics - delta * DOOM_TICS_PER_SECOND).max(0.0);
         }
         let doors_changed = update_doors(&mut scene.map, &mut doors, player, &actors, delta);
         let platforms_changed = update_platforms(&mut scene.map, &mut platforms, delta);
@@ -4224,7 +4253,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     &mut ammo,
                     &mut keys,
                     &mut armor,
-                    &mut radiation_suit_tics,
+                    &mut effects,
                 );
                 shot_cooldown = (shot_cooldown - delta).max(0.0);
                 weapon_flash = (weapon_flash - delta).max(0.0);
@@ -4247,7 +4276,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 &mut health,
                 &mut armor,
                 &mut nukage_damage_tics,
-                radiation_suit_tics,
+                &effects,
                 delta,
             );
         }
@@ -4259,6 +4288,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 player,
                 &mut health,
                 &mut armor,
+                &effects,
                 delta,
             );
             for line in crossed_platform_lines {
@@ -4272,6 +4302,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 player,
                 &mut health,
                 &mut armor,
+                &effects,
                 delta,
             );
         }
@@ -4298,11 +4329,12 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks).len();
         window.set_title(&format!(
-            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.map_name,
             armor.points,
             armor.class,
-            radiation_suit_tics / DOOM_TICS_PER_SECOND,
+            effects.radiation_suit_tics / DOOM_TICS_PER_SECOND,
+            effects.invulnerability_tics / DOOM_TICS_PER_SECOND,
             keys & KEY_RED != 0,
             keys & KEY_YELLOW != 0,
             keys & KEY_BLUE != 0,
@@ -4598,6 +4630,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             10.0 / 35.0,
         );
         assert_eq!(actors[0].x, 100.0);
@@ -4613,6 +4646,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.05,
         );
         assert_eq!(actors[0].target_time_remaining, ACTOR_TARGET_THRESHOLD);
@@ -4627,6 +4661,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.1,
         );
         assert!((actors[0].target_time_remaining - (ACTOR_TARGET_THRESHOLD - 0.1)).abs() < 0.0001);
@@ -4639,6 +4674,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             ACTOR_TARGET_THRESHOLD,
         );
         assert_eq!(actors[0].target_time_remaining, 0.0);
@@ -4652,6 +4688,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.05,
         );
         assert_eq!(health, 100);
@@ -5169,7 +5206,7 @@ mod tests {
             &mut health,
             &mut Armor::default(),
             &mut elapsed_tics,
-            0.0,
+            &PlayerEffects::default(),
             0.5,
         );
         assert_eq!(health, 100);
@@ -5179,7 +5216,7 @@ mod tests {
             &mut health,
             &mut Armor::default(),
             &mut elapsed_tics,
-            0.0,
+            &PlayerEffects::default(),
             0.4,
         );
         assert_eq!(health, 100);
@@ -5189,7 +5226,7 @@ mod tests {
             &mut health,
             &mut Armor::default(),
             &mut elapsed_tics,
-            0.0,
+            &PlayerEffects::default(),
             0.03,
         );
         assert_eq!(health, 95);
@@ -5199,7 +5236,7 @@ mod tests {
             &mut health,
             &mut Armor::default(),
             &mut elapsed_tics,
-            0.0,
+            &PlayerEffects::default(),
             0.9,
         );
         assert_eq!(health, 90);
@@ -5212,7 +5249,10 @@ mod tests {
             &mut health,
             &mut Armor::default(),
             &mut elapsed_tics,
-            1.0,
+            &PlayerEffects {
+                radiation_suit_tics: 1.0,
+                ..PlayerEffects::default()
+            },
             1.0,
         );
         assert_eq!(health, 100);
@@ -5223,10 +5263,26 @@ mod tests {
             &mut health,
             &mut Armor::default(),
             &mut elapsed_tics,
-            0.0,
+            &PlayerEffects::default(),
             0.9,
         );
         assert_eq!(health, 95);
+
+        health = 100;
+        elapsed_tics = 0.0;
+        update_floor_damage(
+            map,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            &mut elapsed_tics,
+            &PlayerEffects {
+                invulnerability_tics: 35.0,
+                ..PlayerEffects::default()
+            },
+            1.0,
+        );
+        assert_eq!(health, 100);
 
         map.sectors[0].special = 0;
         update_floor_damage(
@@ -5235,7 +5291,7 @@ mod tests {
             &mut health,
             &mut Armor::default(),
             &mut elapsed_tics,
-            0.0,
+            &PlayerEffects::default(),
             0.1,
         );
         assert_eq!(elapsed_tics, 0.0);
@@ -6094,6 +6150,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.5,
         );
         assert!(
@@ -6334,6 +6391,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.05,
         );
         assert!((wounded[0].pain_animation_remaining - (4.0 / 35.0 - 0.05)).abs() < 0.0001);
@@ -6363,6 +6421,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.1,
         );
         assert_eq!(actors[0].death_animation_time, Some(0.1));
@@ -6374,6 +6433,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.1,
         );
         assert_eq!(health, 0);
@@ -6388,6 +6448,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.05,
         );
         assert_eq!(health, 0);
@@ -6487,6 +6548,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             1.0,
         );
         assert_eq!(actors[0].x, 64.0);
@@ -6502,6 +6564,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.05,
         );
         assert_eq!(actors[0].animation_time, 0.0);
@@ -6520,6 +6583,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.05,
         );
         assert!(actors[0].attack_animation_remaining < actor_attack_duration(*b"SARG"));
@@ -6530,6 +6594,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.79,
         );
         assert_eq!(health, 92);
@@ -6540,6 +6605,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.02,
         );
         assert_eq!(health, 84);
@@ -6584,6 +6650,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.05,
         );
         assert_eq!(health, 100);
@@ -6596,6 +6663,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.05,
         );
         assert_eq!(health, 97);
@@ -6606,6 +6674,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.2,
         );
         assert_eq!(health, 97);
@@ -6619,6 +6688,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.05,
         );
         assert_eq!(health, 91);
@@ -6702,6 +6772,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.05,
         );
         assert!(projectiles.is_empty());
@@ -6714,6 +6785,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.05,
         );
         assert_eq!(projectiles.len(), 1);
@@ -6725,6 +6797,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.4,
         );
         assert_eq!(health, 100);
@@ -6735,6 +6808,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.1,
         );
         assert_eq!(health, 92);
@@ -6746,6 +6820,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.2,
         );
         assert_eq!(health, 92);
@@ -6759,6 +6834,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.4,
         );
         assert!(projectiles.is_empty());
@@ -6780,6 +6856,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.3,
         );
         assert_eq!(projectiles.len(), 1);
@@ -6794,6 +6871,7 @@ mod tests {
             player,
             &mut health,
             &mut Armor::default(),
+            &PlayerEffects::default(),
             0.2,
         );
         assert_eq!(health, 0);
@@ -6895,6 +6973,10 @@ mod tests {
             pickup_definition(2025),
             Some((*b"SUIT", PickupEffect::RadiationSuit))
         );
+        assert_eq!(
+            pickup_definition(2022),
+            Some((*b"PINV", PickupEffect::Invulnerability))
+        );
         let mut map = Map {
             vertices: vec![Vertex2 { x: 12.0, y: -32.0 }, Vertex2 { x: 12.0, y: 32.0 }],
             sectors: vec![],
@@ -6922,7 +7004,7 @@ mod tests {
         let mut ammo = 195;
         let mut keys = 0;
         let mut armor = Armor::default();
-        let mut radiation_suit_tics = 0.0;
+        let mut effects = PlayerEffects::default();
         assert_eq!(
             collect_pickups(
                 &map,
@@ -6932,7 +7014,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics
+                &mut effects
             ),
             5
         );
@@ -6950,7 +7032,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics
+                &mut effects
             ),
             1
         );
@@ -6964,7 +7046,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics
+                &mut effects
             ),
             0
         );
@@ -6978,7 +7060,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics
+                &mut effects
             ),
             0
         );
@@ -6996,7 +7078,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics
+                &mut effects
             ),
             0
         );
@@ -7025,7 +7107,7 @@ mod tests {
         let mut ammo = 50;
         let mut keys = 0;
         let mut armor = Armor::default();
-        let mut radiation_suit_tics = 0.0;
+        let mut effects = PlayerEffects::default();
         let mut pickups = [
             pickup(2011, 0.0, 0.0),
             pickup(2013, 0.0, 0.0),
@@ -7042,7 +7124,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics,
+                &mut effects,
             ),
             3
         );
@@ -7061,7 +7143,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics,
+                &mut effects,
             ),
             1
         );
@@ -7078,7 +7160,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics,
+                &mut effects,
             ),
             1
         );
@@ -7095,7 +7177,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics,
+                &mut effects,
             ),
             1
         );
@@ -7111,7 +7193,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics,
+                &mut effects,
             ),
             1
         );
@@ -7139,7 +7221,7 @@ mod tests {
         let mut ammo = 50;
         let mut keys = 0;
         let mut armor = Armor::default();
-        let mut radiation_suit_tics = 0.0;
+        let mut effects = PlayerEffects::default();
         let mut pickups = [pickup(2025, 0.0, 0.0)];
 
         assert_eq!(
@@ -7151,14 +7233,14 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics,
+                &mut effects,
             ),
             1
         );
-        assert_eq!(radiation_suit_tics, RADIATION_SUIT_TICS);
+        assert_eq!(effects.radiation_suit_tics, RADIATION_SUIT_TICS);
         assert!(!pickups[0].active);
 
-        radiation_suit_tics = 1.0;
+        effects.radiation_suit_tics = 1.0;
         pickups[0].active = true;
         assert_eq!(
             collect_pickups(
@@ -7169,11 +7251,11 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics,
+                &mut effects,
             ),
             1
         );
-        assert_eq!(radiation_suit_tics, RADIATION_SUIT_TICS);
+        assert_eq!(effects.radiation_suit_tics, RADIATION_SUIT_TICS);
 
         pickups[0].active = true;
         assert_eq!(
@@ -7185,12 +7267,82 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics,
+                &mut effects,
             ),
             1
         );
-        assert_eq!(radiation_suit_tics, RADIATION_SUIT_TICS);
+        assert_eq!(effects.radiation_suit_tics, RADIATION_SUIT_TICS);
         assert!(!pickups[0].active);
+    }
+
+    #[test]
+    fn invulnerability_spheres_start_refresh_and_block_damage() {
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut health = 80;
+        let mut ammo = 50;
+        let mut keys = 0;
+        let mut armor = Armor {
+            points: 100,
+            class: 2,
+        };
+        let mut effects = PlayerEffects::default();
+        let mut pickups = [pickup(2022, 0.0, 0.0)];
+
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+                &mut effects,
+            ),
+            1
+        );
+        assert_eq!(effects.invulnerability_tics, INVULNERABILITY_TICS);
+        assert!(!pickups[0].active);
+
+        damage_player(&mut health, &mut armor, &effects, 20);
+        assert_eq!(health, 80);
+        assert_eq!(armor.points, 100);
+
+        effects.invulnerability_tics = 1.0;
+        pickups[0].active = true;
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+                &mut effects,
+            ),
+            1
+        );
+        assert_eq!(effects.invulnerability_tics, INVULNERABILITY_TICS);
+
+        effects.invulnerability_tics = 0.0;
+        damage_player(&mut health, &mut armor, &effects, 20);
+        assert_eq!(health, 70);
+        assert_eq!(armor.points, 90);
     }
 
     #[test]
@@ -7200,7 +7352,7 @@ mod tests {
             points: 100,
             class: 1,
         };
-        damage_player(&mut health, &mut armor, 8);
+        damage_player(&mut health, &mut armor, &PlayerEffects::default(), 8);
         assert_eq!(
             (health, armor),
             (
@@ -7213,7 +7365,7 @@ mod tests {
         );
 
         armor.class = 2;
-        damage_player(&mut health, &mut armor, 8);
+        damage_player(&mut health, &mut armor, &PlayerEffects::default(), 8);
         assert_eq!(
             (health, armor),
             (
@@ -7227,10 +7379,10 @@ mod tests {
 
         armor.points = 2;
         armor.class = 1;
-        damage_player(&mut health, &mut armor, 6);
+        damage_player(&mut health, &mut armor, &PlayerEffects::default(), 6);
         assert_eq!((health, armor), (86, Armor::default()));
 
-        damage_player(&mut health, &mut armor, 8);
+        damage_player(&mut health, &mut armor, &PlayerEffects::default(), 8);
         assert_eq!(health, 78);
     }
 
@@ -7255,7 +7407,7 @@ mod tests {
         let mut ammo = 50;
         let mut keys = 0;
         let mut armor = Armor::default();
-        let mut radiation_suit_tics = 0.0;
+        let mut effects = PlayerEffects::default();
         let mut pickups = [
             pickup(2018, 0.0, 0.0),
             pickup(2015, 0.0, 0.0),
@@ -7270,7 +7422,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics,
+                &mut effects,
             ),
             3
         );
@@ -7292,7 +7444,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics,
+                &mut effects,
             ),
             1
         );
@@ -7312,7 +7464,7 @@ mod tests {
                 &mut ammo,
                 &mut keys,
                 &mut armor,
-                &mut radiation_suit_tics,
+                &mut effects,
             ),
             1
         );
