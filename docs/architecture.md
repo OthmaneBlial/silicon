@@ -42,11 +42,12 @@ Native closure scenes cannot be serialized. The [SPIR-V subset](spirv.md) has
 explicit type, control-flow, binding and sampling restrictions.
 
 An experimental compute path reuses SIR for bounded data-parallel map kernels.
-`Device::dispatch_compute` supplies 3D invocation IDs, reads same-index vec4
-storage inputs and stages one vec4 output per invocation. The scalar reference
-and four-lane SIMD path are synchronous and outside the graphics command stream;
-shared memory, barriers, atomics and compute SPIR-V remain unsupported. See the
-[compute contract](compute.md).
+`Device::dispatch_compute` supplies 3D invocation IDs, reads same-position vec4
+storage inputs and stages one vec4 output per invocation. Optional checked
+offset/stride layouts address interleaved records. The scalar reference and
+four-lane SIMD path are synchronous and outside the graphics command stream;
+shader-selected indexes, shared memory, barriers, atomics and compute SPIR-V
+remain unsupported. See the [compute contract](compute.md).
 
 Resources use typed, reference-counted owned buffers. Commands keep their data
 alive independently of the creating code. Mapping exposes a read-only slice.

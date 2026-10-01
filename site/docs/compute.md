@@ -8,6 +8,15 @@ to the matching output element. Input slots 0–3 are global ID, local ID,
 workgroup ID and total workgroup count; read buffers occupy slots 4 onward.
 Output slot 0 is the per-invocation result.
 
+`dispatch_compute` uses packed buffers. `dispatch_compute_with_layouts` and its
+SIMD4 counterpart accept one `StorageLayout` per input plus an output layout.
+For invocation `i`, each layout addresses vec4 element `offset + i * stride`;
+this supports interleaved records while retaining one same-position element per
+invocation. Dispatch checks stride arithmetic and every addressed range before
+running, then commits the staged output only after all invocations succeed.
+The shader cannot choose a storage index; general indexed loads and stores
+remain future work.
+
 Run the vector-add proof:
 
 ```sh
@@ -41,7 +50,7 @@ finite vec4 values. Dispatch results are staged and copied to the output only
 after every invocation succeeds, so a failed shader leaves output unchanged.
 
 This is an initial data-parallel SIR path, not general compute compatibility.
-Programs cannot bind uniforms or textures, perform arbitrary storage addressing,
-write multiple outputs, synchronize workgroups, use shared memory or atomics, or
+Programs cannot bind uniforms or textures, perform shader-selected storage
+addressing, write multiple outputs, synchronize workgroups, use shared memory or atomics, or
 load compute-stage SPIR-V. Dispatch is synchronous; command-buffer capture/replay
 and C API support are not included yet.

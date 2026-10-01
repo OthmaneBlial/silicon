@@ -98,8 +98,9 @@ sh crates/silicon-c-api/scripts/test.sh
 
 The experimental SIR compute path dispatches a bounded 3D workgroup grid on the
 CPU. Each invocation reads matching vec4 elements from owned input buffers and
-writes one vec4 result. The scalar reference and four-lane SIMD path share the
-same SIR program. Run the vector-add proof (4,096 checked outputs):
+writes one vec4 result. Checked offset/stride layouts can address interleaved
+record fields. The scalar reference and four-lane SIMD path share the same SIR
+program. Run the vector-add proof (4,096 checked outputs):
 
 ```sh
 cargo run --release --example compute_vector_add
@@ -112,8 +113,9 @@ Compare scalar and SIMD4 SIR with Rust CPU loops on vector addition and
 cargo run --release --example compute_bench
 ```
 
-This map-kernel contract has no shared memory, barriers, atomics, arbitrary
-storage addressing, or compute-stage SPIR-V. See the [compute limits](docs/compute.md).
+This map-kernel contract has no shared memory, barriers, atomics,
+shader-selected storage addressing, or compute-stage SPIR-V. See the
+[compute limits](docs/compute.md).
 
 Phase 68 adds a separate Rust-only [Vulkan-like subset](docs/vulkan-like.md)
 with instance/device setup, typed resources, descriptor-like bindings, an
@@ -232,7 +234,7 @@ flowchart LR
 | Attachments | RGBA8/BGRA8, depth with 8 compare modes, stencil masks/operations |
 | Texturing | RGBA8/RGB8/R8, nearest/bilinear/trilinear, clamp/repeat/mirror, mip generation/LOD |
 | Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 → SIR; nested selections, Phi, early return/discard |
-| Compute | Experimental scalar and SIMD4 SIR map dispatch, 3D IDs, up to 12 read buffers and one vec4 output per invocation; bounded workgroups, no synchronization |
+| Compute | Experimental scalar and SIMD4 SIR map dispatch, 3D IDs, up to 12 read buffers, checked offset/stride record layouts and one vec4 output per invocation; bounded workgroups, no synchronization |
 | Output merger | Replace, source alpha, additive and multiplicative blending; color/depth write enables |
 | Execution | Scalar reference, optional SIMD coverage4 and NEON/SSE four-fragment SIR, disjoint worker bands |
 | Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling, pipeline-cache probe, cargo-fuzz targets |

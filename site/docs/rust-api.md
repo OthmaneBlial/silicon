@@ -13,11 +13,12 @@ and owns the output. Submission structurally validates the command stream
 before execution.
 
 The same `Device` also exposes an experimental SIR compute map kernel through
-`StorageBuffer`, `ComputePipeline`, `dispatch_compute` and
-`dispatch_compute_simd`. Both run one SIR program per 3D invocation and write
-one vec4 per element; the SIMD method uses four-lane SIR execution and a scalar
-tail. The current contract does not use command buffers or support shared
-memory, barriers, atomics, or compute-stage SPIR-V. See the [compute contract](compute.md),
+`StorageBuffer`, `StorageLayout`, `ComputePipeline`, `dispatch_compute` and
+`dispatch_compute_simd`. The `*_with_layouts` methods apply checked offset/stride
+layouts to each input and the output. Dispatch runs one SIR program per 3D
+invocation; SIMD uses four-lane SIR execution and a scalar tail. Shader-selected
+indexes, command buffers, shared memory, barriers, atomics and compute-stage
+SPIR-V are unsupported. See the [compute contract](compute.md),
 [vector-add example](../examples/compute_vector_add.rs), and
 [benchmark example](../examples/compute_bench.rs).
 

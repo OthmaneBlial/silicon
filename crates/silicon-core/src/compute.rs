@@ -7,6 +7,40 @@ const MAX_STORAGE_VECTORS: usize = 1_048_576;
 const MAX_INPUT_BUFFERS: usize = 12;
 const SIMT_WIDTH: usize = 4;
 
+/// Address a vec4 element as `offset + invocation * stride`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageLayout {
+    offset: usize,
+    stride: usize,
+}
+
+impl StorageLayout {
+    pub const PACKED: Self = Self {
+        offset: 0,
+        stride: 1,
+    };
+
+    /// Create a vec4-element layout. Dispatch checks the full addressed range.
+    pub fn new(offset: usize, stride: usize) -> Result<Self> {
+        if stride == 0 {
+            return Err("storage layout stride must be nonzero".into());
+        }
+        Ok(Self { offset, stride })
+    }
+
+    pub const fn offset(self) -> usize {
+        self.offset
+    }
+
+    pub const fn stride(self) -> usize {
+        self.stride
+    }
+
+    fn index(self, invocation: usize) -> usize {
+        self.offset + invocation * self.stride
+    }
+}
+
 /// An owned vec4 storage resource for the experimental SIR compute path.
 pub struct StorageBuffer {
     values: Vec<Vec4>,
@@ -109,7 +143,38 @@ impl Device {
         inputs: &[&StorageBuffer],
         output: &mut StorageBuffer,
     ) -> Result<ComputeStats> {
-        let Some(shape) = dispatch_shape(pipeline, workgroups, inputs, output)? else {
+        let layouts = packed_layouts(inputs.len())?;
+        self.dispatch_compute_with_layouts(
+            pipeline,
+            workgroups,
+            inputs,
+            &layouts[..inputs.len()],
+            output,
+            StorageLayout::PACKED,
+        )
+    }
+
+    /// Dispatches with fixed per-buffer offset and stride in vec4 elements.
+    /// Input layout `i` applies to input buffer `i`; the output layout controls
+    /// where each invocation result is written.
+    pub fn dispatch_compute_with_layouts(
+        &self,
+        pipeline: &ComputePipeline,
+        workgroups: [u32; 3],
+        inputs: &[&StorageBuffer],
+        input_layouts: &[StorageLayout],
+        output: &mut StorageBuffer,
+        output_layout: StorageLayout,
+    ) -> Result<ComputeStats> {
+        let Some(shape) = dispatch_shape(
+            pipeline,
+            workgroups,
+            inputs,
+            input_layouts,
+            output,
+            output_layout,
+        )?
+        else {
             return Ok(ComputeStats::default());
         };
 
@@ -140,6 +205,7 @@ impl Device {
                                     pipeline,
                                     workgroups,
                                     inputs,
+                                    input_layouts,
                                     input_count,
                                     [global, [lx, ly, lz], [wx, wy, wz]],
                                     linear,
@@ -152,7 +218,7 @@ impl Device {
                 }
             }
         }
-        output.values[..shape.invocations].copy_from_slice(&results);
+        write_results(output, output_layout, &results);
         Ok(stats)
     }
 
@@ -165,7 +231,36 @@ impl Device {
         inputs: &[&StorageBuffer],
         output: &mut StorageBuffer,
     ) -> Result<ComputeStats> {
-        let Some(shape) = dispatch_shape(pipeline, workgroups, inputs, output)? else {
+        let layouts = packed_layouts(inputs.len())?;
+        self.dispatch_compute_simd_with_layouts(
+            pipeline,
+            workgroups,
+            inputs,
+            &layouts[..inputs.len()],
+            output,
+            StorageLayout::PACKED,
+        )
+    }
+
+    /// SIMD4 equivalent of `dispatch_compute_with_layouts`.
+    pub fn dispatch_compute_simd_with_layouts(
+        &self,
+        pipeline: &ComputePipeline,
+        workgroups: [u32; 3],
+        inputs: &[&StorageBuffer],
+        input_layouts: &[StorageLayout],
+        output: &mut StorageBuffer,
+        output_layout: StorageLayout,
+    ) -> Result<ComputeStats> {
+        let Some(shape) = dispatch_shape(
+            pipeline,
+            workgroups,
+            inputs,
+            input_layouts,
+            output,
+            output_layout,
+        )?
+        else {
             return Ok(ComputeStats::default());
         };
         let input_count = 4 + inputs.len();
@@ -187,7 +282,7 @@ impl Device {
                 values[2] = id(group);
                 values[3] = id(workgroups);
                 for (slot, buffer) in inputs.iter().enumerate() {
-                    values[4 + slot] = buffer.values[linear];
+                    values[4 + slot] = buffer.values[input_layouts[slot].index(linear)];
                 }
             }
             let input_lanes = [
@@ -217,6 +312,7 @@ impl Device {
                 pipeline,
                 workgroups,
                 inputs,
+                input_layouts,
                 input_count,
                 [global, local, group],
                 linear,
@@ -224,7 +320,7 @@ impl Device {
             *result = value;
             stats.instructions += instructions;
         }
-        output.values[..shape.invocations].copy_from_slice(&results);
+        write_results(output, output_layout, &results);
         Ok(stats)
     }
 }
@@ -235,14 +331,26 @@ struct DispatchShape {
     global_size: [u32; 3],
 }
 
+fn packed_layouts(count: usize) -> Result<[StorageLayout; MAX_INPUT_BUFFERS]> {
+    if count > MAX_INPUT_BUFFERS {
+        return Err("compute dispatch accepts at most 12 input buffers".into());
+    }
+    Ok([StorageLayout::PACKED; MAX_INPUT_BUFFERS])
+}
+
 fn dispatch_shape(
     pipeline: &ComputePipeline,
     workgroups: [u32; 3],
     inputs: &[&StorageBuffer],
+    input_layouts: &[StorageLayout],
     output: &StorageBuffer,
+    output_layout: StorageLayout,
 ) -> Result<Option<DispatchShape>> {
     if inputs.len() > MAX_INPUT_BUFFERS {
         return Err("compute dispatch accepts at most 12 input buffers".into());
+    }
+    if input_layouts.len() != inputs.len() {
+        return Err("compute dispatch requires one layout per input buffer".into());
     }
     let input_count = 4 + inputs.len();
     if pipeline
@@ -270,14 +378,44 @@ fn dispatch_shape(
         .filter(|&count| count <= MAX_DISPATCH_INVOCATIONS)
         .ok_or("compute dispatch exceeds 1048576 invocations")?;
     let global_size = std::array::from_fn(|i| workgroups[i] * pipeline.local_size[i]);
-    if output.len() < invocations || inputs.iter().any(|buffer| buffer.len() < invocations) {
-        return Err("compute storage buffer is shorter than the dispatch".into());
+    for (slot, (buffer, layout)) in inputs.iter().zip(input_layouts).enumerate() {
+        validate_storage_range(layout, invocations, buffer.len())
+            .map_err(|reason| format!("compute input buffer {slot}: {reason}"))?;
     }
+    validate_storage_range(&output_layout, invocations, output.len())
+        .map_err(|reason| format!("compute output buffer: {reason}"))?;
     Ok(Some(DispatchShape {
         group_count,
         invocations,
         global_size,
     }))
+}
+
+fn validate_storage_range(layout: &StorageLayout, count: usize, len: usize) -> Result<usize> {
+    let last = layout
+        .stride
+        .checked_mul(count - 1)
+        .and_then(|step| layout.offset.checked_add(step))
+        .ok_or("storage layout address overflows")?;
+    if last >= len {
+        return Err(format!(
+            "layout offset {} stride {} addresses vec4 {last}, buffer length is {len}",
+            layout.offset, layout.stride
+        )
+        .into());
+    }
+    Ok(last)
+}
+
+fn write_results(output: &mut StorageBuffer, layout: StorageLayout, results: &[Vec4]) {
+    if layout.stride == 1 {
+        let end = layout.offset + results.len();
+        output.values[layout.offset..end].copy_from_slice(results);
+    } else {
+        for (invocation, value) in results.iter().copied().enumerate() {
+            output.values[layout.index(invocation)] = value;
+        }
+    }
 }
 
 fn invocation_ids(linear: usize, global_size: [u32; 3], local_size: [u32; 3]) -> [[u32; 3]; 3] {
@@ -297,6 +435,7 @@ fn scalar_invocation(
     pipeline: &ComputePipeline,
     workgroups: [u32; 3],
     inputs: &[&StorageBuffer],
+    input_layouts: &[StorageLayout],
     input_count: usize,
     ids: [[u32; 3]; 3],
     linear: usize,
@@ -307,8 +446,8 @@ fn scalar_invocation(
     shader_inputs[1] = id(local);
     shader_inputs[2] = id(group);
     shader_inputs[3] = id(workgroups);
-    for (slot, buffer) in inputs.iter().enumerate() {
-        shader_inputs[4 + slot] = buffer.values[linear];
+    for (slot, (buffer, layout)) in inputs.iter().zip(input_layouts).enumerate() {
+        shader_inputs[4 + slot] = buffer.values[layout.index(linear)];
     }
     let execution = pipeline.program.execute(
         &shader_inputs[..input_count],
@@ -401,6 +540,138 @@ mod tests {
                 id([4, 0, 0]),
             ]
         );
+    }
+
+    #[test]
+    fn dispatch_reads_and_writes_strided_struct_fields() {
+        let device = Device::new();
+        let input_values: Vec<_> = (0..5)
+            .flat_map(|i| {
+                [
+                    Vec4::new(i as f32, 1.0, 2.0, 3.0),
+                    Vec4::new(10.0, i as f32, 4.0, 5.0),
+                    Vec4::new(-9.0, -9.0, -9.0, -9.0),
+                ]
+            })
+            .collect();
+        let input = device.create_storage_buffer(input_values).unwrap();
+        let layouts = [
+            StorageLayout::new(0, 3).unwrap(),
+            StorageLayout::new(1, 3).unwrap(),
+        ];
+        let inputs = [&input, &input];
+        let pipeline = device
+            .create_compute_pipeline(add_program(), [1, 1, 1])
+            .unwrap();
+        let sentinel = Vec4::new(-7.0, -7.0, -7.0, -7.0);
+        let mut scalar = device.create_storage_buffer(vec![sentinel; 15]).unwrap();
+        let mut simd = device.create_storage_buffer(vec![sentinel; 15]).unwrap();
+        let output_layout = StorageLayout::new(1, 3).unwrap();
+
+        let scalar_stats = device
+            .dispatch_compute_with_layouts(
+                &pipeline,
+                [5, 1, 1],
+                &inputs,
+                &layouts,
+                &mut scalar,
+                output_layout,
+            )
+            .unwrap();
+        let simd_stats = device
+            .dispatch_compute_simd_with_layouts(
+                &pipeline,
+                [5, 1, 1],
+                &inputs,
+                &layouts,
+                &mut simd,
+                output_layout,
+            )
+            .unwrap();
+        assert_eq!(scalar_stats, simd_stats);
+        assert_eq!(scalar.as_slice(), simd.as_slice());
+        for i in 0..5 {
+            assert_eq!(scalar.as_slice()[i * 3], sentinel);
+            assert_eq!(
+                scalar.as_slice()[i * 3 + 1],
+                Vec4::new(i as f32 + 10.0, i as f32 + 1.0, 6.0, 8.0)
+            );
+            assert_eq!(scalar.as_slice()[i * 3 + 2], sentinel);
+        }
+    }
+
+    #[test]
+    fn strided_dispatch_checks_ranges_and_keeps_output_unchanged_on_error() {
+        use Instruction::*;
+        let device = Device::new();
+        assert!(StorageLayout::new(0, 0).is_err());
+        let pipeline = device
+            .create_compute_pipeline(add_program(), [1, 1, 1])
+            .unwrap();
+        let input = device
+            .create_storage_buffer(vec![Vec4::new(1.0, 2.0, 3.0, 4.0); 8])
+            .unwrap();
+        let inputs = [&input, &input];
+        let sentinel = Vec4::new(7.0, 7.0, 7.0, 7.0);
+        let mut output = device.create_storage_buffer(vec![sentinel; 10]).unwrap();
+        let layouts = [StorageLayout::new(0, 2).unwrap(); 2];
+        let output_layout = StorageLayout::new(0, 2).unwrap();
+        assert!(
+            device
+                .dispatch_compute_with_layouts(
+                    &pipeline,
+                    [5, 1, 1],
+                    &inputs,
+                    &layouts,
+                    &mut output,
+                    output_layout,
+                )
+                .is_err()
+        );
+        assert_eq!(output.as_slice(), &[sentinel; 10]);
+        let overflow = Program::new(vec![
+            Const {
+                dst: 0,
+                value: Vec4::new(f32::MAX, 1.0, 1.0, 1.0),
+            },
+            Const {
+                dst: 1,
+                value: Vec4::new(2.0, 1.0, 1.0, 1.0),
+            },
+            Mul { dst: 2, a: 0, b: 1 },
+            Output { slot: 0, src: 2 },
+        ])
+        .unwrap();
+        let overflow = device.create_compute_pipeline(overflow, [1, 1, 1]).unwrap();
+        let mut strided_output = device.create_storage_buffer(vec![sentinel; 15]).unwrap();
+        let output_layout = StorageLayout::new(1, 3).unwrap();
+        assert!(
+            device
+                .dispatch_compute_simd_with_layouts(
+                    &overflow,
+                    [5, 1, 1],
+                    &[],
+                    &[],
+                    &mut strided_output,
+                    output_layout,
+                )
+                .is_err()
+        );
+        assert_eq!(strided_output.as_slice(), &[sentinel; 15]);
+        let overflow_layout = StorageLayout::new(1, usize::MAX).unwrap();
+        assert!(
+            device
+                .dispatch_compute_with_layouts(
+                    &overflow,
+                    [5, 1, 1],
+                    &[],
+                    &[],
+                    &mut strided_output,
+                    overflow_layout,
+                )
+                .is_err()
+        );
+        assert_eq!(strided_output.as_slice(), &[sentinel; 15]);
     }
 
     #[test]
