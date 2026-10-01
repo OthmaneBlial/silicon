@@ -183,11 +183,17 @@ gradients, and other image operands remain unsupported.
 
 ## Limits and evidence
 
+SPIR-V lowering currently accepts acyclic `OpSelectionMerge` regions only.
+`OpLoopMerge` declares structured loop headers, continue targets and merge
+blocks, but these control-flow regions and their loop-carried `OpPhi` values are
+not yet translated. Bounded loops are currently available only to hand-built
+SIR programs.
+
 At most 1 MiB per module, ID bound 65536, 256 virtual SSA temporaries, 64
 simultaneously live runtime registers and 4096 SIR instructions. Dead temporaries
 are recycled after their last use, without increasing VM storage. Selection
-nesting is bounded to 64 and main to 4096 SPIR-V instructions. There are no
-loops, switches, function calls, general integer arithmetic, specialization
+nesting is bounded to 64 and main to 4096 SPIR-V instructions. SPIR-V loops,
+switches, function calls, general integer arithmetic, specialization
 constants, arbitrary SSBO layouts, storage images, implicit samples from
 transformed coordinates, explicit sample offsets/gradients, general shared-memory
 layouts/barriers, WGSL or GLSL compiler. The compute subset accepts up to 12

@@ -18,7 +18,7 @@ long-term. This repository ships working stages and labels the remaining work.
 | Headless mode | `render` and `replay` write PNGs without opening a window |
 | SIMD / tiled parallel rendering | Scalar reference, NEON/AVX2 coverage4, NEON/SSE masked four-fragment SIR, ordered bounded 16×16 tile bins, disjoint worker bands, bounded shared vertex outputs and clipped triangle setups for matching draws, and equivalence tests |
 | SPIR-V / ordinary GLSL | Strict binary parser + typed SIR lowering, textured cube, lit OBJ showcase, local/uniform, arithmetic, and float-negation fixtures |
-| Divergent shader control flow | Nested GLSL selections, local/Phi merges, early return/discard; all-mask VM and attachment tests |
+| Divergent shader control flow | Bounded SIR loops (65,536 dynamic instruction limit, scalar packet fallback), nested GLSL selections, local/Phi merges and early return/discard; differential VM and attachment tests |
 | Shadow maps / explicit-LOD sampling | Two SILICON CPU raster passes; 512×512 `Depth32Float` texture sampled by ordinary GLSL/SPIR-V; scalar and SIMD replay match |
 | PBR material shading | Cook-Torrance GGX direct lighting, tangent-space normal mapping, and explicit-LOD `samplerCube` reflections in ordinary GLSL/SPIR-V, with capture replay |
 | Cube-map sampling and visual reflections | Six-face `CubeMap` sampler, mip-selected roughness approximation, explicit and direct-input implicit GLSL sampling, scalar/SIMD pixel equivalence; transformed direction derivatives remain unsupported |
@@ -52,7 +52,7 @@ Cube maps use cross-face bilinear filtering; implicit SPIR-V sampling is limited
 to an unmodified fragment input direction, and anisotropic SPIR-V sampling
 remains future work.
 
-Future research: persistent raster workers, loops and broader control flow,
+Future research: persistent raster workers, SPIR-V loop lowering and broader control flow,
 cross-workgroup barriers, other
 integer/vector atomics and broader compute-stage SPIR-V, transformed implicit sampling,
 anisotropic SPIR-V sampling, JIT, general DOOM portal-window clipping and
