@@ -30,6 +30,7 @@ const LINE_DOOR_RAISE: u16 = 1;
 const LINE_BLAZING_DOOR_RAISE: u16 = 117;
 const LINE_WALK_OPEN_DOOR: u16 = 2;
 const LINE_USE_DOWN_WAIT_UP_PLATFORM: u16 = 62;
+const LINE_USE_LOWER_FLOOR_TO_LOWEST: u16 = 23;
 const LINE_PLAT_DOWN_WAIT_UP: u16 = 88;
 const LINE_EXIT_USE: u16 = 11;
 const USE_RANGE: f32 = 64.0;
@@ -38,6 +39,7 @@ const BLAZING_DOOR_SPEED: f32 = DOOR_SPEED * 4.0;
 const DOOR_WAIT: f32 = 150.0 / 35.0;
 const PLATFORM_SPEED: f32 = 140.0;
 const PLATFORM_WAIT: f32 = 3.0;
+const FLOOR_SPEED: f32 = 35.0;
 
 #[derive(Clone, Copy)]
 struct Lump {
@@ -1013,8 +1015,10 @@ struct Platform {
     sector: u16,
     low: f32,
     high: f32,
+    speed: f32,
     wait: f32,
     direction: i8,
+    return_to_high: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -2129,9 +2133,41 @@ fn sector_platform(map: &Map, platform_sector: u16) -> Option<Platform> {
         sector: platform_sector,
         low,
         high: sector.floor,
+        speed: PLATFORM_SPEED,
         wait: PLATFORM_WAIT,
         direction: -1,
+        return_to_high: true,
     })
+}
+
+fn lower_to_lowest_floors(map: &mut Map, line_index: usize, active: &[Platform]) -> Vec<Platform> {
+    let Some(line) = map.lines.get(line_index).copied() else {
+        return Vec::new();
+    };
+    if line[5] != LINE_USE_LOWER_FLOOR_TO_LOWEST || line[6] == 0 {
+        return Vec::new();
+    }
+    let started = map
+        .sectors
+        .iter()
+        .enumerate()
+        .filter(|(_, sector)| sector.tag == line[6])
+        .filter_map(|(index, _)| {
+            let sector = u16::try_from(index).ok()?;
+            if active.iter().any(|platform| platform.sector == sector) {
+                return None;
+            }
+            let mut floor = sector_platform(map, sector)?;
+            floor.speed = FLOOR_SPEED;
+            floor.wait = 0.0;
+            floor.return_to_high = false;
+            Some(floor)
+        })
+        .collect::<Vec<_>>();
+    if !started.is_empty() {
+        map.lines[line_index][5] = 0;
+    }
+    started
 }
 
 fn down_wait_up_platforms(map: &Map, line_index: usize, active: &[Platform]) -> Vec<Platform> {
@@ -2173,6 +2209,7 @@ fn update_platforms(map: &mut Map, platforms: &mut Vec<Platform>, delta: f32) ->
             continue;
         }
         let platform = &mut platforms[index];
+        let speed = platform.speed;
         let sector = &mut map.sectors[platform.sector as usize];
         let direction = platform.direction;
         let target = if direction < 0 {
@@ -2182,9 +2219,9 @@ fn update_platforms(map: &mut Map, platforms: &mut Vec<Platform>, delta: f32) ->
         };
         let previous = sector.floor;
         let floor = if direction < 0 {
-            (previous - PLATFORM_SPEED * delta).max(target)
+            (previous - speed * delta).max(target)
         } else {
-            (previous + PLATFORM_SPEED * delta).min(target)
+            (previous + speed * delta).min(target)
         };
         if direction > 0 && floor + ACTOR_HEIGHT > sector.ceiling {
             platform.direction = -1;
@@ -2194,8 +2231,13 @@ fn update_platforms(map: &mut Map, platforms: &mut Vec<Platform>, delta: f32) ->
         sector.floor = floor;
         changed |= floor != previous;
         if direction < 0 && floor <= target {
-            platform.direction = 0;
-            platform.wait = PLATFORM_WAIT;
+            if platform.return_to_high {
+                platform.direction = 0;
+                platform.wait = PLATFORM_WAIT;
+            } else {
+                platforms.remove(index);
+                continue;
+            }
         } else if direction > 0 && floor >= target {
             platforms.remove(index);
             continue;
@@ -3082,6 +3124,10 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 {
                     doors.push(door);
                     activated_sectors += 1;
+                } else if special == LINE_USE_LOWER_FLOOR_TO_LOWEST {
+                    let started = lower_to_lowest_floors(&mut scene.map, line, &platforms);
+                    activated_sectors += started.len();
+                    platforms.extend(started);
                 } else if special == LINE_USE_DOWN_WAIT_UP_PLATFORM {
                     let started = down_wait_up_platforms(&scene.map, line, &platforms);
                     activated_sectors += started.len();
@@ -3956,7 +4002,7 @@ mod tests {
     }
 
     #[test]
-    fn walk_platforms_descend_wait_return_and_stay_at_their_original_height() {
+    fn platforms_and_lower_floor_actions_update_tagged_sector_geometry() {
         let open = Sector {
             floor: 0.0,
             ceiling: 128.0,
@@ -4040,6 +4086,32 @@ mod tests {
         let manual = down_wait_up_platforms(&map, 0, &[]);
         assert_eq!(manual.len(), 1);
         assert!(down_wait_up_platforms(&map, 0, &manual).is_empty());
+
+        map.sectors[2].tag = 5;
+        map.lines[0][5] = LINE_USE_LOWER_FLOOR_TO_LOWEST;
+        assert_eq!(
+            use_line(&map, player),
+            Some((0, LINE_USE_LOWER_FLOOR_TO_LOWEST))
+        );
+        let mut floors = lower_to_lowest_floors(&mut map, 0, &[]);
+        assert_eq!(floors.len(), 2);
+        assert!(
+            floors
+                .iter()
+                .all(|floor| floor.speed == FLOOR_SPEED && !floor.return_to_high)
+        );
+        assert_eq!(map.lines[0][5], 0);
+        assert!(lower_to_lowest_floors(&mut map, 0, &[]).is_empty());
+        assert!(update_platforms(&mut map, &mut floors, 0.5));
+        assert_eq!(map.sectors[1].floor, 46.5);
+        assert_eq!(map.sectors[2].floor, 14.5);
+        assert!(update_platforms(&mut map, &mut floors, 1.0));
+        assert_eq!(map.sectors[1].floor, 11.5);
+        assert_eq!(map.sectors[2].floor, 0.0);
+        assert!(update_platforms(&mut map, &mut floors, 0.4));
+        assert_eq!(map.sectors[1].floor, 0.0);
+        assert_eq!(map.sectors[2].floor, 0.0);
+        assert!(floors.is_empty());
     }
 
     #[test]

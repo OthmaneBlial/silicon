@@ -57,6 +57,13 @@ same sectors 98 and 103. The original engine routes special 62 to the same
 `downWaitUpStay` platform action as special 88, but through the use control
 instead of a walk crossing, as shown in id Software's
 [`P_UseSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c).
+Press `E` at the front of the one-shot special-23 line to lower its tagged
+sectors to their lowest neighboring floor and leave them there. The WAD's one
+tag-3 line targets sectors 76, 126, and 129; their floor heights lower from
+272, 264, and 264 to 136, 144, and 136 at 35 units per second. It follows
+id Software's
+[`P_UseSpecialLine` and `lowerFloorToLowest` action](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c)
+and [`EV_DoFloor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_floor.c).
 Locked doors, enemy-triggered platforms, and other line specials remain
 unsupported.
 
