@@ -766,6 +766,7 @@ struct PreparedScene {
     sprites: BTreeMap<[u8; 4], SpriteTexture>,
     weapon_idle: SpriteTexture,
     weapon_fire: SpriteTexture,
+    projectile_sprite: SpriteTexture,
     actors: Vec<Actor>,
     start: Player,
     triangles: usize,
@@ -785,6 +786,14 @@ struct Actor {
     y: f32,
     health: i32,
     attack_cooldown: f32,
+}
+
+struct Projectile {
+    x: f32,
+    y: f32,
+    velocity_x: f32,
+    velocity_y: f32,
+    lifetime: f32,
 }
 
 struct WallSection {
@@ -899,6 +908,31 @@ fn actor_vertices(
         axis,
         sprite.width,
         sector.floor,
+        sprite.height,
+        sector,
+    )
+}
+
+fn projectile_vertices(
+    projectile: &Projectile,
+    sprite: &SpriteTexture,
+    camera_angle: f32,
+    sector: Sector,
+) -> Vec<Vertex> {
+    let radians = camera_angle.to_radians();
+    let axis = Vertex2 {
+        x: radians.sin(),
+        y: -radians.cos(),
+    };
+    let left = Vertex2 {
+        x: projectile.x - axis.x * sprite.left_offset,
+        y: projectile.y - axis.y * sprite.left_offset,
+    };
+    billboard_vertices(
+        left,
+        axis,
+        sprite.width,
+        sector.floor + 28.0,
         sprite.height,
         sector,
     )
@@ -1285,7 +1319,14 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player) -> bool {
     }
 }
 
-fn update_actors(map: &Map, actors: &mut [Actor], player: Player, health: &mut i32, delta: f32) {
+fn update_actors(
+    map: &Map,
+    actors: &mut [Actor],
+    projectiles: &mut Vec<Projectile>,
+    player: Player,
+    health: &mut i32,
+    delta: f32,
+) {
     for actor in actors.iter_mut().filter(|actor| actor.health > 0) {
         actor.attack_cooldown = (actor.attack_cooldown - delta).max(0.0);
         let dx = player.x - actor.x;
@@ -1314,6 +1355,31 @@ fn update_actors(map: &Map, actors: &mut [Actor], player: Player, health: &mut i
                 *health -= if actor.sprite == *b"SPOS" { 6 } else { 3 };
                 actor.attack_cooldown = 1.4;
             }
+        } else if actor.sprite == *b"TROO"
+            && distance <= 512.0
+            && has_line_of_sight(
+                map,
+                Vertex2 {
+                    x: actor.x,
+                    y: actor.y,
+                },
+                Vertex2 {
+                    x: player.x,
+                    y: player.y,
+                },
+            )
+        {
+            if actor.attack_cooldown == 0.0 {
+                let speed = 180.0 / distance.max(1.0);
+                projectiles.push(Projectile {
+                    x: actor.x,
+                    y: actor.y,
+                    velocity_x: dx * speed,
+                    velocity_y: dy * speed,
+                    lifetime: 3.0,
+                });
+                actor.attack_cooldown = 2.0;
+            }
         } else if distance < 640.0 {
             let mut enemy = Player {
                 x: actor.x,
@@ -1335,6 +1401,42 @@ fn update_actors(map: &Map, actors: &mut [Actor], player: Player, health: &mut i
             actor.y = enemy.y;
         }
     }
+}
+
+fn update_projectiles(
+    map: &Map,
+    projectiles: &mut Vec<Projectile>,
+    player: Player,
+    health: &mut i32,
+    delta: f32,
+) {
+    projectiles.retain_mut(|projectile| {
+        projectile.lifetime -= delta;
+        if projectile.lifetime <= 0.0 {
+            return false;
+        }
+        let from = Vertex2 {
+            x: projectile.x,
+            y: projectile.y,
+        };
+        let to = Vertex2 {
+            x: from.x + projectile.velocity_x * delta,
+            y: from.y + projectile.velocity_y * delta,
+        };
+        if !has_line_of_sight(map, from, to) {
+            return false;
+        }
+        projectile.x = to.x;
+        projectile.y = to.y;
+        let dx = player.x - to.x;
+        let dy = player.y - to.y;
+        if dx * dx + dy * dy <= 16.0 * 16.0 {
+            *health -= 8;
+            false
+        } else {
+            true
+        }
+    });
 }
 
 impl PreparedScene {
@@ -1381,6 +1483,7 @@ impl PreparedScene {
         )?;
         let weapon_idle = sprite_patch_texture(&data, *b"PISGA0\0\0")?;
         let weapon_fire = sprite_patch_texture(&data, *b"PISGC0\0\0")?;
+        let projectile_sprite = sprite_patch_texture(&data, *b"BAL1A0\0\0")?;
         let sampler = Sampler {
             filter: Filter::Nearest,
             address: Address::Repeat,
@@ -1457,6 +1560,7 @@ impl PreparedScene {
             sprites,
             weapon_idle,
             weapon_fire,
+            projectile_sprite,
             actors,
             start: Player {
                 x: x as f32,
@@ -1471,6 +1575,7 @@ impl PreparedScene {
         &self,
         player: Player,
         actors: &[Actor],
+        projectiles: &[Projectile],
         weapon_firing: bool,
         renderer: &mut Renderer,
     ) -> api::Result<api::Submission> {
@@ -1515,6 +1620,18 @@ impl PreparedScene {
             commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
             commands.draw(0, count);
         }
+        for projectile in projectiles {
+            let Some(sector) = bsp_sector_at(&self.map, projectile.x, projectile.y) else {
+                continue;
+            };
+            let vertices =
+                projectile_vertices(projectile, &self.projectile_sprite, player.angle, sector);
+            let count = u32::try_from(vertices.len())
+                .map_err(|_| invalid("E1M1 projectile vertex count exceeds SILICON draw range"))?;
+            commands.bind_texture(0, self.projectile_sprite.texture.clone(), self.sampler);
+            commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
+            commands.draw(0, count);
+        }
         let weapon = if weapon_firing {
             &self.weapon_fire
         } else {
@@ -1549,7 +1666,7 @@ fn frame_triangles(scene: &PreparedScene, draws: u64) -> api::Result<usize> {
 fn render(path: &Path, output: &Path) -> api::Result<()> {
     let scene = PreparedScene::load(path)?;
     let mut renderer = Renderer::new(960, 720)?;
-    let submission = scene.draw(scene.start, &scene.actors, false, &mut renderer)?;
+    let submission = scene.draw(scene.start, &scene.actors, &[], false, &mut renderer)?;
     save_frame(&renderer, output)?;
     let triangles = frame_triangles(&scene, submission.draws)?;
     println!(
@@ -1572,6 +1689,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     let mut pixels = vec![0; 960 * 720];
     let mut player = scene.start;
     let mut actors = scene.actors.clone();
+    let mut projectiles = Vec::new();
     let mut health = 100;
     let mut ammo = 200;
     let mut kills = 0;
@@ -1613,10 +1731,24 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 weapon_flash = 0.16;
                 kills += usize::from(fire_weapon(&scene.map, &mut actors, player));
             }
-            update_actors(&scene.map, &mut actors, player, &mut health, delta);
+            update_actors(
+                &scene.map,
+                &mut actors,
+                &mut projectiles,
+                player,
+                &mut health,
+                delta,
+            );
+            update_projectiles(&scene.map, &mut projectiles, player, &mut health, delta);
             health = health.max(0);
         }
-        let submission = scene.draw(player, &actors, weapon_flash > 0.0, &mut renderer)?;
+        let submission = scene.draw(
+            player,
+            &actors,
+            &projectiles,
+            weapon_flash > 0.0,
+            &mut renderer,
+        )?;
         renderer.framebuffer.present_into(&mut pixels)?;
         let remaining = actors.iter().filter(|actor| actor.health > 0).count();
         let state = if health == 0 {
@@ -1912,27 +2044,56 @@ mod tests {
             things: vec![],
         };
         let mut actors = [Actor {
-            sprite: *b"TROO",
+            sprite: *b"SARG",
             x: 100.0,
             y: 0.0,
             health: 60,
             attack_cooldown: 0.0,
         }];
+        let mut projectiles = Vec::new();
         let player = Player {
             x: 0.0,
             y: 0.0,
             angle: 0.0,
         };
         let mut health = 100;
-        update_actors(&map, &mut actors, player, &mut health, 1.0);
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            1.0,
+        );
         assert_eq!(actors[0].x, 64.0);
         assert_eq!(health, 100);
 
         actors[0].x = 40.0;
-        update_actors(&map, &mut actors, player, &mut health, 0.05);
-        update_actors(&map, &mut actors, player, &mut health, 0.84);
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.05,
+        );
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.84,
+        );
         assert_eq!(health, 92);
-        update_actors(&map, &mut actors, player, &mut health, 0.02);
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.02,
+        );
         assert_eq!(health, 84);
     }
 
@@ -1955,24 +2116,118 @@ mod tests {
             health: 20,
             attack_cooldown: 0.0,
         }];
+        let mut projectiles = Vec::new();
         let player = Player {
             x: 0.0,
             y: 0.0,
             angle: 0.0,
         };
         let mut health = 100;
-        update_actors(&map, &mut actors, player, &mut health, 0.05);
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.05,
+        );
         assert_eq!(health, 100);
 
         map.lines.clear();
-        update_actors(&map, &mut actors, player, &mut health, 0.05);
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.05,
+        );
         assert_eq!(health, 97);
-        update_actors(&map, &mut actors, player, &mut health, 0.2);
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.2,
+        );
         assert_eq!(health, 97);
 
         actors[0].sprite = *b"SPOS";
         actors[0].attack_cooldown = 0.0;
-        update_actors(&map, &mut actors, player, &mut health, 0.05);
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.05,
+        );
         assert_eq!(health, 91);
+    }
+
+    #[test]
+    fn imps_launch_visible_fireballs_that_hit_and_stop_at_walls() {
+        let mut map = Map {
+            vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![[0, 1, 1, u16::MAX, u16::MAX]],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let mut actors = [Actor {
+            sprite: *b"TROO",
+            x: 100.0,
+            y: 0.0,
+            health: 60,
+            attack_cooldown: 0.0,
+        }];
+        let mut projectiles = Vec::new();
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut health = 100;
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.05,
+        );
+        assert!(projectiles.is_empty());
+
+        map.lines.clear();
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.05,
+        );
+        assert_eq!(projectiles.len(), 1);
+        update_projectiles(&map, &mut projectiles, player, &mut health, 0.4);
+        assert_eq!(health, 100);
+        update_projectiles(&map, &mut projectiles, player, &mut health, 0.1);
+        assert_eq!(health, 92);
+        assert!(projectiles.is_empty());
+
+        projectiles.push(Projectile {
+            x: 100.0,
+            y: 0.0,
+            velocity_x: -180.0,
+            velocity_y: 0.0,
+            lifetime: 3.0,
+        });
+        map.lines.push([0, 1, 1, u16::MAX, u16::MAX]);
+        update_projectiles(&map, &mut projectiles, player, &mut health, 0.3);
+        assert!(projectiles.is_empty());
+        assert_eq!(health, 92);
     }
 }

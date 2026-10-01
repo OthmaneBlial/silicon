@@ -109,9 +109,9 @@ Phase 70 renders Freedoom E1M1 geometry, textures, all 29 normal-skill enemy
 sprites, and the WAD pistol through SILICON. The static capture submits 4,872
 triangles across 171 draws: 4,812 map triangles, 29 enemy billboards, and one
 weapon billboard. The interactive prototype adds first-person movement, basic
-collision, hitscan shooting, health, ammunition, and simple pursuing melee
-enemies, plus line-of-sight hitscan attacks for former humans and shotgunners.
-It remains a limited E1M1 gameplay slice, not a complete Doom game;
+collision, player hitscan, health and ammo, pursuing melee enemies, line-of-sight
+hitscan for humans and shotgunners, and imp fireballs. It remains a limited E1M1
+gameplay slice, not a complete Doom game;
 BSP visibility, masked walls, and broader game rules remain. The [WAD source,
 controls, screenshots, license, and limits](docs/freedoom.md) are documented.
 The Freedoom WAD stays external.
