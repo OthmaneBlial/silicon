@@ -16,7 +16,7 @@ stencil and blending generate scene pixels entirely on the CPU.
 
 *Rendered entirely on the CPU by a GPU I wrote from scratch.*
 
-![Metallic and rough materials rendered by SILICON's GLSL SPIR-V pipeline](assets/screenshots/pbr_showcase.png)
+![Metallic materials with tangent-space normal mapping rendered by SILICON's GLSL SPIR-V pipeline](assets/screenshots/pbr_showcase.png)
 
 *Cook-Torrance GGX shading. The shader, rasterizer and framebuffer all run on the CPU.*
 
@@ -69,8 +69,8 @@ Phi/local reconvergence, early return and fragment discard.
 The `shadow_showcase` renders a CPU depth pass for the same OBJ scene and samples
 its depth texture from an ordinary GLSL fragment shader through explicit-LOD SPIR-V.
 The `pbr_showcase` runs a GLSL metallic/roughness Cook-Torrance GGX shader through
-SPIR-V and the same CPU SIR pipeline. It uses direct lighting; normal maps and
-image-based lighting remain future work.
+SPIR-V and the same CPU SIR pipeline. It uses direct lighting and a procedural
+tangent-space normal map; image-based lighting remains future work.
 The `stencil` scene uses a circular portal mask for both a textured cube and a
 translucent overlay.
 

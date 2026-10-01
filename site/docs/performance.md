@@ -30,11 +30,11 @@ wall time. These worker sums overlap and the per-packet timing is instrumented;
 they are not exclusive stage shares. Native sampling still points to shader
 execution as the next optimization target.
 
-## 0.7 PBR baseline
+## 0.7 PBR direct-light baseline before normal mapping
 
-The [raw PBR record](../benchmarks/apple-m2-pbr-2026-10-01.json) measures clean
-source commit `3288feddd24bd26d2c1213641da9f2d94523af73` and its recorded binary
-hash on the shared Apple M2 / macOS 26.6. The `pbr_showcase` scene ran at
+The [raw PBR record](../benchmarks/apple-m2-pbr-2026-10-01.json) measures the
+pre-normal-map source commit `3288feddd24bd26d2c1213641da9f2d94523af73` and its
+recorded binary hash on the shared Apple M2 / macOS 26.6. The `pbr_showcase` ran at
 640×400 with SIMD coverage, four workers, three warmups, and 30 timed frames.
 The median was 91.74 ms, p95 was 92.88 ms, and throughput was 10.88 FPS.
 The run executed 871,258,590 SIR instructions across 4,586,070 shaded

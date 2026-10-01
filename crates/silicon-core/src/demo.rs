@@ -8,6 +8,7 @@ pub struct Material {
     pub metallic: f32,
     pub roughness: f32,
     pub emission: f32,
+    pub normal_map_strength: f32,
 }
 impl Material {
     pub fn matte(color: Color) -> Self {
@@ -17,6 +18,7 @@ impl Material {
             metallic: 0.1,
             roughness: 0.82,
             emission: 0.,
+            normal_map_strength: 0.,
         }
     }
 }
@@ -281,6 +283,7 @@ fn visit_scene(
                     metallic: 0.2,
                     roughness: 0.62,
                     emission: 0.,
+                    normal_map_strength: 0.,
                 },
                 Blend::Replace,
             )?;
@@ -309,6 +312,7 @@ fn visit_scene(
                     metallic: 0.8,
                     roughness: 0.24,
                     emission: 0.,
+                    normal_map_strength: 0.55,
                 },
                 Blend::Replace,
             )?;
@@ -336,6 +340,7 @@ fn visit_scene(
                         metallic: 0.4,
                         roughness: 0.32,
                         emission: 1.5,
+                        normal_map_strength: 0.,
                     },
                     Blend::Replace,
                 )?;
@@ -352,6 +357,7 @@ fn visit_scene(
                     metallic: 0.1,
                     roughness: 0.42,
                     emission: 1.,
+                    normal_map_strength: 0.,
                 },
                 Blend::Replace,
             )?;
@@ -373,6 +379,7 @@ fn visit_scene(
                         metallic: 1.,
                         roughness: 0.12,
                         emission: 0.,
+                        normal_map_strength: 0.,
                     },
                     Blend::Replace,
                 )?;
@@ -473,6 +480,7 @@ pub fn shader_cube_with_programs(
             metallic: 0.2,
             roughness: 0.62,
             emission: 0.,
+            normal_map_strength: 0.,
         },
         Vec3::new(4., 3., 5.),
     )?;
@@ -561,11 +569,106 @@ fn lighting_uniforms(mvp: Mat4, model: Mat4, material: Material, eye: Vec3) -> R
     uniforms[20] = eye.extend(1.);
     Ok(uniforms)
 }
+
+fn tangent_vertices(mesh: &Mesh) -> Result<Vec<Vertex>> {
+    if mesh.indices.is_empty() || !mesh.indices.len().is_multiple_of(3) {
+        return Err("tangent generation requires indexed triangles".into());
+    }
+    let mut tangents = vec![Vec3::ZERO; mesh.vertices.len()];
+    let mut bitangents = tangents.clone();
+    for triangle in mesh.indices.chunks_exact(3) {
+        let [i0, i1, i2] = [
+            triangle[0] as usize,
+            triangle[1] as usize,
+            triangle[2] as usize,
+        ];
+        let [Some(a), Some(b), Some(c)] = [
+            mesh.vertices.get(i0),
+            mesh.vertices.get(i1),
+            mesh.vertices.get(i2),
+        ] else {
+            return Err("mesh index exceeds vertex buffer".into());
+        };
+        let edge1 = b.position - a.position;
+        let edge2 = c.position - a.position;
+        let uv1 = b.uv - a.uv;
+        let uv2 = c.uv - a.uv;
+        let determinant = uv1.x * uv2.y - uv1.y * uv2.x;
+        if !determinant.is_finite() || determinant.abs() <= 1e-10 {
+            continue;
+        }
+        let tangent = (edge1 * uv2.y - edge2 * uv1.y) / determinant;
+        let bitangent = (edge2 * uv1.x - edge1 * uv2.x) / determinant;
+        if !tangent.is_finite() || !bitangent.is_finite() {
+            return Err("non-finite mesh tangent".into());
+        }
+        for index in [i0, i1, i2] {
+            tangents[index] = tangents[index] + tangent;
+            bitangents[index] = bitangents[index] + bitangent;
+        }
+    }
+    let mut vertices = mesh.vertices.clone();
+    for (i, vertex) in vertices.iter_mut().enumerate() {
+        let normal = vertex.normal.normalize();
+        let normal = if normal == Vec3::ZERO {
+            Vec3::new(0., 0., 1.)
+        } else {
+            normal
+        };
+        let tangent = (tangents[i] - normal * normal.dot(tangents[i])).normalize();
+        let tangent = if tangent == Vec3::ZERO {
+            if normal.z.abs() < 0.999 {
+                Vec3::new(0., 0., 1.).cross(normal).normalize()
+            } else {
+                Vec3::new(0., 1., 0.).cross(normal).normalize()
+            }
+        } else {
+            tangent
+        };
+        let sign = if normal.cross(tangent).dot(bitangents[i]) < 0. {
+            -1.
+        } else {
+            1.
+        };
+        vertex.color = Vec4::new(tangent.x, tangent.y, tangent.z, sign);
+    }
+    Ok(vertices)
+}
+
+fn pbr_normal_map() -> std::sync::Arc<Texture> {
+    static TEXTURE: OnceLock<std::sync::Arc<Texture>> = OnceLock::new();
+    TEXTURE
+        .get_or_init(|| {
+            let mut bytes = Vec::with_capacity(128 * 128 * 4);
+            for y in 0..128 {
+                for x in 0..128 {
+                    let u = x as f32 / 128.;
+                    let v = y as f32 / 128.;
+                    let (u_sin, u_cos) = (u * std::f32::consts::TAU * 3.).sin_cos();
+                    let (v_sin, v_cos) = (v * std::f32::consts::TAU * 2.).sin_cos();
+                    let normal =
+                        Vec3::new(0.22 * u_cos * v_sin, 0.22 * u_sin * v_cos, 1.).normalize();
+                    bytes.extend([
+                        ((normal.x * 0.5 + 0.5) * 255.).round() as u8,
+                        ((normal.y * 0.5 + 0.5) * 255.).round() as u8,
+                        ((normal.z * 0.5 + 0.5) * 255.).round() as u8,
+                        255,
+                    ]);
+                }
+            }
+            let mut texture = Texture::new(128, 128, TextureFormat::Rgba8, &bytes)
+                .expect("valid built-in tangent-space normal map");
+            texture.generate_mips();
+            std::sync::Arc::new(texture)
+        })
+        .clone()
+}
 fn material_showcase(
     width: u32,
     height: u32,
     time: f32,
     programs: &(shader::Program, shader::Program),
+    normal_map: Option<std::sync::Arc<Texture>>,
 ) -> Result<FrameCapture> {
     use std::sync::Arc;
     if !time.is_finite() {
@@ -584,6 +687,9 @@ fn material_showcase(
         fragment: programs.1.clone(),
     }));
     commands.bind_texture(0, Arc::new(Texture::checker(128)?), Sampler::default());
+    if let Some(texture) = &normal_map {
+        commands.bind_texture(1, texture.clone(), Sampler::default());
+    }
     let eye = Vec3::new(7.5, 5.8, 10.);
     let vp = Mat4::perspective(0.78, width as f32 / height as f32, 0.1, 60.)
         * Mat4::look_at(eye, Vec3::new(0., 1.2, 0.), Vec3::new(0., 1., 0.));
@@ -591,14 +697,19 @@ fn material_showcase(
         if blend != Blend::Replace {
             return Err("GLSL showcase requires opaque draws".into());
         }
-        commands.bind_vertex_buffer(device.create_vertex_buffer(mesh.vertices.clone())?);
+        let vertices = if normal_map.is_some() && material.normal_map_strength > 0. {
+            tangent_vertices(mesh)?
+        } else {
+            mesh.vertices.clone()
+        };
+        commands.bind_vertex_buffer(device.create_vertex_buffer(vertices)?);
         commands.bind_index_buffer(device.create_index_buffer(mesh.indices.clone())?);
-        commands.bind_uniform_buffer(device.create_uniform_buffer(lighting_uniforms(
-            vp * model,
-            model,
-            material,
-            eye,
-        )?)?);
+        let mut uniforms = lighting_uniforms(vp * model, model, material, eye)?;
+        if normal_map.is_some() {
+            uniforms.resize(36, Vec4::ZERO);
+            uniforms[32] = Vec4::new(material.normal_map_strength, 0., 0., 0.);
+        }
+        commands.bind_uniform_buffer(device.create_uniform_buffer(uniforms)?);
         commands.draw_indexed(0, mesh.indices.len() as u32);
         Ok(())
     })?;
@@ -622,7 +733,7 @@ pub fn spirv_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture
         })
         .as_ref()
         .map_err(|e| e.clone())?;
-    material_showcase(width, height, time, programs)
+    material_showcase(width, height, time, programs, None)
 }
 /// A direct-light Cook-Torrance GGX metallic/roughness scene running from GLSL SPIR-V.
 pub fn pbr_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
@@ -630,13 +741,13 @@ pub fn pbr_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture> 
     let programs = PROGRAMS
         .get_or_init(|| {
             compile_graphics(
-                include_bytes!("../../../assets/shaders/lit.vert.spv"),
+                include_bytes!("../../../assets/shaders/pbr.vert.spv"),
                 include_bytes!("../../../assets/shaders/pbr.frag.spv"),
             )
         })
         .as_ref()
         .map_err(|e| e.clone())?;
-    material_showcase(width, height, time, programs)
+    material_showcase(width, height, time, programs, Some(pbr_normal_map()))
 }
 
 /// Render a CPU depth map first, then sample it from ordinary GLSL/SPIR-V fragment shaders.
@@ -741,4 +852,39 @@ pub fn shadow_showcase(width: u32, height: u32, time: f32) -> Result<(FrameCaptu
         },
         shadow_stats,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tangent_generation_uses_uv_orientation_and_checks_indices() {
+        let mesh = Mesh {
+            vertices: [
+                (Vec3::ZERO, Vec2::ZERO),
+                (Vec3::new(1., 0., 0.), Vec2::new(1., 0.)),
+                (Vec3::new(0., 1., 0.), Vec2::new(0., 1.)),
+            ]
+            .map(|(position, uv)| Vertex {
+                position,
+                normal: Vec3::new(0., 0., 1.),
+                uv,
+                color: Color::WHITE.0,
+            })
+            .to_vec(),
+            indices: vec![0, 1, 2],
+        };
+        let vertices = tangent_vertices(&mesh).unwrap();
+        assert!((vertices[0].color.x - 1.).abs() < 1e-6);
+        assert!(vertices[0].color.y.abs() < 1e-6 && vertices[0].color.z.abs() < 1e-6);
+        assert_eq!(vertices[0].color.w, 1.);
+        assert!(
+            tangent_vertices(&Mesh {
+                indices: vec![0, 1, 3],
+                ..mesh
+            })
+            .is_err()
+        );
+    }
 }

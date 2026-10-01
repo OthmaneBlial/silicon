@@ -163,38 +163,50 @@ fn float_negate_preserves_sign_bits_in_scalar_and_packet_execution() {
     }
 }
 #[test]
-fn pbr_spirv_responds_to_roughness_and_replays_across_backends() {
+fn pbr_spirv_responds_to_roughness_and_normal_maps_and_replays_across_backends() {
     let fragment = compiled(include_bytes!("../assets/shaders/pbr.frag.spv"));
     let inputs = [
-        Vec4::new(1., 1., 1., 1.),
+        Vec4::new(1., 0., 0., 1.),
         Vec4::new(0.4, 0.6, 0., 0.),
-        Vec3::new(0.2, 0.9, 0.35).normalize().extend(0.),
+        Vec3::new(0., 0., 1.).extend(0.),
         Vec4::new(0.4, 1.2, -0.2, 1.),
     ];
-    let shade = |roughness| {
-        let mut uniforms = vec![Vec4::ZERO; 24];
+    let shade = |roughness, normal_strength| {
+        let mut uniforms = vec![Vec4::ZERO; 36];
         uniforms[12] = Vec4::new(0.8, 0.4, 0.18, 1.);
         uniforms[16] = Vec4::new(0., 0.8, 0., roughness);
         uniforms[20] = Vec3::new(7.5, 5.8, 10.).extend(1.);
+        uniforms[32] = Vec4::new(normal_strength, 0., 0., 0.);
         fragment
             .program
             .execute_with_lod(
                 &inputs,
                 &uniforms,
-                &[0.],
-                |_, _| Ok(Vec4::new(1., 1., 1., 1.)),
+                &[0., 0.],
+                |slot, _| {
+                    Ok(if slot == 0 {
+                        Vec4::new(1., 1., 1., 1.)
+                    } else {
+                        Vec4::new(0.7, 0.5, 0.95, 1.)
+                    })
+                },
                 false,
             )
             .unwrap()
             .outputs[0]
     };
-    let smooth = shade(0.12);
-    let rough = shade(0.85);
+    let smooth = shade(0.12, 0.75);
+    let rough = shade(0.85, 0.75);
     assert_ne!(
         smooth.to_array().map(f32::to_bits),
         rough.to_array().map(f32::to_bits)
     );
-    assert!(smooth.is_finite() && rough.is_finite());
+    let flat = shade(0.12, 0.);
+    assert_ne!(
+        smooth.to_array().map(f32::to_bits),
+        flat.to_array().map(f32::to_bits)
+    );
+    assert!(smooth.is_finite() && rough.is_finite() && flat.is_finite());
 
     let capture = demo::pbr_showcase(240, 160, 0.37).unwrap();
     let path = std::env::temp_dir().join(format!("silicon-pbr-{}.silicon", std::process::id()));

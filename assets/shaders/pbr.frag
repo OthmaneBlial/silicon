@@ -1,20 +1,33 @@
 #version 450
-layout(location = 0) in vec4 color;
+layout(location = 0) in vec4 tangent;
 layout(location = 1) in vec2 uv;
 layout(location = 2) in vec3 normal;
 layout(location = 3) in vec3 world;
 layout(location = 0) out vec4 outColor;
 layout(set = 1, binding = 0) uniform sampler2D tex;
+layout(set = 1, binding = 1) uniform sampler2D normalTex;
 layout(set = 0, binding = 3) uniform MaterialColor { vec4 value; } material;
 layout(set = 0, binding = 4) uniform MaterialParams { vec4 value; } params;
 layout(set = 0, binding = 5) uniform Camera { vec4 position; } camera;
+layout(set = 0, binding = 8) uniform NormalSettings { vec4 value; } normalSettings;
 void main() {
     vec4 texel = mix(vec4(1.0), texture(tex, uv), params.value.x);
-    vec4 base = material.value * texel * color;
+    vec4 base = material.value * texel;
     vec3 albedo = clamp(base.rgb, vec3(0.0), vec3(1.0));
     float metallic = clamp(params.value.y, 0.0, 1.0);
     float roughness = clamp(params.value.w, 0.045, 1.0);
     vec3 n = normalize(normal);
+    if (normalSettings.value.x > 0.0) {
+        vec3 t = normalize(tangent.xyz - n * dot(n, tangent.xyz));
+        vec3 b = vec3(
+            n.y * t.z - n.z * t.y,
+            n.z * t.x - n.x * t.z,
+            n.x * t.y - n.y * t.x
+        ) * tangent.w;
+        vec3 mapNormal = texture(normalTex, uv).xyz * 2.0 - vec3(1.0);
+        vec3 mapped = normalize(t * mapNormal.x + b * mapNormal.y + n * mapNormal.z);
+        n = normalize(mix(n, mapped, clamp(normalSettings.value.x, 0.0, 1.0)));
+    }
     vec3 v = normalize(camera.position.xyz - world);
     vec3 l = normalize(vec3(-0.4, 0.85, 0.6));
     vec3 h = normalize(v + l);
