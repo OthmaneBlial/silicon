@@ -634,9 +634,9 @@ fn monster_sprite(kind: u16) -> Option<([u8; 4], i32)> {
     }
 }
 
-fn sprite_walk_textures(data: &[u8], prefix: [u8; 4]) -> api::Result<Vec<Vec<SpriteTexture>>> {
+fn sprite_actor_textures(data: &[u8], prefix: [u8; 4]) -> api::Result<Vec<Vec<SpriteTexture>>> {
     let lumps = wad_lumps(data)?;
-    b"ABCD"
+    b"ABCDEFG"
         .iter()
         .map(|&frame| {
             (1..=8)
@@ -695,6 +695,38 @@ fn actor_walk_frame(sprite: [u8; 4], animation_time: f32) -> usize {
 
 fn actor_view_rotation(actor_angle: f32, viewer_to_actor_angle: f32) -> usize {
     ((viewer_to_actor_angle - actor_angle + 202.5).rem_euclid(360.0) / 45.0).floor() as usize
+}
+
+fn actor_attack_profile(sprite: [u8; 4]) -> Option<([usize; 3], [f32; 3])> {
+    match &sprite {
+        b"TROO" => Some(([4, 5, 6], [8.0, 8.0, 6.0])),
+        b"SARG" => Some(([4, 5, 6], [8.0, 8.0, 8.0])),
+        b"POSS" => Some(([4, 5, 4], [10.0, 8.0, 8.0])),
+        b"SPOS" => Some(([4, 5, 4], [10.0, 10.0, 10.0])),
+        _ => None,
+    }
+}
+
+fn actor_attack_duration(sprite: [u8; 4]) -> f32 {
+    actor_attack_profile(sprite)
+        .map(|(_, tics)| tics.into_iter().sum::<f32>() / 35.0)
+        .unwrap_or_default()
+}
+
+fn actor_attack_frame(sprite: [u8; 4], remaining: f32) -> Option<usize> {
+    let (frames, tics) = actor_attack_profile(sprite)?;
+    if remaining <= 0.0 {
+        return None;
+    }
+    let elapsed = (tics.into_iter().sum::<f32>() - remaining * 35.0).max(0.0);
+    let mut end = 0.0;
+    for (frame, duration) in frames.into_iter().zip(tics) {
+        end += duration;
+        if elapsed < end {
+            return Some(frame);
+        }
+    }
+    None
 }
 
 fn sprite_patch_texture(data: &[u8], name: [u8; 8]) -> api::Result<SpriteTexture> {
@@ -846,6 +878,7 @@ struct Actor {
     y: f32,
     health: i32,
     attack_cooldown: f32,
+    attack_animation_remaining: f32,
     animation_time: f32,
     angle: f32,
 }
@@ -1454,6 +1487,7 @@ fn update_actors(
         let dx = player.x - actor.x;
         let dy = player.y - actor.y;
         let distance = (dx * dx + dy * dy).sqrt();
+        actor.attack_animation_remaining = (actor.attack_animation_remaining - delta).max(0.0);
         if distance < 640.0 {
             actor.angle = dy.atan2(dx).to_degrees().rem_euclid(360.0);
         }
@@ -1461,6 +1495,7 @@ fn update_actors(
             if actor.attack_cooldown == 0.0 {
                 *health -= 8;
                 actor.attack_cooldown = 0.85;
+                actor.attack_animation_remaining = actor_attack_duration(actor.sprite);
             }
         } else if (actor.sprite == *b"POSS" || actor.sprite == *b"SPOS")
             && distance <= 512.0
@@ -1479,6 +1514,7 @@ fn update_actors(
             if actor.attack_cooldown == 0.0 {
                 *health -= if actor.sprite == *b"SPOS" { 6 } else { 3 };
                 actor.attack_cooldown = 1.4;
+                actor.attack_animation_remaining = actor_attack_duration(actor.sprite);
             }
         } else if actor.sprite == *b"TROO"
             && distance <= 512.0
@@ -1504,6 +1540,7 @@ fn update_actors(
                     lifetime: 3.0,
                 });
                 actor.attack_cooldown = 2.0;
+                actor.attack_animation_remaining = actor_attack_duration(actor.sprite);
             }
         } else if distance < 640.0 {
             let mut enemy = Player {
@@ -1633,7 +1670,7 @@ impl PreparedScene {
             }
             if let Some((prefix, health)) = monster_sprite(kind) {
                 if let Entry::Vacant(entry) = sprites.entry(prefix) {
-                    entry.insert(sprite_walk_textures(&data, prefix)?);
+                    entry.insert(sprite_actor_textures(&data, prefix)?);
                 }
                 actors.push(Actor {
                     sprite: prefix,
@@ -1641,6 +1678,7 @@ impl PreparedScene {
                     y: y as f32,
                     health,
                     attack_cooldown: 0.0,
+                    attack_animation_remaining: 0.0,
                     animation_time: 0.0,
                     angle: thing_angle as f32,
                 });
@@ -1763,8 +1801,9 @@ impl PreparedScene {
                 continue;
             };
             let view_to_actor = (actor.y - player.y).atan2(actor.x - player.x).to_degrees();
-            let sprite = &frames[actor_walk_frame(actor.sprite, actor.animation_time)]
-                [actor_view_rotation(actor.angle, view_to_actor)];
+            let frame = actor_attack_frame(actor.sprite, actor.attack_animation_remaining)
+                .unwrap_or_else(|| actor_walk_frame(actor.sprite, actor.animation_time));
+            let sprite = &frames[frame][actor_view_rotation(actor.angle, view_to_actor)];
             let vertices =
                 sprite_vertices(actor.x, actor.y, sprite, player.angle, sector, sector.floor);
             if vertices.is_empty() {
@@ -2038,6 +2077,29 @@ mod tests {
     }
 
     #[test]
+    fn enemy_attack_poses_follow_their_doom_state_sequences() {
+        for (sprite, total, second, third, third_frame) in [
+            (*b"TROO", 22.0, 14.0, 6.0, 6),
+            (*b"SARG", 24.0, 16.0, 8.0, 6),
+            (*b"POSS", 26.0, 16.0, 8.0, 4),
+            (*b"SPOS", 30.0, 20.0, 10.0, 4),
+        ] {
+            let remaining = |tics: f32| tics / 35.0;
+            assert_eq!(actor_attack_frame(sprite, remaining(total)), Some(4));
+            assert_eq!(actor_attack_frame(sprite, remaining(second)), Some(5));
+            assert_eq!(
+                actor_attack_frame(sprite, remaining(third)),
+                Some(third_frame)
+            );
+            assert_eq!(actor_attack_frame(sprite, 0.0), None);
+        }
+        assert_eq!(actor_attack_duration(*b"TROO"), 22.0 / 35.0);
+        assert_eq!(actor_attack_duration(*b"SARG"), 24.0 / 35.0);
+        assert_eq!(actor_attack_duration(*b"POSS"), 26.0 / 35.0);
+        assert_eq!(actor_attack_duration(*b"SPOS"), 30.0 / 35.0);
+    }
+
+    #[test]
     fn mirrored_sprite_views_reverse_billboard_texture_coordinates() {
         let sector = Sector {
             floor: 0.0,
@@ -2218,6 +2280,7 @@ mod tests {
             y: 0.0,
             health: 20,
             attack_cooldown: 0.0,
+            attack_animation_remaining: 0.0,
             animation_time: 0.0,
             angle: 0.0,
         }];
@@ -2290,6 +2353,7 @@ mod tests {
             y: 0.0,
             health: 60,
             attack_cooldown: 0.0,
+            attack_animation_remaining: 0.0,
             animation_time: 0.0,
             angle: 0.0,
         }];
@@ -2323,13 +2387,30 @@ mod tests {
             0.05,
         );
         assert_eq!(actors[0].animation_time, 0.0);
+        assert_eq!(
+            actors[0].attack_animation_remaining,
+            actor_attack_duration(*b"SARG")
+        );
+        assert_eq!(
+            actor_attack_frame(*b"SARG", actors[0].attack_animation_remaining),
+            Some(4)
+        );
         update_actors(
             &map,
             &mut actors,
             &mut projectiles,
             player,
             &mut health,
-            0.84,
+            0.05,
+        );
+        assert!(actors[0].attack_animation_remaining < actor_attack_duration(*b"SARG"));
+        update_actors(
+            &map,
+            &mut actors,
+            &mut projectiles,
+            player,
+            &mut health,
+            0.79,
         );
         assert_eq!(health, 92);
         update_actors(
@@ -2361,6 +2442,7 @@ mod tests {
             y: 0.0,
             health: 20,
             attack_cooldown: 0.0,
+            attack_animation_remaining: 0.0,
             animation_time: 0.0,
             angle: 0.0,
         }];
@@ -2432,6 +2514,7 @@ mod tests {
             y: 0.0,
             health: 60,
             attack_cooldown: 0.0,
+            attack_animation_remaining: 0.0,
             animation_time: 0.0,
             angle: 0.0,
         }];

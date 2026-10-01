@@ -31,17 +31,19 @@ when health or pistol ammo is below its 100 or 200 cap. The player starts with
 50 pistol rounds.
 
 The combat slice loads four normal-skill enemy types from WAD things and their
-classic `A1`–`D1` walk sprite patches: former humans (20 health), shotgunners
-(30), imps (60), and demons (150). Moving enemies cycle those four frames using
-the original Doom state durations and choose among eight camera-relative views;
-paired Freedoom patches are horizontally flipped where Doom does so. Cutout
-billboards use a SILICON fragment shader. Space
+classic `A1`–`D1` walk and `E1`–`G1` attack sprite patches: former humans (20
+health), shotgunners (30), imps (60), and demons (150). Moving enemies cycle
+their walk frames, play three-frame attack poses, and choose among eight
+camera-relative views using Doom's state durations; paired Freedoom patches
+are horizontally flipped where Doom does so. Cutout billboards use a SILICON
+fragment shader. Space
 fires a 20-damage hitscan with a 0.35-second cooldown; pistol ammo caps at 200.
 Enemies chase within 640 map units and deal 8 melee damage within 48 units, at
 most once every 0.85 seconds. Former humans fire 3-damage hitscan attacks and
 shotgunners fire 6-damage hitscan attacks within 512 units, at most once every
-1.4 seconds and only with clear sight past blocking lines. This is a fixed
-prototype rule; enemy windups and aim spread are not modeled. The window title
+1.4 seconds and only with clear sight past blocking lines. Damage and projectile
+launch happen as soon as the cooldown expires; the pose plays afterward, with
+no attack windup or aim spread. The window title
 reports health, ammo, pickups, kills, draw calls, and triangles. Imps launch a
 straight BAL1A0 fireball within 512 units when they have clear sight;
 it travels at 180 units per second, lasts up to 3 seconds, and deals 8 damage
@@ -63,7 +65,7 @@ fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Every BSP leaf is drawn; view-frustum traversal and BSP visibility
-culling, masked two-sided middle textures, enemy idle/attack/death states,
+culling, masked two-sided middle textures, enemy idle/pain/death states,
 projectile explosion frames and vertical motion, keys, exits, other weapons and
 their ammunition, full weapon animation beyond the brief idle/fire pose, and
 sound remain unimplemented.
