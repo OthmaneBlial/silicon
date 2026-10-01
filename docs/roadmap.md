@@ -27,7 +27,7 @@ long-term. This repository ships working stages and labels the remaining work.
 | Anisotropic texture filtering | Derivative-aware 1×–16× sampling, minor-axis mip selection, focused unit test and side-by-side steep-angle scene |
 | GPU profiler | Command, vertex, primitive setup, coverage/depth, shader, and blend/write timing with render counters; headless presentation is marked unmeasured |
 | Stencil / transparency integration | Circular stencil portal constrains a textured cube and translucent overlay; scalar and SIMD four-band color/depth/stencil match |
-| Compute (phases 45–49, first slices) | Scalar and four-lane SIMD SIR dispatch expose 3D global/local/workgroup IDs, read up to 12 vec4 buffers by map or shader-selected index, stage indexed output writes, provide zeroed per-workgroup shared memory with synchronized barriers, and support scalar f32 add/exchange/compare-exchange atomics; a strict SPIR-V 1.0 GLCompute subset runs GLSL vec4 addition, guarded partial-workgroup inversion and bounded shared-array broadcasts on the same CPU SIR path; shared-memory races and divergent barriers reject the whole dispatch; shared/atomic kernels use the scalar scheduler |
+| Compute (phases 45–49, first slices) | Scalar and four-lane SIMD SIR dispatch expose 3D global/local/workgroup IDs, read up to 12 vec4 buffers by map or shader-selected index, stage indexed output writes, provide zeroed per-workgroup shared memory with synchronized barriers, and support scalar f32 add/exchange/compare-exchange atomics; a strict SPIR-V 1.0 GLCompute subset runs GLSL vec4 addition, guarded partial-workgroup inversion, bounded shared-array broadcasts and uint add/exchange/compare-exchange atomics on the same CPU SIR path; shared-memory races and divergent barriers reject the whole dispatch; shared/atomic kernels use the scalar scheduler |
 | Image regression tests | Approved SIR cube PNG, exact backend comparisons and <=1 channel-step tolerance; failures save `output/shader_cube.diff.png` |
 | Fuzzing | cargo-fuzz targets cover SPIR-V parsing/lowering, capture/resource validation and bounded replay, plus triangle setup and texture sampling; see `docs/security.md` |
 | Safety review | Explicit input/resource bounds and targeted malformed-input tests; this is not a hostile-workload sandbox or process-wide memory budget |
@@ -42,16 +42,16 @@ long-term. This repository ships working stages and labels the remaining work.
 
 The compute path has bounded map dispatch, checked structured layouts,
 shader-selected storage access, shared memory, barriers, transactional scalar
-f32 storage atomics, and one strict SPIR-V storage-buffer path. Cross-workgroup
-barriers, integer/vector atomics and broader compute-SPIR-V compatibility remain
-future steps; a JIT stays an advanced experiment until more interpreter evidence
-exists.
+f32 storage atomics, and a strict SPIR-V storage-buffer path with bounded uint
+atomics. Cross-workgroup barriers, other integer/vector atomics and broader
+compute-SPIR-V compatibility remain future steps; a JIT stays an advanced
+experiment until more interpreter evidence exists.
 Cube maps use cross-face bilinear filtering; implicit SPIR-V sampling is limited
 to an unmodified fragment input direction, and anisotropic SPIR-V sampling
 remains future work.
 
 Future research: multiple targets, full tile binning, loops and broader control flow,
-cross-workgroup barriers, integer/vector atomics and broader compute-stage SPIR-V, transformed implicit sampling,
+cross-workgroup barriers, other integer/vector atomics and broader compute-stage SPIR-V, transformed implicit sampling,
 anisotropic SPIR-V sampling, JIT, DOOM BSP wall occlusion and per-column portal
 clipping, advanced enemy states and full gameplay rules, and
 possibly a software ray-tracing unit.

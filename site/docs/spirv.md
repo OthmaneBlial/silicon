@@ -101,6 +101,13 @@ faces. This environment term is not split-sum image-based lighting.
   AcquireRelease WorkgroupMemory semantics (`barrier()` in GLSL).
   Scalar unsigned comparisons support `>`, `>=`, `<` and `<=`; IDs are bounded
   to 1,048,576 and comparison constants to 16,777,216 for exact float-backed SIR.
+  Compute also accepts uint32 `OpAtomicIAdd`, `OpAtomicExchange` and
+  `OpAtomicCompareExchange` on indexed storage-buffer elements, with Device
+  scope and Relaxed semantics only. Values and operands are bounded to the exact
+  float-backed integer range, 0 through 16,777,216.
+  Up to 12 uint runtime arrays may follow the write-only vec4 output at
+  contiguous set-0 bindings; they require 4-byte stride and offset 0. The host
+  maps values to vec4 x components and preserves yzw.
   Debug names and source-language metadata are read without executing them.
 
 The public binary parser checks framing, string padding, supported instruction
@@ -132,8 +139,10 @@ approximation even in divergent branches, not hardware derivative conformance.
 | Compute invocation BuiltIns | `GlobalInvocationId`, `LocalInvocationId`, `WorkgroupId` and `NumWorkgroups` map to SIR inputs 0..3 |
 | Set 0, bindings 0..N-1 | Read-only `vec4[]` buffers with 16-byte stride and member offset 0, passed to `dispatch_compute` in binding order |
 | Set 0, binding N | One write-only `vec4[]` output with the same layout; only shader-written elements are committed |
+| Set 0, bindings after N | Up to 12 contiguous `uint[]` atomic buffers with 4-byte stride; supplied in binding order to `dispatch_compute_with_atomics` |
 | Workgroup storage | Fixed `vec4[N]` arrays with at most 4,096 elements total; shared loads/stores use distinct, checked per-workgroup ranges |
 | `OpControlBarrier` | Workgroup execution/memory scope with AcquireRelease WorkgroupMemory semantics; divergent paths fail dispatch |
+| `OpAtomicIAdd`, `OpAtomicExchange`, `OpAtomicCompareExchange` | uint32 indexed storage elements, Device scope, Relaxed semantics, exact values from 0 through 16,777,216 |
 
 The shadow shader binds the single-level 32-bit float depth texture at set 1,
 binding 1, and supplies its light matrix and bias at uniform bindings 6 and 7.
@@ -179,7 +188,9 @@ transformed coordinates, explicit sample offsets/gradients, general shared-memor
 layouts/barriers, WGSL or GLSL compiler. The compute subset accepts up to 12
 read-only vec4 arrays at bindings 0..N-1 and exactly one write-only vec4 output
 at N, plus fixed Workgroup `vec4[N]` arrays up to 4,096 elements total and the
-GLSL `barrier()` semantics above; it does not support atomics, textures or uniforms. Unreachable
+GLSL `barrier()` semantics above. Up to 12 uint atomic arrays may follow the
+output; other atomic types/operations remain unsupported. Textures and uniforms
+are unsupported in compute. Unreachable
 blocks are accepted only as isolated `OpUnreachable` merge blocks.
 Conditional targets must be distinct; overlapping regions, back edges and branches
 outside their structured region fail. Phi pairs must match all predecessors,

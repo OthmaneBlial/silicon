@@ -20,7 +20,8 @@ are no loops, integer types, shader depth writes or JIT compilation. Compute
 supports scalar f32 storage atomics on vec4 x components. Bounded scalar and
 SIMD4 [SIR compute dispatch](compute.md)
 are separate from the graphics shader path. A narrow SPIR-V 1.0 compute
-storage-buffer subset also translates externally compiled GLSL into these
+storage-buffer subset also translates externally compiled GLSL, including
+bounded uint atomics, into these
 instructions; general SPIR-V compatibility remains unsupported. See the
 [accepted SPIR-V subset](spirv.md).
 

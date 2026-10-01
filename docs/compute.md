@@ -115,6 +115,18 @@ existing race checks and synchronized scalar scheduler handle the accesses.
 Other shared types/layouts, other barrier scopes/semantics and cross-workgroup
 synchronization are not supported.
 
+GLSL `uint[]` storage buffers may follow the vec4 output binding. Up to 12 are
+accepted, with contiguous bindings and 4-byte array stride. `atomicAdd`,
+`atomicExchange` and `atomicCompSwap` require Device scope and Relaxed semantics.
+The CPU adapter stores each integer in the bound vec4's x component, so every x
+value and operand must be an exact nonnegative integer from 0 through 16,777,216;
+yzw are preserved. A failed range check rejects the dispatch before committing
+any output or atomic values. Run the 64-workgroup proof with:
+
+```sh
+cargo run --release --example compute_spirv_atomic_uint
+```
+
 The checked-in GLSL compute kernels are compiled offline with glslang. Run them
 without a GPU or display:
 
@@ -131,9 +143,13 @@ glslangValidator -V --target-env vulkan1.0 \
 glslangValidator -V --target-env vulkan1.0 \
   assets/shaders/compute_shared_multi.comp \
   -o assets/shaders/compute_shared_multi.comp.spv
+glslangValidator -V --target-env vulkan1.0 \
+  assets/shaders/compute_atomic_uint.comp \
+  -o assets/shaders/compute_atomic_uint.comp.spv
 cargo run --release --example compute_spirv_vector_add
 cargo run --release --example compute_spirv_invert
 cargo run --release --example compute_spirv_shared
+cargo run --release --example compute_spirv_atomic_uint
 ```
 
 These examples prove GLSL → SPIR-V → SIR → CPU storage-buffer execution with
@@ -145,7 +161,8 @@ comparisons use exact float-backed SIR values: dispatch IDs are bounded to
 1,048,576 and comparison constants to 16,777,216. Other integer arithmetic is
 not supported. The shared-memory example broadcasts the first input value in
 each 64-invocation group and verifies 4,096 outputs. Compute SPIR-V does not
-support atomics, textures, uniforms, loops, or storage images.
+support other atomic types or operations, textures, uniforms, loops, or storage
+images.
 
 This remains an initial data-parallel path, not general compute compatibility.
 Dispatch is synchronous; command-buffer capture/replay and C API support are not

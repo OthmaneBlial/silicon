@@ -22,8 +22,10 @@ single-writer output stores. `create_compute_pipeline_with_shared_memory` adds
 per-workgroup vec4 memory and `WorkgroupBarrier`; `dispatch_compute_with_atomics`
 and its layout/SIMD variants accept separate mutable bindings for scalar f32
 storage atomics. Shared and atomic programs use the scalar workgroup scheduler.
-Command-buffer integration, cross-workgroup barriers, integer/vector atomics and
-compute-stage SPIR-V beyond the documented subset are unsupported. `create_compute_pipeline_from_spirv`
+SIR atomics are scalar f32; translated SPIR-V also supports bounded uint32
+add, exchange and compare-exchange storage operations. Command-buffer integration,
+cross-workgroup barriers, other integer/vector atomics and compute-stage SPIR-V
+beyond the documented subset are unsupported. `create_compute_pipeline_from_spirv`
 translates the documented narrow SPIR-V 1.0 storage-buffer subset into
 storage-only dispatch. Its compute subset includes fixed `vec4[N]` workgroup
 arrays up to 4,096 values total and GLSL `barrier()`; see the
@@ -32,6 +34,7 @@ arrays up to 4,096 values total and GLSL `barrier()`; see the
 [SPIR-V vector-add example](../examples/compute_spirv_vector_add.rs),
 [SPIR-V inversion example](../examples/compute_spirv_invert.rs),
 [SPIR-V shared-memory example](../examples/compute_spirv_shared.rs),
+[SPIR-V uint atomic example](../examples/compute_spirv_atomic_uint.rs),
 [benchmark example](../examples/compute_bench.rs), and
 [atomic example](../examples/compute_atomics.rs).
 
