@@ -72,6 +72,17 @@ record. The wall-clock median was 395.60 ms, but frames ranged from 215.98 to
 772.71 ms while the host showed heavy external CPU activity. Treat this as a
 shader-work sample only; rerun on an idle host before using its timing values.
 
+## Environment-map PBR shader-work sample
+
+The [raw cube-map record](../benchmarks/apple-m2-pbr-cubemap-2026-10-01.json)
+uses commit `8b88646faec523454c78324e7da89003825fb981` at 640×400 with
+four-worker NEON coverage, three warmups and 30 timed frames. Its counters
+correspond to about 224 SIR instructions and 2.06 texture samples per shaded
+fragment. The upper-middle frame time was 449.53 ms and p95 was 728.86 ms;
+individual frames ranged from 236.83 to 888.61 ms. Keep this as a shader-work
+sample: the shared-host timing spread does not support a speed comparison with
+the earlier PBR records.
+
 ## 0.5 control-flow checkpoint
 
 The [pre-optimization alternating record](../benchmarks/apple-m2-control-before-counters-2026-10-01.json)
