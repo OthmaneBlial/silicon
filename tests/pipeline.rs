@@ -48,6 +48,38 @@ fn shared_edges_exactly_once() {
         }
     }
 }
+
+#[test]
+fn tile_bins_preserve_triangle_submission_order_for_blending() {
+    let mut r = Renderer::new(32, 32).unwrap();
+    r.clear(Color::BLACK);
+    let mut vertices = Vec::new();
+    for _ in 0..257 {
+        vertices.extend(triangle(0.5, Color::WHITE));
+    }
+    r.draw(
+        &vertices,
+        None,
+        Pipeline {
+            depth_compare: Compare::Always,
+            depth_write: false,
+            blend: Blend::Alpha,
+            ..Default::default()
+        },
+        vertex,
+        |fragment| match fragment.primitive {
+            0 => Some(Color::new(1., 0., 0., 0.5)),
+            256 => Some(Color::new(0., 0., 1., 0.5)),
+            _ => None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        r.framebuffer.pixel(8, 24).unwrap().rgba8(),
+        [64, 0, 128, 255]
+    );
+}
+
 #[test]
 fn depth_discard_culling_and_invalid_indices() {
     let mut r = Renderer::new(32, 32).unwrap();

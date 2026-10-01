@@ -307,7 +307,7 @@ flowchart LR
 | API | Supported Rust API v1, versioned C ABI v1, and Vulkan-like Rust subset; synchronous command submission and CPU framebuffer readback |
 | Memory | Owned typed vertex/index/uniform buffers; reference-counted command lifetimes |
 | Geometry | Indexed/non-indexed triangles, homogeneous six-plane clipping, CW/CCW culling |
-| Raster | Pixel-center top-left coverage, 8-bit subpixel precision, 16×16 tiles |
+| Raster | Pixel-center top-left coverage, 8-bit subpixel precision, ordered 16×16 tile bins |
 | Interpolation | Colors/UV/normals/custom vec4 varyings, perspective reconstruction, affine NDC depth |
 | Shading | Native Lambert/Blinn reference; GLSL Blinn and Cook-Torrance GGX metallic/roughness through SPIR-V |
 | Attachments | Up to four RGBA8 fragment outputs, shared depth/stencil, RGBA8/BGRA8 framebuffer storage, 8 depth compare modes |

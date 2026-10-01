@@ -2,6 +2,10 @@ use crate::*;
 use std::time::{Duration, Instant};
 const SUBPIXEL: i64 = 256;
 const TILE: u32 = 16;
+// ponytail: cap bins at 256 triangles, 1M references and 262k tiles; raise only if profiling warrants it.
+const MAX_BINNED_TILES: usize = 262_144;
+const MAX_BINNED_TRIANGLES: usize = 256;
+const MAX_TILE_REFERENCES: usize = 1_048_576;
 const SAMPLE_2X: [(i64, i64); 2] = [(64, 64), (192, 192)];
 const SAMPLE_4X: [(i64, i64); 4] = [(96, 32), (224, 96), (32, 160), (160, 224)];
 type ColorOutputs = [Option<Color>; MAX_COLOR_ATTACHMENTS];
@@ -80,6 +84,20 @@ struct ScreenVertex {
     z: f32,
     inv_w: f32,
     varyings: [Vec4; 4],
+}
+#[derive(Clone, Copy)]
+struct TriangleSetup {
+    primitive: u32,
+    vertices: [ScreenVertex; 3],
+    min_x: u32,
+    min_y: u32,
+    max_x: u32,
+    max_y: u32,
+    inclusive: [bool; 3],
+    offsets: [[i64; 3]; 4],
+    inv_area: f32,
+    dx: [f32; 3],
+    dy: [f32; 3],
 }
 #[derive(Clone, Copy)]
 struct PreparedFragment {
@@ -232,6 +250,25 @@ impl Renderer {
         self.stats.vertex_time += start.elapsed();
         let start = Instant::now();
         let render_result = (|| {
+            let tiles_x = self.framebuffer.width.div_ceil(TILE);
+            let tile_count = (tiles_x as usize)
+                .checked_mul(self.framebuffer.height.div_ceil(TILE) as usize)
+                .ok_or("tile grid size overflow")?;
+            let mut bins = if tile_count <= MAX_BINNED_TILES {
+                let mut bins = Vec::new();
+                bins.try_reserve_exact(tile_count)
+                    .map_err(|_| "could not allocate tile bins")?;
+                bins.resize_with(tile_count, Vec::new);
+                Some(bins)
+            } else {
+                None
+            };
+            let mut setups = Vec::new();
+            setups
+                .try_reserve_exact(MAX_BINNED_TRIANGLES)
+                .map_err(|_| "could not allocate triangle bin")?;
+            let mut touched = Vec::new();
+            let mut references = 0usize;
             for i in (0..count).step_by(3) {
                 let setup_start = self.profile_shaders.then(Instant::now);
                 let ix = |n: usize| indices.map_or(n, |ind| ind[n] as usize);
@@ -248,13 +285,69 @@ impl Renderer {
                 }
                 let primitive = (self.stats.triangles - 1) as u32;
                 for k in 1..poly.len().saturating_sub(1) {
-                    self.triangle(
-                        [poly[0], poly[k], poly[k + 1]],
-                        primitive,
-                        pipeline,
-                        &fragment,
-                    )?;
+                    let Some(setup) =
+                        self.setup_triangle([poly[0], poly[k], poly[k + 1]], primitive, pipeline)
+                    else {
+                        continue;
+                    };
+                    let Some(bins) = bins.as_mut() else {
+                        self.raster_triangle_setup(setup, pipeline, &fragment)?;
+                        continue;
+                    };
+                    let min_tile_x = setup.min_x / TILE;
+                    let min_tile_y = setup.min_y / TILE;
+                    let end_tile_x = (setup.max_x - 1) / TILE + 1;
+                    let end_tile_y = (setup.max_y - 1) / TILE + 1;
+                    let tile_references = ((end_tile_x - min_tile_x) as usize)
+                        .checked_mul((end_tile_y - min_tile_y) as usize)
+                        .ok_or("triangle tile count overflow")?;
+                    if tile_references > MAX_TILE_REFERENCES
+                        || setups.len() == MAX_BINNED_TRIANGLES
+                        || references
+                            .checked_add(tile_references)
+                            .is_none_or(|count| count > MAX_TILE_REFERENCES)
+                    {
+                        self.flush_tile_bins(
+                            tiles_x,
+                            &mut setups,
+                            bins,
+                            &mut touched,
+                            pipeline,
+                            &fragment,
+                        )?;
+                        references = 0;
+                    }
+                    if tile_references > MAX_TILE_REFERENCES {
+                        self.raster_triangle_setup(setup, pipeline, &fragment)?;
+                        continue;
+                    }
+                    let setup_index = setups.len();
+                    setups.push(setup);
+                    let bin_start = self.profile_shaders.then(Instant::now);
+                    for tile_y in min_tile_y..end_tile_y {
+                        for tile_x in min_tile_x..end_tile_x {
+                            let tile = (tile_y * tiles_x + tile_x) as usize;
+                            if bins[tile].is_empty() {
+                                touched.push(tile);
+                            }
+                            bins[tile].push(setup_index);
+                        }
+                    }
+                    if let Some(bin_start) = bin_start {
+                        self.stats.primitive_setup_time += bin_start.elapsed();
+                    }
+                    references += tile_references;
                 }
+            }
+            if let Some(bins) = bins.as_mut() {
+                self.flush_tile_bins(
+                    tiles_x,
+                    &mut setups,
+                    bins,
+                    &mut touched,
+                    pipeline,
+                    &fragment,
+                )?;
             }
             Ok(())
         })();
@@ -262,17 +355,16 @@ impl Renderer {
         self.stats.raster_time += start.elapsed();
         render_result
     }
-    fn triangle<F: Fn(&[Fragment; 4], u8) -> Result<[Option<ColorOutputs>; 4]>>(
+    fn setup_triangle(
         &mut self,
         v: [VertexOutput; 3],
         primitive: u32,
         state: Pipeline,
-        shader: &F,
-    ) -> Result<()> {
+    ) -> Option<TriangleSetup> {
         let setup_start = self.profile_shaders.then(Instant::now);
         if v.iter().any(|v| v.position.w <= 0.) {
             self.record_primitive_setup(setup_start);
-            return Ok(());
+            return None;
         }
         let w = self.framebuffer.width;
         let h = self.framebuffer.height;
@@ -300,7 +392,7 @@ impl Renderer {
         let mut area = edge(s[0], s[1], s[2].x, s[2].y);
         if area == 0 {
             self.record_primitive_setup(setup_start);
-            return Ok(());
+            return None;
         }
         let front = match state.front_face {
             FrontFace::Ccw => area < 0,
@@ -309,7 +401,7 @@ impl Renderer {
         if (state.cull == Cull::Back && !front) || (state.cull == Cull::Front && front) {
             self.stats.culled += 1;
             self.record_primitive_setup(setup_start);
-            return Ok(());
+            return None;
         }
         if area < 0 {
             s.swap(1, 2);
@@ -321,6 +413,10 @@ impl Renderer {
         let min_y = (s.iter().map(|p| p.y).min().unwrap() / SUBPIXEL).clamp(0, h as i64) as u32;
         let max_y = ((s.iter().map(|p| p.y).max().unwrap() + SUBPIXEL - 1) / SUBPIXEL)
             .clamp(0, h as i64) as u32;
+        if min_x >= max_x || min_y >= max_y {
+            self.record_primitive_setup(setup_start);
+            return None;
+        }
         let edges = [(s[1], s[2]), (s[2], s[0]), (s[0], s[1])];
         let inclusive = edges.map(|(a, b)| top_left(a, b));
         let positions: &[(i64, i64)] = match self.framebuffer.sample_count() {
@@ -339,103 +435,159 @@ impl Renderer {
         let dx = edges.map(|(a, b)| -(b.y - a.y) as f32 * SUBPIXEL as f32 * inv_area);
         let dy = edges.map(|(a, b)| (b.x - a.x) as f32 * SUBPIXEL as f32 * inv_area);
         self.record_primitive_setup(setup_start);
-        for ty in (min_y..max_y).step_by(TILE as usize) {
-            for tx in (min_x..max_x).step_by(TILE as usize) {
+        Some(TriangleSetup {
+            primitive,
+            vertices: s,
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+            inclusive,
+            offsets,
+            inv_area,
+            dx,
+            dy,
+        })
+    }
+    fn raster_triangle_setup<F: Fn(&[Fragment; 4], u8) -> Result<[Option<ColorOutputs>; 4]>>(
+        &mut self,
+        setup: TriangleSetup,
+        state: Pipeline,
+        shader: &F,
+    ) -> Result<()> {
+        for tile_y in setup.min_y / TILE..=(setup.max_y - 1) / TILE {
+            for tile_x in setup.min_x / TILE..=(setup.max_x - 1) / TILE {
                 self.stats.tiles += 1;
-                let end_x = (tx + TILE).min(max_x);
-                let end_y = (ty + TILE).min(max_y);
-                for y in ty..end_y {
-                    let mut e = edges.map(|(a, b)| {
-                        edge(
-                            a,
-                            b,
-                            tx as i64 * SUBPIXEL + SUBPIXEL / 2,
-                            y as i64 * SUBPIXEL + SUBPIXEL / 2,
-                        )
-                    });
-                    let step = edges.map(|(a, b)| -(b.y - a.y) * SUBPIXEL);
-                    for x in (tx..end_x).step_by(4) {
-                        let raster_start = self.profile_shaders.then(Instant::now);
-                        let mut coverage = [0u8; 4];
-                        for (sample, offset) in offsets.iter().enumerate().take(positions.len()) {
-                            let sample_edges = std::array::from_fn(|i| e[i] + offset[i]);
-                            let mask = simd::coverage4(sample_edges, step, inclusive, self.backend);
-                            for lane in 0..(end_x - x).min(4) {
-                                if mask & (1 << lane) != 0 {
-                                    coverage[lane as usize] |= 1 << sample;
-                                }
-                            }
-                        }
-                        let mut prepared = [None; 4];
-                        let mut inputs = [Fragment::default(); 4];
-                        let mut active = 0u8;
-                        for lane in 0..(end_x - x).min(4) {
-                            let coverage_samples = coverage[lane as usize];
-                            if coverage_samples != 0 {
-                                let sample = coverage_samples.trailing_zeros() as usize;
-                                let sample_barycentrics: [[f32; 3]; 4] =
-                                    std::array::from_fn(|sample| {
-                                        std::array::from_fn(|i| {
-                                            (e[i] + step[i] * lane as i64 + offsets[sample][i])
-                                                as f32
-                                                * inv_area
-                                        })
-                                    });
-                                let bary = sample_barycentrics[sample];
-                                let sample_depths = sample_barycentrics.map(|bary| {
-                                    (0..3).map(|i| bary[i] * s[i].z).sum::<f32>().clamp(0., 1.)
-                                });
-                                let p = self.prepare_fragment(
-                                    x + lane,
-                                    y,
-                                    primitive,
-                                    bary,
-                                    dx,
-                                    dy,
-                                    s,
-                                    state,
-                                    coverage_samples,
-                                    sample_depths,
-                                )?;
-                                if let Some(p) = p {
-                                    inputs[lane as usize] = p.input;
-                                    if p.passing_samples != 0 || p.debug {
-                                        active |= 1 << lane;
-                                    }
-                                    prepared[lane as usize] = Some(p);
-                                }
-                            }
-                        }
-                        if let Some(start) = raster_start {
-                            self.stats.rasterization_time += start.elapsed();
-                        }
-                        self.stats.shaded += active.count_ones() as u64;
-                        let start = (self.profile_shaders && active != 0).then(Instant::now);
-                        let outputs = if active == 0 {
-                            [None; 4]
-                        } else {
-                            shader(&inputs, active)?
-                        };
-                        if let Some(start) = start {
-                            self.stats.shader_time += start.elapsed();
-                        }
-                        for lane in 0..4 {
-                            if let Some(p) = prepared[lane] {
-                                let output = if active & (1 << lane) != 0 {
-                                    outputs[lane]
-                                } else {
-                                    None
-                                };
-                                self.finish_fragment(p, output, state)?;
-                            }
-                        }
-                        for i in 0..3 {
-                            e[i] += step[i] * 4;
+                self.raster_tile(setup, tile_x, tile_y, state, shader)?;
+            }
+        }
+        Ok(())
+    }
+    fn raster_tile<F: Fn(&[Fragment; 4], u8) -> Result<[Option<ColorOutputs>; 4]>>(
+        &mut self,
+        setup: TriangleSetup,
+        tile_x: u32,
+        tile_y: u32,
+        state: Pipeline,
+        shader: &F,
+    ) -> Result<()> {
+        let s = setup.vertices;
+        let edges = [(s[1], s[2]), (s[2], s[0]), (s[0], s[1])];
+        let min_x = (tile_x * TILE).max(setup.min_x);
+        let min_y = (tile_y * TILE).max(setup.min_y);
+        let end_x = ((tile_x + 1) * TILE).min(setup.max_x);
+        let end_y = ((tile_y + 1) * TILE).min(setup.max_y);
+        let step = edges.map(|(a, b)| -(b.y - a.y) * SUBPIXEL);
+        let sample_count = self.framebuffer.sample_count().get();
+        for y in min_y..end_y {
+            let mut e = edges.map(|(a, b)| {
+                edge(
+                    a,
+                    b,
+                    min_x as i64 * SUBPIXEL + SUBPIXEL / 2,
+                    y as i64 * SUBPIXEL + SUBPIXEL / 2,
+                )
+            });
+            for x in (min_x..end_x).step_by(4) {
+                let raster_start = self.profile_shaders.then(Instant::now);
+                let mut coverage = [0u8; 4];
+                for (sample, offset) in setup.offsets.iter().enumerate().take(sample_count) {
+                    let sample_edges = std::array::from_fn(|i| e[i] + offset[i]);
+                    let mask = simd::coverage4(sample_edges, step, setup.inclusive, self.backend);
+                    for lane in 0..(end_x - x).min(4) {
+                        if mask & (1 << lane) != 0 {
+                            coverage[lane as usize] |= 1 << sample;
                         }
                     }
                 }
+                let mut prepared = [None; 4];
+                let mut inputs = [Fragment::default(); 4];
+                let mut active = 0u8;
+                for lane in 0..(end_x - x).min(4) {
+                    let coverage_samples = coverage[lane as usize];
+                    if coverage_samples != 0 {
+                        let sample = coverage_samples.trailing_zeros() as usize;
+                        let sample_barycentrics: [[f32; 3]; 4] = std::array::from_fn(|sample| {
+                            std::array::from_fn(|i| {
+                                (e[i] + step[i] * lane as i64 + setup.offsets[sample][i]) as f32
+                                    * setup.inv_area
+                            })
+                        });
+                        let bary = sample_barycentrics[sample];
+                        let sample_depths = sample_barycentrics.map(|bary| {
+                            (0..3).map(|i| bary[i] * s[i].z).sum::<f32>().clamp(0., 1.)
+                        });
+                        let p = self.prepare_fragment(
+                            x + lane,
+                            y,
+                            setup.primitive,
+                            bary,
+                            setup.dx,
+                            setup.dy,
+                            s,
+                            state,
+                            coverage_samples,
+                            sample_depths,
+                        )?;
+                        if let Some(p) = p {
+                            inputs[lane as usize] = p.input;
+                            if p.passing_samples != 0 || p.debug {
+                                active |= 1 << lane;
+                            }
+                            prepared[lane as usize] = Some(p);
+                        }
+                    }
+                }
+                if let Some(start) = raster_start {
+                    self.stats.rasterization_time += start.elapsed();
+                }
+                self.stats.shaded += active.count_ones() as u64;
+                let start = (self.profile_shaders && active != 0).then(Instant::now);
+                let outputs = if active == 0 {
+                    [None; 4]
+                } else {
+                    shader(&inputs, active)?
+                };
+                if let Some(start) = start {
+                    self.stats.shader_time += start.elapsed();
+                }
+                for lane in 0..4 {
+                    if let Some(p) = prepared[lane] {
+                        let output = if active & (1 << lane) != 0 {
+                            outputs[lane]
+                        } else {
+                            None
+                        };
+                        self.finish_fragment(p, output, state)?;
+                    }
+                }
+                for i in 0..3 {
+                    e[i] += step[i] * 4;
+                }
             }
         }
+        Ok(())
+    }
+    fn flush_tile_bins<F: Fn(&[Fragment; 4], u8) -> Result<[Option<ColorOutputs>; 4]>>(
+        &mut self,
+        tiles_x: u32,
+        setups: &mut Vec<TriangleSetup>,
+        bins: &mut [Vec<usize>],
+        touched: &mut Vec<usize>,
+        state: Pipeline,
+        shader: &F,
+    ) -> Result<()> {
+        for &tile in touched.iter() {
+            let tile_x = tile as u32 % tiles_x;
+            let tile_y = tile as u32 / tiles_x;
+            self.stats.tiles += bins[tile].len() as u64;
+            for &setup in &bins[tile] {
+                self.raster_tile(setups[setup], tile_x, tile_y, state, shader)?;
+            }
+            bins[tile].clear();
+        }
+        touched.clear();
+        setups.clear();
         Ok(())
     }
     #[allow(clippy::too_many_arguments)]

@@ -11,8 +11,11 @@ Screen X/Y are rounded to 8 fractional bits. Three signed i64 edge functions
 advance across pixels. Coverage is evaluated at pixel centers `(x+.5,y+.5)` with
 the top-left tie rule. Two triangles sharing an edge cover it exactly once;
 alpha blending in the shared-edge test detects double coverage and cracks.
-Tiles visit only the triangle's clipped screen bounding box. This is tiled
-coverage, not yet a pre-binned tile command queue or hierarchical Z.
+Clipped triangles are binned into screen-aligned 16×16 tiles in bounded batches.
+Each tile retains triangle submission order, and batches flush in order so depth,
+stencil and blending remain deterministic. Very large tile grids use streaming
+triangle traversal instead of allocating a bin for every tile. This provides
+tile-local raster work but not hierarchical Z or a persistent worker pool.
 
 For barycentrics `b_i`, each varying is reconstructed as
 `sum(b_i * attribute_i / w_i) / sum(b_i / w_i)`. Clip/NDC depth is interpolated
@@ -96,10 +99,11 @@ The scalar reference and optional NEON/AVX2 coverage paths both process four
 adjacent pixel masks with identical i64 arithmetic. With the SIMD backend,
 recorded SIR fragment shaders execute surviving lanes as a masked group of four;
 vertex shaders and native closures retain scalar execution. See [SIMD masks](simd.md).
-Parallel rendering assigns disjoint horizontal bands to
-Rust scoped threads, each using local 16x16 coverage tiles. Draw order is preserved
-within every band, including depth, stencil and blending. Geometry setup repeats
-per band; full primitive binning and persistent workers remain optimization work.
+Parallel rendering assigns disjoint horizontal bands to Rust scoped threads,
+each using local tile bins. Draw order is preserved within every band, including
+depth, stencil and blending. Each band still repeats vertex and primitive setup;
+sharing prepared triangles across workers and persistent workers remain future
+optimization work.
 
 See [Khronos rasterization conventions](https://docs.vulkan.org/spec/latest/chapters/primsrast.html)
 for background on pixel coverage and interpolation. These conventions do not

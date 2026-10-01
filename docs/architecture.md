@@ -15,14 +15,15 @@ flowchart TD
   C --> D[Six homogeneous clip planes]
   D --> E[Perspective divide and viewport]
   E --> F[Fixed point triangle setup]
-  F --> G[16 x 16 tiled coverage]
-  G --> H[Stencil and early depth rejection]
-  H --> I[Perspective correct varyings]
-  I --> J[Rust fragment shader or SIR VM]
-  J --> K[Per-location color outputs]
-  K --> L[Depth, stencil, and blending]
-  L --> M[CPU color targets and framebuffer]
-  M --> N[PNG or pixel presentation]
+  F --> G[Ordered 16 x 16 tile bins]
+  G --> H[Tiled coverage]
+  H --> I[Stencil and early depth rejection]
+  I --> J[Perspective correct varyings]
+  J --> K[Rust fragment shader or SIR VM]
+  K --> L[Per-location color outputs]
+  L --> M[Depth, stencil, and blending]
+  M --> N[CPU color targets and framebuffer]
+  N --> O[PNG or pixel presentation]
 ```
 
 The workspace groups real responsibilities rather than one crate for each GPU

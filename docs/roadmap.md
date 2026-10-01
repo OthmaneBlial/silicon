@@ -16,7 +16,7 @@ long-term. This repository ships working stages and labels the remaining work.
 | Frame capture and replay | Versioned capture owns buffers, textures, pipeline state, sample count, SIR modules and commands; byte-exact single- and multisample replay |
 | Frame inspector | `silicon inspect` reports render passes, draw/triangle totals, resources, pipeline state and SIR module instruction counts; no GUI |
 | Headless mode | `render` and `replay` write PNGs without opening a window |
-| SIMD / tiled parallel rendering | Scalar reference, NEON/AVX2 coverage4, NEON/SSE masked four-fragment SIR, disjoint bands, bitwise equivalence tests |
+| SIMD / tiled parallel rendering | Scalar reference, NEON/AVX2 coverage4, NEON/SSE masked four-fragment SIR, ordered bounded 16×16 tile bins, disjoint worker bands, and bitwise equivalence tests |
 | SPIR-V / ordinary GLSL | Strict binary parser + typed SIR lowering, textured cube, lit OBJ showcase, local/uniform, arithmetic, and float-negation fixtures |
 | Divergent shader control flow | Nested GLSL selections, local/Phi merges, early return/discard; all-mask VM and attachment tests |
 | Shadow maps / explicit-LOD sampling | Two SILICON CPU raster passes; 512×512 `Depth32Float` texture sampled by ordinary GLSL/SPIR-V; scalar and SIMD replay match |
@@ -51,8 +51,9 @@ Cube maps use cross-face bilinear filtering; implicit SPIR-V sampling is limited
 to an unmodified fragment input direction, and anisotropic SPIR-V sampling
 remains future work.
 
-Future research: full tile binning, loops and broader control flow,
-cross-workgroup barriers, other integer/vector atomics and broader compute-stage SPIR-V, transformed implicit sampling,
+Future research: sharing prepared triangles across worker bands, persistent
+raster workers, loops and broader control flow, cross-workgroup barriers, other
+integer/vector atomics and broader compute-stage SPIR-V, transformed implicit sampling,
 anisotropic SPIR-V sampling, JIT, DOOM BSP wall occlusion and per-column portal
 clipping, advanced enemy states and full gameplay rules, and
 possibly a software ray-tracing unit.
