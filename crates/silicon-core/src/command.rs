@@ -191,6 +191,8 @@ pub struct FrameCapture {
     pub version: u32,
     pub width: u32,
     pub height: u32,
+    #[serde(default)]
+    pub sample_count: SampleCount,
     pub commands: CommandBuffer,
 }
 #[derive(Clone, Debug, Default)]
@@ -814,6 +816,7 @@ impl FrameCapture {
             return Err("unsupported capture version".into());
         }
         let mut r = Renderer::new(self.width, self.height)?;
+        r.set_sample_count(self.sample_count)?;
         Device.submit(&self.commands, &mut r)?;
         Ok(r)
     }

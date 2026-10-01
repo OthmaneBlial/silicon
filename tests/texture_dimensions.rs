@@ -55,6 +55,7 @@ fn render_capture<F: Fn(&mut CommandBuffer)>(
         version: 1,
         width: 32,
         height: 32,
+        sample_count: SampleCount::One,
         commands: record_commands(pipeline, vertices, bind_image),
     };
     let path = std::env::temp_dir().join(format!(

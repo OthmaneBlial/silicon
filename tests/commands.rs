@@ -18,6 +18,32 @@ fn capture_replay_is_exact_and_owns_resources() {
     assert_eq!(stats.texture_samples, r.stats.shaded);
     assert_eq!(stats.shader_instructions, 24 * 10 + r.stats.shaded * 15);
 }
+
+#[test]
+fn capture_preserves_multisample_state_and_reads_legacy_captures() {
+    let mut capture = demo::shader_cube(64, 48, 0.).unwrap();
+    capture.sample_count = SampleCount::Four;
+    let expected = capture.replay().unwrap();
+    assert_eq!(expected.sample_count(), SampleCount::Four);
+
+    let path = std::env::temp_dir().join(format!(
+        "silicon-multisample-capture-{}.silicon",
+        std::process::id()
+    ));
+    capture.save(&path).unwrap();
+    let loaded = FrameCapture::load(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let actual = loaded.replay().unwrap();
+    assert_eq!(actual.sample_count(), SampleCount::Four);
+    assert_eq!(actual.framebuffer.bytes(), expected.framebuffer.bytes());
+
+    let legacy = FrameCapture::load(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fuzz/seeds/capture/seed.json"
+    ))
+    .unwrap();
+    assert_eq!(legacy.sample_count, SampleCount::One);
+}
 #[test]
 fn invalid_command_stream_never_changes_target() {
     let mut r = Renderer::new(8, 8).unwrap();

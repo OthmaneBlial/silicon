@@ -711,6 +711,7 @@ pub fn shader_cube_with_pipeline(
         version: 1,
         width,
         height,
+        sample_count: SampleCount::One,
         commands,
     })
 }
@@ -957,6 +958,7 @@ fn material_showcase(
         version: 1,
         width,
         height,
+        sample_count: SampleCount::One,
         commands,
     })
 }
@@ -1094,6 +1096,7 @@ pub fn shadow_showcase(width: u32, height: u32, time: f32) -> Result<(FrameCaptu
             version: 1,
             width,
             height,
+            sample_count: SampleCount::One,
             commands,
         },
         shadow_stats,

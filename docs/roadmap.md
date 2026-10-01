@@ -13,7 +13,7 @@ long-term. This repository ships working stages and labels the remaining work.
 | Lit OBJ scene / normals | Original sculpture OBJ, normal matrix, Lambert/Blinn-Phong and point light |
 | Window / loop / measured statistics | CLI `run`, finite frame mode, render time in title |
 | Commands / buffers / shader VM | Owned typed buffers, validated commands, SIR shader cube |
-| Frame capture and replay | Versioned capture owns buffers, textures, pipeline state, SIR modules and commands; byte-exact replay; MSAA state is not captured |
+| Frame capture and replay | Versioned capture owns buffers, textures, pipeline state, sample count, SIR modules and commands; byte-exact single- and multisample replay |
 | Frame inspector | `silicon inspect` reports render passes, draw/triangle totals, resources, pipeline state and SIR module instruction counts; no GUI |
 | Headless mode | `render` and `replay` write PNGs without opening a window |
 | SIMD / tiled parallel rendering | Scalar reference, NEON/AVX2 coverage4, NEON/SSE masked four-fragment SIR, disjoint bands, bitwise equivalence tests |

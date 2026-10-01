@@ -1,5 +1,5 @@
 use shader::{Comparison, Instruction::*, Program};
-use silicon::{Vec4, shader};
+use silicon::{SampleCount, Vec4, shader};
 fn bits(v: Vec4) -> [u32; 4] {
     v.to_array().map(f32::to_bits)
 }
@@ -377,6 +377,7 @@ fn discard_preserves_color_depth_stencil_and_capture_in_every_backend() {
         version: 1,
         width: 4,
         height: 2,
+        sample_count: SampleCount::One,
         commands,
     };
     let path = std::env::temp_dir().join(format!("silicon-control-{}.silicon", std::process::id()));

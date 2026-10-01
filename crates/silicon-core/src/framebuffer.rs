@@ -24,7 +24,7 @@ pub enum PixelFormat {
     Bgra8,
 }
 /// The number of coverage/color/depth/stencil samples stored per pixel.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SampleCount {
     #[default]
     One,
