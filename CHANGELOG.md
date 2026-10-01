@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Route Doom special-51 exits to the episode's M9 map and ordinary M9 exits back
+  to the original episode path when the target map exists in the WAD.
+
 ## 0.7.0 — 2026-10-01
 
 - Make the stencil portal a shared CLI/library scene and constrain its

@@ -159,16 +159,17 @@ poses, sight-based wake-up with a 100-tic target timeout, sector-portal enemy
 pursuit around blocked corridors, pistol-noise alerts that wake enemies through
 open sectors even when a shot misses, melee attacks, line-of-sight hitscan for
 humans and shotgunners, and imp fireballs. The player can trigger E1M1's WAD
-special-1 doors with `E` and use the exit line; ordinary doors raise, wait, and
+special-1 doors with `E` and use episode exits; ordinary doors raise, wait, and
 close with matching map geometry and collision. Its special-117 use door raises
 at four times normal speed, then closes after the same wait. Crossing a WAD
-special-2 line opens sectors with its tag and leaves them open. The exit reports `EXITED`
-without loading another map. The player can cross a special-88 line or use a
+special-2 line opens sectors with its tag and leaves them open. Normal exits
+advance when the next WAD map exists; special-51 exits route through episode
+secret maps. The player can cross a special-88 line or use a
 special-62 line to move its tagged platform down, wait, then return it to its
 starting height. The special-23 use line lowers its three tagged floors to
 their lowest neighboring height once. The blue keycard can be collected to
-open special-26 blue-locked doors. Other locked-door types, other
-crossing-triggered specials, and level progression remain unsupported.
+open special-26 blue-locked doors. Other locked-door types and other
+crossing-triggered specials remain unsupported.
 E1M1's four special-9 sectors add to a once-per-sector secret counter in the
 window title. Its three special-7 nukage sectors deal 5 HP every 32 game tics
 spent on them.

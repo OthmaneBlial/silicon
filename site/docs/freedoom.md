@@ -28,13 +28,15 @@ cargo run --release --example freedoom_map -- /path/to/freedoom1.wad --map E1M2 
 
 Map selection defaults to E1M1; `--map` accepts another marker in the WAD, such
 as E1M2, for either rendering or interactive play. Each map uses its own
-player-1 start and the same SILICON pipeline. Using E1M1's special-11 exit
-shows `EXITED` for a frame, then loads E1M2 when it exists. Normal maps advance
-within the current episode when the next marker exists, matching id Software's
-[`G_DoCompleted`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/g_game.c).
-Health, ammo, and keys carry forward while map-local counters reset.
-Episode-ending map exits stop at `EXITED` because the prototype has no finale.
-Secret-map routing remains unsupported. The E1M2 capture below records the
+player-1 start and the same SILICON pipeline. Special-11 exits load the next
+episode map when its marker exists. Special-51 secret exits load that episode's
+M9, whose ordinary exit returns to E1M4, E2M6, E3M7, or E4M3, respectively.
+Health, ammo, and keys carry forward while map-local counters reset. Episode-
+ending map exits stop at `EXITED` because the prototype has no finale. These
+routes follow id Software's
+[`G_DoCompleted`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/g_game.c)
+and [`P_UseSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c).
+The E1M2 capture below records the
 sector-clipped BSP-cell pass with its episode sky: 7,925 triangles across 297
 draws and 804 of 1,104 horizontal leaves. The sky texture fills the previously
 clear opening near the right edge. Visual completeness beyond E1M2 remains in
@@ -53,8 +55,8 @@ to raise its back sector at 70 units per second, wait 150 tics (about 4.3
 seconds), then close it. If the player or a living enemy is in the sector, the
 door reverses and opens again. The ceiling geometry and collision update while
 it moves. Press `E` from the front of E1M1's one-sided special-11 exit line to
-report `EXITED` for one frame, then load E1M2 when its WAD marker exists, as
-described above.
+load E1M2 when its WAD marker exists, as described above. A special-51 line
+similarly loads the episode's M9 secret map when present.
 The WAD's single special-117 use door follows the same wait-and-close behavior
 at 280 units per second, four times the normal door speed, as in id Software's
 [`EV_VerticalDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c).

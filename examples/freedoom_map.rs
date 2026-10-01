@@ -34,6 +34,7 @@ const LINE_USE_DOWN_WAIT_UP_PLATFORM: u16 = 62;
 const LINE_USE_LOWER_FLOOR_TO_LOWEST: u16 = 23;
 const LINE_PLAT_DOWN_WAIT_UP: u16 = 88;
 const LINE_EXIT_USE: u16 = 11;
+const LINE_SECRET_EXIT_USE: u16 = 51;
 const USE_RANGE: f32 = 64.0;
 const DOOR_SPEED: f32 = 70.0;
 const BLAZING_DOOR_SPEED: f32 = DOOR_SPEED * 4.0;
@@ -3843,6 +3844,17 @@ fn next_normal_map(map_name: &str) -> Option<String> {
     Some(format!("E{episode}M{}", level + 1))
 }
 
+fn next_exit_map(map_name: &str, secret_exit: bool) -> Option<String> {
+    match (map_name, secret_exit) {
+        ("E1M9", false) => Some("E1M4".into()),
+        ("E2M9", false) => Some("E2M6".into()),
+        ("E3M9", false) => Some("E3M7".into()),
+        ("E4M9", false) => Some("E4M3".into()),
+        (_, true) => next_normal_map(map_name).map(|_| format!("{}9", &map_name[..3])),
+        (_, false) => next_normal_map(map_name),
+    }
+}
+
 fn wad_has_map(path: &Path, map_name: &str) -> Result<bool, io::Error> {
     if fs::metadata(path)?.len() > MAX_WAD_BYTES {
         return Err(invalid("WAD exceeds the 128 MiB sample limit"));
@@ -3891,12 +3903,13 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     let mut shot_cooldown = 0.0f32;
     let mut weapon_flash = 0.0f32;
     let mut exited = false;
+    let mut secret_exit = false;
     let mut pain_rng = 0x5349_4c49u32;
     let mut last = std::time::Instant::now();
     let mut frames = 0u64;
     while window.is_open() && !window.is_key_down(Key::Escape) {
         if exited {
-            let Some(next_map) = next_normal_map(&scene.map_name) else {
+            let Some(next_map) = next_exit_map(&scene.map_name, secret_exit) else {
                 break;
             };
             if !wad_has_map(path, &next_map)? {
@@ -3924,6 +3937,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             weapon_flash = 0.0;
             levels_completed += 1;
             exited = false;
+            secret_exit = false;
         }
         let now = std::time::Instant::now();
         let delta = now.duration_since(last).as_secs_f32().min(0.05);
@@ -3975,7 +3989,8 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             if window.is_key_pressed(Key::E, KeyRepeat::No)
                 && let Some((line, special)) = use_line(&scene.map, player)
             {
-                if special == LINE_EXIT_USE {
+                if matches!(special, LINE_EXIT_USE | LINE_SECRET_EXIT_USE) {
+                    secret_exit = special == LINE_SECRET_EXIT_USE;
                     exited = true;
                 } else if matches!(special, LINE_DOOR_RAISE | LINE_BLAZING_DOOR_RAISE)
                     || special == LINE_BLUE_LOCKED_DOOR
@@ -4265,6 +4280,18 @@ mod tests {
         assert_eq!(next_normal_map("E4M8"), None);
         assert_eq!(next_normal_map("E1M9"), None);
         assert_eq!(next_normal_map("MAP01"), None);
+    }
+
+    #[test]
+    fn secret_exits_route_to_episode_secret_maps_and_back() {
+        assert_eq!(next_exit_map("E1M3", true).as_deref(), Some("E1M9"));
+        assert_eq!(next_exit_map("E2M4", true).as_deref(), Some("E2M9"));
+        assert_eq!(next_exit_map("E1M9", false).as_deref(), Some("E1M4"));
+        assert_eq!(next_exit_map("E2M9", false).as_deref(), Some("E2M6"));
+        assert_eq!(next_exit_map("E3M9", false).as_deref(), Some("E3M7"));
+        assert_eq!(next_exit_map("E4M9", false).as_deref(), Some("E4M3"));
+        assert_eq!(next_exit_map("E1M8", true), None);
+        assert_eq!(next_exit_map("MAP01", true), None);
     }
 
     #[test]
@@ -5037,6 +5064,8 @@ mod tests {
             angle: 0.0,
         };
         assert_eq!(use_line(&map, player), Some((1, LINE_EXIT_USE)));
+        map.lines[1][5] = LINE_SECRET_EXIT_USE;
+        assert_eq!(use_line(&map, player), Some((1, LINE_SECRET_EXIT_USE)));
         assert_eq!(
             use_line(
                 &map,
