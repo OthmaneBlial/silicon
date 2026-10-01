@@ -333,13 +333,33 @@ time, plus the triangle, fragment, early-Z, shader, and texture counters. Stage
 timers are instrumented; parallel worker sums can overlap and exceed wall time.
 Presentation is not measured by the headless profile command.
 
+## 0.7 ordered tile bins
+
+The [alternating raw record](../benchmarks/apple-m2-tile-binning-2026-10-01.json)
+compares the release binary from `c3be895` with the binned rasterizer at
+`c817de5` on an Apple M2 / macOS 26.6. Each run used three warmups, 10 timed
+frames, 960×640 `spirv_showcase`, and the SIMD backend; configurations ran in
+two reversed-order rounds. Medians and p95 values were:
+
+| Build | Workers | Round 1 median / p95 ms | Round 2 median / p95 ms |
+| --- | ---: | ---: | ---: |
+| Baseline | 1 | 460.17 / 1208.01 | 804.71 / 1225.87 |
+| Binned | 1 | 383.83 / 484.09 | 535.95 / 596.76 |
+| Baseline | 4 | 267.29 / 280.29 | 295.89 / 335.47 |
+| Binned | 4 | 264.18 / 270.85 | 265.63 / 268.40 |
+
+The four-worker candidate was lower in both rounds, while the single-worker
+baseline varied sharply between rounds. This is one scene on a shared host and
+does not establish a general speedup. Worker bands still repeat vertex and
+primitive setup; the record should not be read as measuring shared setup or a
+persistent tile-worker pool.
+
 ## Next measurements
 
-Use an otherwise idle host, repeat alternating configurations, retain full
-per-frame samples, and isolate shader/interpolation cost before selecting SIMD
-or changing scheduling. Persistent workers and triangle binning should be driven
-by those measurements. AVX2 needs a native x86 run; cross-platform correctness
-in CI alone does not establish its performance.
+Repeat tile-heavy and overdraw scenes on an otherwise idle host before changing
+batch limits or sharing setup across worker bands. Persistent workers and a
+native x86 AVX2 run remain open; cross-platform correctness in CI alone does not
+establish their performance.
 
 ## Animation provenance
 

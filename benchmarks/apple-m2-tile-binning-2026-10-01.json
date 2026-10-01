@@ -1,0 +1,655 @@
+{
+  "timestamp": "2026-10-01T23:39:42+0200",
+  "platform": "macOS-26.6-arm64-arm-64bit-Mach-O",
+  "cpu": "arm",
+  "git_head": "c817de5ec77fcba49ddcc4da5815b66f8f500175",
+  "worktree_dirty": false,
+  "binaries": {
+    "baseline": {
+      "sha256": "ef159d04d9c4ad7dbe9952bb59981cc79e89d34108b171b0301d297d1ebe101d",
+      "info": "SILICON 0.7.0\nHost: aarch64 / macos\nThreads available: 8\nRenderer: CPU / scalar / 16x16 tiles\nShader engines: Rust closures, validated SIR interpreter, strict SPIR-V 1.0 subset\nCompatibility: no Vulkan/OpenGL driver\nAvailable SIR packet backend: NEON shader4\n"
+    },
+    "current": {
+      "sha256": "222df7b0c2fb723afab472283316e2a1e5684855209bf7fa759dd4d1bb6aa9ad",
+      "info": "SILICON 0.7.0\nHost: aarch64 / macos\nThreads available: 8\nRenderer: CPU / scalar / 16x16 tiles\nShader engines: Rust closures, validated SIR interpreter, strict SPIR-V 1.0 subset\nCompatibility: no Vulkan/OpenGL driver\nAvailable SIR packet backend: NEON shader4\n"
+    }
+  },
+  "samples": [
+    {
+      "binary": "baseline",
+      "backend": "simd",
+      "workers": 1,
+      "round": 1,
+      "command": [
+        "/private/tmp/silicon-bench/silicon-c3be895",
+        "benchmark",
+        "spirv_showcase",
+        "--frames",
+        "10",
+        "--backend",
+        "simd",
+        "--threads",
+        "1",
+        "--report",
+        "/var/folders/7b/80dmndy11t904kbw93kk1z180000gp/T/silicon-benchmark-ruxz9dwz/frames.json"
+      ],
+      "stdout": "SILICON benchmark | scene spirv_showcase | 960x640 | 10 frames | 3 warmups\nmedian_ms,p95_ms,render_fps,shaded_pixels_per_s,triangles_per_s\n460.1689,1208.0128,1.56,606308,19656\n",
+      "report": {
+        "coverage_backend": "NEON coverage4",
+        "discarded_fragments": 0,
+        "executed_shader_instructions": 511272540,
+        "frame_ms": [
+          368.940167,
+          367.570291,
+          379.30174999999997,
+          461.568625,
+          460.168917,
+          416.562584,
+          416.826542,
+          1208.012792,
+          1156.776709,
+          1168.528
+        ],
+        "logical_shaded_fragments": 3882950,
+        "packet_active_lanes": 3882950,
+        "sample_count": 1,
+        "scene": {
+          "height": 640,
+          "scene": "spirv_showcase",
+          "time": 0.0,
+          "width": 960
+        },
+        "shader_packet_backend": "NEON shader4",
+        "shader_packets": 1138640,
+        "submitted_triangles": 125880,
+        "texture_samples": 3882950,
+        "version": "0.7.0",
+        "warmups": 3,
+        "workers": 1
+      }
+    },
+    {
+      "binary": "current",
+      "backend": "scalar",
+      "workers": 1,
+      "round": 1,
+      "command": [
+        "/Users/othmane/Projects/GITHUB_PROJECTS/SILICON/target/release/silicon",
+        "benchmark",
+        "spirv_showcase",
+        "--frames",
+        "10",
+        "--backend",
+        "scalar",
+        "--threads",
+        "1",
+        "--report",
+        "/var/folders/7b/80dmndy11t904kbw93kk1z180000gp/T/silicon-benchmark-ruxz9dwz/frames.json"
+      ],
+      "stdout": "SILICON benchmark | scene spirv_showcase | 960x640 | 10 frames | 3 warmups\nmedian_ms,p95_ms,render_fps,shaded_pixels_per_s,triangles_per_s\n539.3336,612.4538,1.83,710330,23028\n",
+      "report": {
+        "coverage_backend": "scalar",
+        "discarded_fragments": 0,
+        "executed_shader_instructions": 511272540,
+        "frame_ms": [
+          538.9045,
+          539.065583,
+          539.682666,
+          539.655,
+          539.858333,
+          539.333625,
+          538.989875,
+          539.297375,
+          539.1632920000001,
+          612.453791
+        ],
+        "logical_shaded_fragments": 3882950,
+        "packet_active_lanes": 0,
+        "sample_count": 1,
+        "scene": {
+          "height": 640,
+          "scene": "spirv_showcase",
+          "time": 0.0,
+          "width": 960
+        },
+        "shader_packet_backend": null,
+        "shader_packets": 0,
+        "submitted_triangles": 125880,
+        "texture_samples": 3882950,
+        "version": "0.7.0",
+        "warmups": 3,
+        "workers": 1
+      }
+    },
+    {
+      "binary": "current",
+      "backend": "simd",
+      "workers": 1,
+      "round": 1,
+      "command": [
+        "/Users/othmane/Projects/GITHUB_PROJECTS/SILICON/target/release/silicon",
+        "benchmark",
+        "spirv_showcase",
+        "--frames",
+        "10",
+        "--backend",
+        "simd",
+        "--threads",
+        "1",
+        "--report",
+        "/var/folders/7b/80dmndy11t904kbw93kk1z180000gp/T/silicon-benchmark-ruxz9dwz/frames.json"
+      ],
+      "stdout": "SILICON benchmark | scene spirv_showcase | 960x640 | 10 frames | 3 warmups\nmedian_ms,p95_ms,render_fps,shaded_pixels_per_s,triangles_per_s\n383.8325,484.0948,2.53,983361,31879\n",
+      "report": {
+        "coverage_backend": "NEON coverage4",
+        "discarded_fragments": 0,
+        "executed_shader_instructions": 511272540,
+        "frame_ms": [
+          402.581833,
+          484.094833,
+          433.428833,
+          383.832542,
+          378.674167,
+          386.272708,
+          371.84099999999995,
+          368.484875,
+          371.90508300000005,
+          367.53591600000004
+        ],
+        "logical_shaded_fragments": 3882950,
+        "packet_active_lanes": 3882950,
+        "sample_count": 1,
+        "scene": {
+          "height": 640,
+          "scene": "spirv_showcase",
+          "time": 0.0,
+          "width": 960
+        },
+        "shader_packet_backend": "NEON shader4",
+        "shader_packets": 1147300,
+        "submitted_triangles": 125880,
+        "texture_samples": 3882950,
+        "version": "0.7.0",
+        "warmups": 3,
+        "workers": 1
+      }
+    },
+    {
+      "binary": "baseline",
+      "backend": "simd",
+      "workers": 4,
+      "round": 1,
+      "command": [
+        "/private/tmp/silicon-bench/silicon-c3be895",
+        "benchmark",
+        "spirv_showcase",
+        "--frames",
+        "10",
+        "--backend",
+        "simd",
+        "--threads",
+        "4",
+        "--report",
+        "/var/folders/7b/80dmndy11t904kbw93kk1z180000gp/T/silicon-benchmark-ruxz9dwz/frames.json"
+      ],
+      "stdout": "SILICON benchmark | scene spirv_showcase | 960x640 | 10 frames | 3 warmups\nmedian_ms,p95_ms,render_fps,shaded_pixels_per_s,triangles_per_s\n267.2856,280.2937,3.75,1455563,47187\n",
+      "report": {
+        "coverage_backend": "NEON coverage4",
+        "discarded_fragments": 0,
+        "executed_shader_instructions": 530739660,
+        "frame_ms": [
+          269.159542,
+          268.747792,
+          277.883,
+          280.293666,
+          260.518166,
+          260.513542,
+          257.791417,
+          265.0555,
+          260.41312500000004,
+          267.28558400000003
+        ],
+        "logical_shaded_fragments": 3882950,
+        "packet_active_lanes": 3882950,
+        "sample_count": 1,
+        "scene": {
+          "height": 640,
+          "scene": "spirv_showcase",
+          "time": 0.0,
+          "width": 960
+        },
+        "shader_packet_backend": "NEON shader4",
+        "shader_packets": 1138640,
+        "submitted_triangles": 125880,
+        "texture_samples": 3882950,
+        "version": "0.7.0",
+        "warmups": 3,
+        "workers": 4
+      }
+    },
+    {
+      "binary": "current",
+      "backend": "scalar",
+      "workers": 4,
+      "round": 1,
+      "command": [
+        "/Users/othmane/Projects/GITHUB_PROJECTS/SILICON/target/release/silicon",
+        "benchmark",
+        "spirv_showcase",
+        "--frames",
+        "10",
+        "--backend",
+        "scalar",
+        "--threads",
+        "4",
+        "--report",
+        "/var/folders/7b/80dmndy11t904kbw93kk1z180000gp/T/silicon-benchmark-ruxz9dwz/frames.json"
+      ],
+      "stdout": "SILICON benchmark | scene spirv_showcase | 960x640 | 10 frames | 3 warmups\nmedian_ms,p95_ms,render_fps,shaded_pixels_per_s,triangles_per_s\n354.3821,367.4655,2.82,1093430,35448\n",
+      "report": {
+        "coverage_backend": "scalar",
+        "discarded_fragments": 0,
+        "executed_shader_instructions": 530739660,
+        "frame_ms": [
+          354.38208399999996,
+          354.469625,
+          356.229083,
+          359.946333,
+          354.10979100000003,
+          348.919875,
+          352.361708,
+          350.565833,
+          367.4655,
+          352.71608399999997
+        ],
+        "logical_shaded_fragments": 3882950,
+        "packet_active_lanes": 0,
+        "sample_count": 1,
+        "scene": {
+          "height": 640,
+          "scene": "spirv_showcase",
+          "time": 0.0,
+          "width": 960
+        },
+        "shader_packet_backend": null,
+        "shader_packets": 0,
+        "submitted_triangles": 125880,
+        "texture_samples": 3882950,
+        "version": "0.7.0",
+        "warmups": 3,
+        "workers": 4
+      }
+    },
+    {
+      "binary": "current",
+      "backend": "simd",
+      "workers": 4,
+      "round": 1,
+      "command": [
+        "/Users/othmane/Projects/GITHUB_PROJECTS/SILICON/target/release/silicon",
+        "benchmark",
+        "spirv_showcase",
+        "--frames",
+        "10",
+        "--backend",
+        "simd",
+        "--threads",
+        "4",
+        "--report",
+        "/var/folders/7b/80dmndy11t904kbw93kk1z180000gp/T/silicon-benchmark-ruxz9dwz/frames.json"
+      ],
+      "stdout": "SILICON benchmark | scene spirv_showcase | 960x640 | 10 frames | 3 warmups\nmedian_ms,p95_ms,render_fps,shaded_pixels_per_s,triangles_per_s\n264.1790,270.8464,3.78,1466897,47555\n",
+      "report": {
+        "coverage_backend": "NEON coverage4",
+        "discarded_fragments": 0,
+        "executed_shader_instructions": 530739660,
+        "frame_ms": [
+          264.10562500000003,
+          264.179,
+          270.846416,
+          266.354541,
+          262.247917,
+          266.24095800000003,
+          263.942709,
+          262.378292,
+          262.044375,
+          264.71104099999997
+        ],
+        "logical_shaded_fragments": 3882950,
+        "packet_active_lanes": 3882950,
+        "sample_count": 1,
+        "scene": {
+          "height": 640,
+          "scene": "spirv_showcase",
+          "time": 0.0,
+          "width": 960
+        },
+        "shader_packet_backend": "NEON shader4",
+        "shader_packets": 1147300,
+        "submitted_triangles": 125880,
+        "texture_samples": 3882950,
+        "version": "0.7.0",
+        "warmups": 3,
+        "workers": 4
+      }
+    },
+    {
+      "binary": "current",
+      "backend": "simd",
+      "workers": 4,
+      "round": 2,
+      "command": [
+        "/Users/othmane/Projects/GITHUB_PROJECTS/SILICON/target/release/silicon",
+        "benchmark",
+        "spirv_showcase",
+        "--frames",
+        "10",
+        "--backend",
+        "simd",
+        "--threads",
+        "4",
+        "--report",
+        "/var/folders/7b/80dmndy11t904kbw93kk1z180000gp/T/silicon-benchmark-ruxz9dwz/frames.json"
+      ],
+      "stdout": "SILICON benchmark | scene spirv_showcase | 960x640 | 10 frames | 3 warmups\nmedian_ms,p95_ms,render_fps,shaded_pixels_per_s,triangles_per_s\n265.6331,268.3974,3.76,1461417,47377\n",
+      "report": {
+        "coverage_backend": "NEON coverage4",
+        "discarded_fragments": 0,
+        "executed_shader_instructions": 530739660,
+        "frame_ms": [
+          262.49845799999997,
+          264.12275,
+          265.506875,
+          267.462834,
+          266.79275,
+          268.397417,
+          265.633083,
+          264.190792,
+          265.377708,
+          266.993042
+        ],
+        "logical_shaded_fragments": 3882950,
+        "packet_active_lanes": 3882950,
+        "sample_count": 1,
+        "scene": {
+          "height": 640,
+          "scene": "spirv_showcase",
+          "time": 0.0,
+          "width": 960
+        },
+        "shader_packet_backend": "NEON shader4",
+        "shader_packets": 1147300,
+        "submitted_triangles": 125880,
+        "texture_samples": 3882950,
+        "version": "0.7.0",
+        "warmups": 3,
+        "workers": 4
+      }
+    },
+    {
+      "binary": "current",
+      "backend": "scalar",
+      "workers": 4,
+      "round": 2,
+      "command": [
+        "/Users/othmane/Projects/GITHUB_PROJECTS/SILICON/target/release/silicon",
+        "benchmark",
+        "spirv_showcase",
+        "--frames",
+        "10",
+        "--backend",
+        "scalar",
+        "--threads",
+        "4",
+        "--report",
+        "/var/folders/7b/80dmndy11t904kbw93kk1z180000gp/T/silicon-benchmark-ruxz9dwz/frames.json"
+      ],
+      "stdout": "SILICON benchmark | scene spirv_showcase | 960x640 | 10 frames | 3 warmups\nmedian_ms,p95_ms,render_fps,shaded_pixels_per_s,triangles_per_s\n362.0925,378.6095,2.76,1070447,34702\n",
+      "report": {
+        "coverage_backend": "scalar",
+        "discarded_fragments": 0,
+        "executed_shader_instructions": 530739660,
+        "frame_ms": [
+          363.512125,
+          362.09254200000004,
+          360.66062500000004,
+          378.60954200000003,
+          363.154083,
+          357.559166,
+          356.9715,
+          355.025417,
+          361.709291,
+          368.11508399999997
+        ],
+        "logical_shaded_fragments": 3882950,
+        "packet_active_lanes": 0,
+        "sample_count": 1,
+        "scene": {
+          "height": 640,
+          "scene": "spirv_showcase",
+          "time": 0.0,
+          "width": 960
+        },
+        "shader_packet_backend": null,
+        "shader_packets": 0,
+        "submitted_triangles": 125880,
+        "texture_samples": 3882950,
+        "version": "0.7.0",
+        "warmups": 3,
+        "workers": 4
+      }
+    },
+    {
+      "binary": "baseline",
+      "backend": "simd",
+      "workers": 4,
+      "round": 2,
+      "command": [
+        "/private/tmp/silicon-bench/silicon-c3be895",
+        "benchmark",
+        "spirv_showcase",
+        "--frames",
+        "10",
+        "--backend",
+        "simd",
+        "--threads",
+        "4",
+        "--report",
+        "/var/folders/7b/80dmndy11t904kbw93kk1z180000gp/T/silicon-benchmark-ruxz9dwz/frames.json"
+      ],
+      "stdout": "SILICON benchmark | scene spirv_showcase | 960x640 | 10 frames | 3 warmups\nmedian_ms,p95_ms,render_fps,shaded_pixels_per_s,triangles_per_s\n295.8891,335.4717,3.43,1331499,43165\n",
+      "report": {
+        "coverage_backend": "NEON coverage4",
+        "discarded_fragments": 0,
+        "executed_shader_instructions": 530739660,
+        "frame_ms": [
+          263.159875,
+          270.796666,
+          264.339,
+          262.124208,
+          292.051833,
+          315.535417,
+          299.44933299999997,
+          295.889084,
+          335.471708,
+          317.407291
+        ],
+        "logical_shaded_fragments": 3882950,
+        "packet_active_lanes": 3882950,
+        "sample_count": 1,
+        "scene": {
+          "height": 640,
+          "scene": "spirv_showcase",
+          "time": 0.0,
+          "width": 960
+        },
+        "shader_packet_backend": "NEON shader4",
+        "shader_packets": 1138640,
+        "submitted_triangles": 125880,
+        "texture_samples": 3882950,
+        "version": "0.7.0",
+        "warmups": 3,
+        "workers": 4
+      }
+    },
+    {
+      "binary": "current",
+      "backend": "simd",
+      "workers": 1,
+      "round": 2,
+      "command": [
+        "/Users/othmane/Projects/GITHUB_PROJECTS/SILICON/target/release/silicon",
+        "benchmark",
+        "spirv_showcase",
+        "--frames",
+        "10",
+        "--backend",
+        "simd",
+        "--threads",
+        "1",
+        "--report",
+        "/var/folders/7b/80dmndy11t904kbw93kk1z180000gp/T/silicon-benchmark-ruxz9dwz/frames.json"
+      ],
+      "stdout": "SILICON benchmark | scene spirv_showcase | 960x640 | 10 frames | 3 warmups\nmedian_ms,p95_ms,render_fps,shaded_pixels_per_s,triangles_per_s\n535.9518,596.7599,1.86,723074,23441\n",
+      "report": {
+        "coverage_backend": "NEON coverage4",
+        "discarded_fragments": 0,
+        "executed_shader_instructions": 511272540,
+        "frame_ms": [
+          507.94637499999993,
+          514.74275,
+          505.59600000000006,
+          596.759916,
+          521.86725,
+          515.828209,
+          535.951792,
+          537.305708,
+          582.9042089999999,
+          551.15925
+        ],
+        "logical_shaded_fragments": 3882950,
+        "packet_active_lanes": 3882950,
+        "sample_count": 1,
+        "scene": {
+          "height": 640,
+          "scene": "spirv_showcase",
+          "time": 0.0,
+          "width": 960
+        },
+        "shader_packet_backend": "NEON shader4",
+        "shader_packets": 1147300,
+        "submitted_triangles": 125880,
+        "texture_samples": 3882950,
+        "version": "0.7.0",
+        "warmups": 3,
+        "workers": 1
+      }
+    },
+    {
+      "binary": "current",
+      "backend": "scalar",
+      "workers": 1,
+      "round": 2,
+      "command": [
+        "/Users/othmane/Projects/GITHUB_PROJECTS/SILICON/target/release/silicon",
+        "benchmark",
+        "spirv_showcase",
+        "--frames",
+        "10",
+        "--backend",
+        "scalar",
+        "--threads",
+        "1",
+        "--report",
+        "/var/folders/7b/80dmndy11t904kbw93kk1z180000gp/T/silicon-benchmark-ruxz9dwz/frames.json"
+      ],
+      "stdout": "SILICON benchmark | scene spirv_showcase | 960x640 | 10 frames | 3 warmups\nmedian_ms,p95_ms,render_fps,shaded_pixels_per_s,triangles_per_s\n725.2801,799.3112,1.42,550256,17839\n",
+      "report": {
+        "coverage_backend": "scalar",
+        "discarded_fragments": 0,
+        "executed_shader_instructions": 511272540,
+        "frame_ms": [
+          725.280083,
+          746.14375,
+          720.307,
+          722.797667,
+          741.620584,
+          721.004709,
+          799.31125,
+          783.971416,
+          556.488292,
+          539.696208
+        ],
+        "logical_shaded_fragments": 3882950,
+        "packet_active_lanes": 0,
+        "sample_count": 1,
+        "scene": {
+          "height": 640,
+          "scene": "spirv_showcase",
+          "time": 0.0,
+          "width": 960
+        },
+        "shader_packet_backend": null,
+        "shader_packets": 0,
+        "submitted_triangles": 125880,
+        "texture_samples": 3882950,
+        "version": "0.7.0",
+        "warmups": 3,
+        "workers": 1
+      }
+    },
+    {
+      "binary": "baseline",
+      "backend": "simd",
+      "workers": 1,
+      "round": 2,
+      "command": [
+        "/private/tmp/silicon-bench/silicon-c3be895",
+        "benchmark",
+        "spirv_showcase",
+        "--frames",
+        "10",
+        "--backend",
+        "simd",
+        "--threads",
+        "1",
+        "--report",
+        "/var/folders/7b/80dmndy11t904kbw93kk1z180000gp/T/silicon-benchmark-ruxz9dwz/frames.json"
+      ],
+      "stdout": "SILICON benchmark | scene spirv_showcase | 960x640 | 10 frames | 3 warmups\nmedian_ms,p95_ms,render_fps,shaded_pixels_per_s,triangles_per_s\n804.7059,1225.8707,1.26,488091,15823\n",
+      "report": {
+        "coverage_backend": "NEON coverage4",
+        "discarded_fragments": 0,
+        "executed_shader_instructions": 511272540,
+        "frame_ms": [
+          598.3602089999999,
+          804.705875,
+          672.629458,
+          844.0855,
+          679.482959,
+          669.1854579999999,
+          717.873541,
+          848.38275,
+          894.7993749999999,
+          1225.8707499999998
+        ],
+        "logical_shaded_fragments": 3882950,
+        "packet_active_lanes": 3882950,
+        "sample_count": 1,
+        "scene": {
+          "height": 640,
+          "scene": "spirv_showcase",
+          "time": 0.0,
+          "width": 960
+        },
+        "shader_packet_backend": "NEON shader4",
+        "shader_packets": 1138640,
+        "submitted_triangles": 125880,
+        "texture_samples": 3882950,
+        "version": "0.7.0",
+        "warmups": 3,
+        "workers": 1
+      }
+    }
+  ]
+}
