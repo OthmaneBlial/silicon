@@ -26,7 +26,7 @@ long-term. This repository ships working stages and labels the remaining work.
 | Anisotropic texture filtering | Derivative-aware 1×–16× sampling, minor-axis mip selection, focused unit test and side-by-side steep-angle scene |
 | GPU profiler | Command, vertex, primitive setup, coverage/depth, shader, and blend/write timing with render counters; headless presentation is marked unmeasured |
 | Stencil / transparency integration | Circular stencil portal constrains a textured cube and translucent overlay; scalar and SIMD four-band color/depth/stencil match |
-| Compute (phase 45, first slice) | Scalar SIR map dispatch exposes 3D global/local/workgroup IDs, reads up to 12 same-index vec4 buffers and writes one vec4 per invocation; bounded vector-add example and dispatch-limit tests; no synchronization or compute SPIR-V |
+| Compute (phases 45–46, first slices) | Scalar and four-lane SIMD SIR map dispatch expose 3D global/local/workgroup IDs, read up to 12 same-index vec4 buffers and write one vec4 per invocation; vector-add and mat4-vector benchmarks compare Rust CPU loops with measured SIR paths; no synchronization or compute SPIR-V |
 | Image regression tests | Approved SIR cube PNG, exact backend comparisons and <=1 channel-step tolerance; failures save `output/shader_cube.diff.png` |
 | Fuzzing | cargo-fuzz targets cover SPIR-V parsing/lowering, capture/resource validation and bounded replay, plus triangle setup and texture sampling; see `docs/security.md` |
 | Safety review | Explicit input/resource bounds and targeted malformed-input tests; this is not a hostile-workload sandbox or process-wide memory budget |

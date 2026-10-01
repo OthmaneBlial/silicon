@@ -13,11 +13,13 @@ and owns the output. Submission structurally validates the command stream
 before execution.
 
 The same `Device` also exposes an experimental SIR compute map kernel through
-`StorageBuffer`, `ComputePipeline` and `dispatch_compute`. It runs one SIR
-program per 3D invocation and writes one vec4 per element; the current contract
-does not use command buffers or support shared memory, barriers, atomics, or
-compute-stage SPIR-V. See the [compute contract](compute.md) and runnable
-[vector-add example](../examples/compute_vector_add.rs).
+`StorageBuffer`, `ComputePipeline`, `dispatch_compute` and
+`dispatch_compute_simd`. Both run one SIR program per 3D invocation and write
+one vec4 per element; the SIMD method uses four-lane SIR execution and a scalar
+tail. The current contract does not use command buffers or support shared
+memory, barriers, atomics, or compute-stage SPIR-V. See the [compute contract](compute.md),
+[vector-add example](../examples/compute_vector_add.rs), and
+[benchmark example](../examples/compute_bench.rs).
 
 Shader creation accepts at most 1 MiB per SPIR-V 1.0 module and translates only
 the documented graphics subset. Pipeline creation requires a compatible
