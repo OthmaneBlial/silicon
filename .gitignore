@@ -2,3 +2,8 @@
 /output/
 *.silicon
 .DS_Store
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/seeds/*/*
+!/fuzz/seeds/*/seed*

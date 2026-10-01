@@ -358,14 +358,33 @@ fn run() -> Result<()> {
         let path = args.get(1).ok_or("capture path required")?;
         let c = FrameCapture::load(path)?;
         if command == "inspect" {
+            let commands = c.commands.stream();
+            let render_passes = commands
+                .iter()
+                .filter(|cmd| matches!(cmd, Command::BeginRenderPass { .. }))
+                .count();
+            let draw_calls = commands
+                .iter()
+                .filter(|cmd| matches!(cmd, Command::Draw { .. }))
+                .count();
+            let triangles = commands
+                .iter()
+                .filter_map(|cmd| match cmd {
+                    Command::Draw { count, .. } => Some(u64::from(count / 3)),
+                    _ => None,
+                })
+                .sum::<u64>();
             println!(
-                "SILICON capture v{} | {}x{} | {} commands",
+                "SILICON capture v{} | {}x{} | {} commands | {} render passes | {} draws | {} triangles submitted",
                 c.version,
                 c.width,
                 c.height,
-                c.commands.stream().len()
+                commands.len(),
+                render_passes,
+                draw_calls,
+                triangles
             );
-            for (i, cmd) in c.commands.stream().iter().enumerate() {
+            for (i, cmd) in commands.iter().enumerate() {
                 match cmd {
                     Command::BindVertices(b) => println!(
                         "{i}: vertex buffer, {} bytes, {} vertices",
@@ -374,16 +393,31 @@ fn run() -> Result<()> {
                     ),
                     Command::BindIndices(b) => println!("{i}: index buffer, {} bytes", b.size()),
                     Command::BindUniforms(b) => println!("{i}: uniform buffer, {} bytes", b.size()),
-                    Command::BindTexture { slot, texture, .. } => println!(
-                        "{i}: texture {slot}, {}x{}, {} mips",
+                    Command::BindTexture {
+                        slot,
+                        texture,
+                        sampler,
+                    } => println!(
+                        "{i}: texture {slot}, {}x{}, {} mips, sampler {sampler:?}",
                         texture.levels[0].width,
                         texture.levels[0].height,
                         texture.levels.len()
                     ),
                     Command::BindPipeline(p) => println!(
-                        "{i}: pipeline, {} vertex / {} fragment instructions",
+                        "{i}: pipeline {:?}, vertex SIR {} instructions, fragment SIR {} instructions",
+                        p.state,
                         p.vertex.instructions().len(),
                         p.fragment.instructions().len()
+                    ),
+                    Command::Draw {
+                        first,
+                        count,
+                        indexed,
+                    } => println!(
+                        "{i}: {} draw, first {first}, {count} {}, {} triangles",
+                        if *indexed { "indexed" } else { "vertex" },
+                        if *indexed { "indices" } else { "vertices" },
+                        count / 3
                     ),
                     _ => println!("{i}: {cmd:?}"),
                 }

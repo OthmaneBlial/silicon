@@ -21,9 +21,33 @@ fn approved_shader_cube_pixels() {
         .enumerate()
         .filter(|(_, (a, b))| a.abs_diff(**b) > 1)
         .collect();
+    if !differences.is_empty() {
+        let diff: Vec<u8> = fb
+            .bytes()
+            .iter()
+            .zip(&bytes)
+            .flat_map(|(actual, expected)| {
+                let value = actual.abs_diff(*expected).saturating_mul(4);
+                [value, value, value, 255]
+            })
+            .collect();
+        std::fs::create_dir_all("output").unwrap();
+        let mut encoder = png::Encoder::new(
+            std::fs::File::create("output/shader_cube.diff.png").unwrap(),
+            info.width,
+            info.height,
+        );
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&diff)
+            .unwrap();
+    }
     assert!(
         differences.is_empty(),
-        "{} channels differ beyond one quantization step",
+        "{} channels differ beyond one quantization step; see output/shader_cube.diff.png",
         differences.len()
     );
 }

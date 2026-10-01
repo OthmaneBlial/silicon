@@ -1,0 +1,39 @@
+[package]
+name = "silicon-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1.0"
+silicon-core = { path = "../crates/silicon-core" }
+silicon-shader = { path = "../crates/silicon-shader" }
+
+[workspace]
+members = ["."]
+resolver = "2"
+
+[[bin]]
+name = "spirv"
+path = "fuzz_targets/spirv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "capture"
+path = "fuzz_targets/capture.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "geometry_texture"
+path = "fuzz_targets/geometry_texture.rs"
+test = false
+doc = false
+bench = false

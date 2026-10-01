@@ -148,7 +148,7 @@ flowchart LR
 | Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 → SIR; nested selections, Phi, early return/discard |
 | Output merger | Replace, source alpha, additive and multiplicative blending; color/depth write enables |
 | Execution | Scalar reference, optional SIMD coverage4 and NEON/SSE four-fragment SIR, disjoint worker bands |
-| Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling |
+| Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling, cargo-fuzz targets |
 
 The opt-in SIMD path processes four coverage lanes and runs recorded SIR fragment
 shaders in masked groups of four. Arithmetic spans fragments; vertex shaders,
