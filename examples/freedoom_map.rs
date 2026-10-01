@@ -3231,6 +3231,30 @@ fn render(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
     Ok(())
 }
 
+fn next_normal_map(map_name: &str) -> Option<String> {
+    let map = map_name.as_bytes();
+    if map.len() != 4
+        || map[0] != b'E'
+        || !(b'1'..=b'4').contains(&map[1])
+        || map[2] != b'M'
+        || !(b'1'..=b'7').contains(&map[3])
+    {
+        return None;
+    }
+    let episode = map[1] - b'0';
+    let level = map[3] - b'0';
+    Some(format!("E{episode}M{}", level + 1))
+}
+
+fn wad_has_map(path: &Path, map_name: &str) -> Result<bool, io::Error> {
+    if fs::metadata(path)?.len() > MAX_WAD_BYTES {
+        return Err(invalid("WAD exceeds the 128 MiB sample limit"));
+    }
+    Ok(wad_lumps(&fs::read(path)?)?
+        .iter()
+        .any(|lump| lump.name() == map_name))
+}
+
 fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
     let mut scene = PreparedScene::load(path, map_name)?;
     let mut renderer = Renderer::new(960, 720)?;
@@ -3254,13 +3278,16 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     let mut light_rng = 0x4c49_4748u32;
     let mut sector_lights = spawn_sector_lights(&mut scene.map, &mut light_rng);
     let mut nukage_damage_tics = 0.0;
-    let total_secrets = scene
+    let mut total_secrets = scene
         .map
         .sectors
         .iter()
         .filter(|sector| sector.special == SECTOR_SECRET)
         .count();
     let mut secrets_found = 0;
+    let mut session_secrets_found = 0;
+    let mut session_secret_total = 0;
+    let mut levels_completed = 0;
     let mut kills = 0;
     let mut collected = 0;
     let mut activated_sectors = 0;
@@ -3271,6 +3298,36 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     let mut last = std::time::Instant::now();
     let mut frames = 0u64;
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        if exited {
+            let Some(next_map) = next_normal_map(&scene.map_name) else {
+                break;
+            };
+            if !wad_has_map(path, &next_map)? {
+                break;
+            }
+            session_secrets_found += secrets_found;
+            session_secret_total += total_secrets;
+            scene = PreparedScene::load(path, &next_map)?;
+            player = scene.start;
+            actors = scene.actors.clone();
+            projectiles.clear();
+            doors.clear();
+            platforms.clear();
+            pickups = scene.pickups.clone();
+            sector_lights = spawn_sector_lights(&mut scene.map, &mut light_rng);
+            total_secrets = scene
+                .map
+                .sectors
+                .iter()
+                .filter(|sector| sector.special == SECTOR_SECRET)
+                .count();
+            secrets_found = 0;
+            nukage_damage_tics = 0.0;
+            shot_cooldown = 0.0;
+            weapon_flash = 0.0;
+            levels_completed += 1;
+            exited = false;
+        }
         let now = std::time::Instant::now();
         let delta = now.duration_since(last).as_secs_f32().min(0.05);
         last = now;
@@ -3410,9 +3467,9 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_subsector_order(&scene.map, player).len();
         window.set_title(&format!(
-            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | blue key {blue_key} | secrets {secrets_found}/{total_secrets} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | blue key {blue_key} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.map_name,
-            scene.actors.len(),
+            levels_completed + 1,
             triangles,
             submission.draws,
             scene.map.subsectors.len()
@@ -3422,9 +3479,11 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     }
     save_frame(&renderer, output)?;
     println!(
-        "{} session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, {activated_sectors} sector actions, {secrets_found}/{total_secrets} secrets, health {health}, blue key {blue_key}, exited {exited}; saved {}",
+        "{} session: {frames} SILICON-rendered frames, {} map(s), {kills} kills, {collected} pickups, {activated_sectors} sector actions, {} / {} secrets, health {health}, blue key {blue_key}, exited {exited}; saved {}",
         scene.map_name,
-        scene.actors.len(),
+        levels_completed + 1,
+        session_secrets_found + secrets_found,
+        session_secret_total + total_secrets,
         output.display()
     );
     Ok(())
@@ -3551,6 +3610,16 @@ mod tests {
 
         assert_eq!(parse_map(&wad, "E1M2").unwrap().sectors[0].light, 200);
         assert!(parse_map(&wad, "E1M3").is_err());
+    }
+
+    #[test]
+    fn normal_episode_maps_advance_but_finals_and_secret_maps_stop() {
+        assert_eq!(next_normal_map("E1M1").as_deref(), Some("E1M2"));
+        assert_eq!(next_normal_map("E3M7").as_deref(), Some("E3M8"));
+        assert_eq!(next_normal_map("E1M8"), None);
+        assert_eq!(next_normal_map("E4M8"), None);
+        assert_eq!(next_normal_map("E1M9"), None);
+        assert_eq!(next_normal_map("MAP01"), None);
     }
 
     #[test]
