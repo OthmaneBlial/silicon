@@ -37,6 +37,9 @@ seconds), then close it. If the player or a living enemy is in the sector, the
 door reverses and opens again. The ceiling geometry and collision update while
 it moves. Press `E` from the front of E1M1's one-sided special-11 exit line to
 stop gameplay and report `EXITED`; the prototype does not load another map.
+The WAD's single special-117 use door follows the same wait-and-close behavior
+at 280 units per second, four times the normal door speed, as in id Software's
+[`EV_VerticalDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c).
 Walking across a special-2 line opens each sector with its tag and leaves the
 door open. The release WAD has six such lines for tags 5 and 6, targeting closed
 sectors 77 and 145. Trigger lines activate only after accepted player movement;

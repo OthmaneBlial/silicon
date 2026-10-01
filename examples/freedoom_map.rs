@@ -27,12 +27,14 @@ const ACTOR_IDLE_CYCLE: f32 = 20.0 / 35.0;
 const LINE_TWO_SIDED: u16 = 4;
 const LINE_SOUND_BLOCK: u16 = 64;
 const LINE_DOOR_RAISE: u16 = 1;
+const LINE_BLAZING_DOOR_RAISE: u16 = 117;
 const LINE_WALK_OPEN_DOOR: u16 = 2;
 const LINE_USE_DOWN_WAIT_UP_PLATFORM: u16 = 62;
 const LINE_PLAT_DOWN_WAIT_UP: u16 = 88;
 const LINE_EXIT_USE: u16 = 11;
 const USE_RANGE: f32 = 64.0;
 const DOOR_SPEED: f32 = 70.0;
+const BLAZING_DOOR_SPEED: f32 = DOOR_SPEED * 4.0;
 const DOOR_WAIT: f32 = 150.0 / 35.0;
 const PLATFORM_SPEED: f32 = 140.0;
 const PLATFORM_WAIT: f32 = 3.0;
@@ -1001,6 +1003,7 @@ struct Player {
 struct Door {
     sector: u16,
     top: f32,
+    speed: f32,
     wait: f32,
     direction: i8,
     auto_close: bool,
@@ -2040,10 +2043,14 @@ fn use_line(map: &Map, player: Player) -> Option<(usize, u16)> {
 
 fn manual_door(map: &Map, line_index: usize) -> Option<Door> {
     let line = *map.lines.get(line_index)?;
-    if line[5] != LINE_DOOR_RAISE || line[4] == u16::MAX {
+    if !matches!(line[5], LINE_DOOR_RAISE | LINE_BLAZING_DOOR_RAISE) || line[4] == u16::MAX {
         return None;
     }
-    sector_door(map, map.sides.get(line[4] as usize)?.sector, true)
+    let mut door = sector_door(map, map.sides.get(line[4] as usize)?.sector, true)?;
+    if line[5] == LINE_BLAZING_DOOR_RAISE {
+        door.speed = BLAZING_DOOR_SPEED;
+    }
+    Some(door)
 }
 
 fn sector_door(map: &Map, door_sector: u16, auto_close: bool) -> Option<Door> {
@@ -2067,6 +2074,7 @@ fn sector_door(map: &Map, door_sector: u16, auto_close: bool) -> Option<Door> {
     (top >= sector.floor + ACTOR_HEIGHT && sector.ceiling < top).then_some(Door {
         sector: door_sector,
         top,
+        speed: DOOR_SPEED,
         wait: DOOR_WAIT,
         direction: 1,
         auto_close,
@@ -2233,9 +2241,9 @@ fn update_doors(
         let sector = &mut map.sectors[sector_index as usize];
         let previous = sector.ceiling;
         sector.ceiling = if direction < 0 {
-            (previous - DOOR_SPEED * delta).max(target)
+            (previous - doors[index].speed * delta).max(target)
         } else {
-            (previous + DOOR_SPEED * delta).min(target)
+            (previous + doors[index].speed * delta).min(target)
         };
         changed |= sector.ceiling != previous;
         if direction > 0 && sector.ceiling >= top {
@@ -3066,7 +3074,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
             {
                 if special == LINE_EXIT_USE {
                     exited = true;
-                } else if special == LINE_DOOR_RAISE
+                } else if matches!(special, LINE_DOOR_RAISE | LINE_BLAZING_DOOR_RAISE)
                     && let Some(door) = manual_door(&scene.map, line)
                     && !doors
                         .iter()
@@ -3795,6 +3803,33 @@ mod tests {
         ));
         assert_eq!(map.sectors[1].ceiling, 0.0);
         assert!(doors.is_empty());
+
+        map.lines[0][5] = LINE_BLAZING_DOOR_RAISE;
+        let player = Player {
+            x: 32.0,
+            y: 0.0,
+            angle: 180.0,
+        };
+        assert_eq!(use_line(&map, player), Some((0, LINE_BLAZING_DOOR_RAISE)));
+        let mut doors = vec![manual_door(&map, 0).unwrap()];
+        assert_eq!(doors[0].speed, BLAZING_DOOR_SPEED);
+        assert!(update_doors(
+            &mut map,
+            &mut doors,
+            Player { x: 200.0, ..player },
+            &[],
+            0.1
+        ));
+        assert_eq!(map.sectors[1].ceiling, 28.0);
+        assert!(update_doors(
+            &mut map,
+            &mut doors,
+            Player { x: 200.0, ..player },
+            &[],
+            0.4
+        ));
+        assert_eq!(map.sectors[1].ceiling, 124.0);
+        assert_eq!(doors[0].direction, 0);
     }
 
     #[test]
