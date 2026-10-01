@@ -42,11 +42,12 @@ wall time. These worker sums overlap and the per-packet timing is instrumented;
 they are not exclusive stage shares. Native sampling still points to shader
 execution as the next optimization target.
 
-## 0.7 PBR direct-light baseline before normal mapping
+## Historical PBR measurements before cube-map sampling
 
 The [raw PBR record](../benchmarks/apple-m2-pbr-2026-10-01.json) measures the
-pre-normal-map source commit `3288feddd24bd26d2c1213641da9f2d94523af73` and its
-recorded binary hash on the shared Apple M2 / macOS 26.6. The `pbr_showcase` ran at
+direct-light-only shader at source commit `3288feddd24bd26d2c1213641da9f2d94523af73`,
+before the normal map and environment sampler were added. Its recorded binary hash
+is for the shared Apple M2 / macOS 26.6. The `pbr_showcase` ran at
 640×400 with SIMD coverage, four workers, three warmups, and 30 timed frames.
 The median was 91.74 ms, p95 was 92.88 ms, and throughput was 10.88 FPS.
 The run executed 871,258,590 SIR instructions across 4,586,070 shaded
@@ -62,7 +63,8 @@ exclusive stage shares.
 ## Normal-map PBR shader-work sample
 
 The [raw post-normal-map record](../benchmarks/apple-m2-pbr-normal-map-2026-10-01.json)
-uses commit `23959a2015923135c4fe4c2a67fa35490bcfb716`, 640×400, four-worker
+uses commit `23959a2015923135c4fe4c2a67fa35490bcfb716`, before the cube-map
+sampler was added, at 640×400 with four-worker
 NEON coverage, three warmups and 30 timed frames. Its counter totals correspond
 to about 207 SIR instructions and 1.06 texture samples per shaded fragment,
 compared with about 190 instructions and 1.00 sample in the earlier direct-light

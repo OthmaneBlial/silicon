@@ -306,6 +306,27 @@ impl Program {
                         }),
                     )
                 }
+                SampleCube {
+                    dst,
+                    direction,
+                    texture,
+                } => {
+                    let mut values = [Vec4::ZERO; 4];
+                    for i in 0..4 {
+                        if enabled(i) {
+                            results[i].samples += 1;
+                            values[i] =
+                                sample(i, texture as usize, lane(regs[direction as usize], i))
+                                    .map_err(|e| format!("SIR instruction {pc}, lane {i}: {e}"))?;
+                        }
+                    }
+                    (
+                        Some(dst),
+                        std::array::from_fn(|c| {
+                            Lanes(std::array::from_fn(|i| values[i].to_array()[c]))
+                        }),
+                    )
+                }
                 Output { slot, src } => {
                     for (i, result) in results.iter_mut().enumerate() {
                         if enabled(i) {

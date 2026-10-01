@@ -69,7 +69,7 @@ impl CubeFace {
 }
 
 /// Six square color textures in +X, -X, +Y, -Y, +Z, -Z order.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CubeMap {
     faces: [Texture; 6],
 }

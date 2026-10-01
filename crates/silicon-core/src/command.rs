@@ -39,6 +39,16 @@ pub struct ShaderPipeline {
     pub vertex: Program,
     pub fragment: Program,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImageKind {
+    Texture2D,
+    CubeMap,
+}
+#[derive(Clone, Copy)]
+enum BoundImage<'a> {
+    Texture2D(&'a Texture, Sampler),
+    CubeMap(&'a CubeMap, Sampler),
+}
 #[derive(Clone, Debug)]
 pub struct ShaderModule {
     compiled: shader::spirv::Compiled,
@@ -145,6 +155,11 @@ pub enum Command {
         texture: Arc<Texture>,
         sampler: Sampler,
     },
+    BindCubeMap {
+        slot: u8,
+        cube_map: Arc<CubeMap>,
+        sampler: Sampler,
+    },
     Draw {
         first: u32,
         count: u32,
@@ -240,7 +255,7 @@ impl Device {
         let mut vertices = None;
         let mut indices = None;
         let mut uniforms = None;
-        let mut textures: [Option<(&Texture, Sampler)>; 16] = [None; 16];
+        let mut textures: [Option<BoundImage<'_>>; 16] = [None; 16];
         let mut stats = Submission::default();
         for (number, command) in cmd.commands.iter().enumerate() {
             let mut command_start = r.profile_shaders.then(Instant::now);
@@ -256,7 +271,18 @@ impl Device {
                     slot,
                     texture,
                     sampler,
-                } => textures[*slot as usize] = Some((texture.as_ref(), *sampler)),
+                } => {
+                    textures[*slot as usize] =
+                        Some(BoundImage::Texture2D(texture.as_ref(), *sampler));
+                }
+                Command::BindCubeMap {
+                    slot,
+                    cube_map,
+                    sampler,
+                } => {
+                    textures[*slot as usize] =
+                        Some(BoundImage::CubeMap(cube_map.as_ref(), *sampler));
+                }
                 Command::Draw {
                     first,
                     count,
@@ -273,14 +299,21 @@ impl Device {
                     };
                     let v = if *indexed { v } else { &v[range] };
                     let sample = |slot: usize, uv: Vec4| -> silicon_shader::Result<Vec4> {
-                        let (t, s) = textures
+                        let image = textures
                             .get(slot)
                             .copied()
                             .flatten()
                             .ok_or_else(|| format!("texture slot {slot} is not bound"))?;
-                        t.sample(Vec2::new(uv.x, uv.y), uv.z, s)
-                            .map(|c| c.0)
-                            .map_err(|e| e.to_string())
+                        match image {
+                            BoundImage::Texture2D(texture, sampler) => texture
+                                .sample(Vec2::new(uv.x, uv.y), uv.z, sampler)
+                                .map(|c| c.0)
+                                .map_err(|e| e.to_string()),
+                            BoundImage::CubeMap(cube_map, sampler) => cube_map
+                                .sample(Vec3::new(uv.x, uv.y, uv.z), uv.w, sampler)
+                                .map(|c| c.0)
+                                .map_err(|e| e.to_string()),
+                        }
                     };
                     let previous = r.stats.shaded;
                     let debug = r.debug_pixel;
@@ -330,11 +363,17 @@ impl Device {
                                 }
                                 inputs[i] = fragments[i].varyings;
                                 lods[i] = textures.map(|t| {
-                                    t.map_or(0., |(t, sampler)| {
-                                        if matches!(sampler.mip, MipFilter::None) {
-                                            0.
-                                        } else {
-                                            t.lod(fragments[i].uv_dx, fragments[i].uv_dy)
+                                    t.map_or(0., |image| match image {
+                                        BoundImage::CubeMap(..) => 0.,
+                                        BoundImage::Texture2D(texture, sampler) => {
+                                            if matches!(sampler.mip, MipFilter::None) {
+                                                0.
+                                            } else {
+                                                texture.lod(
+                                                    fragments[i].uv_dx,
+                                                    fragments[i].uv_dy,
+                                                )
+                                            }
                                         }
                                     })
                                 });
@@ -447,6 +486,13 @@ impl CommandBuffer {
             sampler,
         });
     }
+    pub fn bind_cube_map(&mut self, slot: u8, cube_map: Arc<CubeMap>, sampler: Sampler) {
+        self.commands.push(Command::BindCubeMap {
+            slot,
+            cube_map,
+            sampler,
+        });
+    }
     pub fn draw(&mut self, first: u32, count: u32) {
         self.commands.push(Command::Draw {
             first,
@@ -470,7 +516,8 @@ impl CommandBuffer {
         }
         let mut pass = false;
         let mut begins = 0;
-        let mut p = false;
+        let mut bound_pipeline: Option<&ShaderPipeline> = None;
+        let mut image_kinds = [None; 16];
         let mut vertex: Option<&[Vertex]> = None;
         let mut index: Option<&[u32]> = None;
         for (number, cmd) in self.commands.iter().enumerate() {
@@ -505,7 +552,7 @@ impl CommandBuffer {
                     {
                         return Err(error("discard is only allowed in fragment shaders").into());
                     }
-                    p = true;
+                    bound_pipeline = Some(pipeline.as_ref());
                 }
                 Command::BindVertices(b) => {
                     Device.create_vertex_buffer(b.data.to_vec())?;
@@ -531,6 +578,14 @@ impl CommandBuffer {
                         return Err(error("texture slot exceeds 15").into());
                     }
                     texture.validate()?;
+                    image_kinds[*slot as usize] = Some(ImageKind::Texture2D);
+                }
+                Command::BindCubeMap { slot, cube_map, .. } => {
+                    if *slot >= 16 {
+                        return Err(error("texture slot exceeds 15").into());
+                    }
+                    cube_map.validate()?;
+                    image_kinds[*slot as usize] = Some(ImageKind::CubeMap);
                 }
                 Command::Draw {
                     first,
@@ -538,8 +593,28 @@ impl CommandBuffer {
                     indexed,
                 } => {
                     let v = vertex.ok_or_else(|| error("draw has no vertex buffer"))?;
-                    if !p {
-                        return Err(error("draw has no pipeline").into());
+                    let bound = bound_pipeline.ok_or_else(|| error("draw has no pipeline"))?;
+                    for instruction in bound
+                        .vertex
+                        .instructions()
+                        .iter()
+                        .chain(bound.fragment.instructions())
+                    {
+                        let (slot, expected) = match instruction {
+                            Instruction::Sample { texture, .. }
+                            | Instruction::SampleImplicit { texture, .. } => {
+                                (*texture, ImageKind::Texture2D)
+                            }
+                            Instruction::SampleCube { texture, .. } => {
+                                (*texture, ImageKind::CubeMap)
+                            }
+                            _ => continue,
+                        };
+                        if image_kinds[slot as usize] != Some(expected) {
+                            return Err(
+                                error("shader sampler and bound image types do not match").into()
+                            );
+                        }
                     }
                     if !count.is_multiple_of(3) {
                         return Err(error("triangle draw count must be a multiple of 3").into());

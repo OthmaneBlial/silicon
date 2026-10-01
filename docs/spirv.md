@@ -54,9 +54,10 @@ surfaces. Both passes use SILICON's rasterizer; no external renderer contributes
 
 `pbr_showcase` uses the same recorded geometry with Cook-Torrance GGX direct
 lighting, per-material metallic/roughness, a display tone curve, and a
-procedural tangent-space normal map on the sculpture. Captures record its
-tangent-bearing vertex buffer and normal texture. Image-based lighting is not
-implemented.
+procedural tangent-space normal map on the sculpture. A GLSL `samplerCube`
+samples a generated six-face environment at an explicit roughness-selected LOD.
+Captures record the tangent-bearing vertex buffer, normal texture, and all cube
+faces. This environment term is not split-sum image-based lighting.
 
 ## Accepted subset
 
@@ -74,8 +75,8 @@ implemented.
   `OpCompositeExtract`, `OpVectorShuffle`, float/vector/matrix/sampler `OpCopyObject`.
 - `OpFNegate`, `OpFAdd`, `OpFSub`, `OpFMul`, `OpFDiv`, `OpVectorTimesScalar`,
   uniform `OpMatrixTimesVector`, `OpDot`, combined sampler2D
-  `OpImageSampleImplicitLod`, and `OpImageSampleExplicitLod` with a scalar LOD and
-  the Lod-only image operand mask.
+  `OpImageSampleImplicitLod`, and sampler2D/samplerCube `OpImageSampleExplicitLod`
+  with a scalar LOD and the Lod-only image operand mask. Cube coordinates are vec3.
 - `OpBranch`, scalar-bool `OpBranchConditional`, `OpSelectionMerge None`,
   float/vector/bool `OpPhi`, fragment `OpKill`, and early `OpReturn`.
   Scalar float ordered comparisons (equal, unequal, less/greater, inclusive forms),
@@ -109,7 +110,7 @@ approximation even in divergent branches, not hardware derivative conformance.
 | Fragment inputs locations 0..3 | SIR inputs 0..3 |
 | Fragment output location 0 | RGBA vec4 |
 | Set 0, binding B | One float/vector/mat4 member at offset 0; float/vector uses SIR uniform 4B, col-major mat4 with stride 16 uses rows 4B..4B+3 |
-| Set 1, binding B | Combined sampler2D at texture slot B |
+| Set 1, binding B | Combined sampler2D or samplerCube at matching texture slot B |
 
 The shadow shader binds the single-level 32-bit float depth texture at set 1,
 binding 1, and supplies its light matrix and bias at uniform bindings 6 and 7.
@@ -120,19 +121,23 @@ MVP at 0, model matrix at 1, normal matrix at 2, material color at 3,
 texture/metallic/emission parameters at 4, camera position at 5 and texture 0.
 The lit showcase uses the same bindings per draw. PBR additionally stores
 normal-map strength at binding 8 and binds the tangent-space map at texture 1.
+PBR binds its six-face environment cube at texture slot 2 and selects a mip with
+explicit LOD from material roughness.
 The vertex GLSL explicitly redeclares `gl_PerVertex` with only `gl_Position`;
 other built-ins/arrays are unsupported.
 
-Implicit sampling currently requires the **unmodified vec2 fragment input at
+Implicit 2D sampling currently requires the **unmodified vec2 fragment input at
 location 1**. Its LOD uses SILICON's neighboring-center perspective UV derivative
 approximation, independently for each bound texture's dimensions. It is not a
 hardware quad derivative/conformance claim. Vector padding is zeroed; vec2/3
 division uses safe unused lanes and preserves the actual components. Scalar
 results are splatted into SIR registers.
 
-Explicit-LOD sampling accepts vec2 coordinates (including transformed
-coordinates) and one scalar LOD; offsets, gradients, and other image operands
-remain unsupported.
+Explicit-LOD 2D sampling accepts vec2 coordinates; cube sampling accepts vec3
+directions. Both accept transformed coordinates and one scalar LOD. Cube sampling
+uses the bound `CubeMap` face selection, mip chain and sampler. Implicit cube-map
+sampling is rejected until direction derivatives are available. Offsets, explicit
+gradients, and other image operands remain unsupported.
 
 ## Limits and evidence
 
@@ -140,7 +145,8 @@ At most 1 MiB per module, ID bound 65536, 256 virtual SSA temporaries, 64
 simultaneously live runtime registers and 4096 SIR instructions. Dead temporaries
 are recycled after their last use, without increasing VM storage. Selection nesting is bounded to 64 and main to 4096 SPIR-V instructions. There are no
 loops, switches, function calls, integer arithmetic, specialization constants,
-SSBOs, storage images, implicit samples from transformed coordinates,
+SSBOs, storage images, implicit samples from transformed coordinates or cube
+directions,
 explicit sample offsets/gradients, compute,
 WGSL or GLSL compiler. Unreachable blocks are accepted only as isolated `OpUnreachable` merge blocks.
 Conditional targets must be distinct; overlapping regions, back edges and branches

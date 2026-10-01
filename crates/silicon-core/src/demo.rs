@@ -331,6 +331,13 @@ fn environment_cubemap() -> Result<CubeMap> {
     CubeMap::new(faces.try_into().expect("six cubemap faces"))
 }
 
+fn shared_environment() -> std::sync::Arc<CubeMap> {
+    static ENVIRONMENT: OnceLock<std::sync::Arc<CubeMap>> = OnceLock::new();
+    std::sync::Arc::clone(ENVIRONMENT.get_or_init(|| {
+        std::sync::Arc::new(environment_cubemap().expect("valid built-in cubemap"))
+    }))
+}
+
 fn stencil_vertex(v: &Vertex) -> VertexOutput {
     VertexOutput {
         position: v.position.extend(1.),
@@ -879,6 +886,7 @@ fn material_showcase(
     time: f32,
     programs: &(shader::Program, shader::Program),
     normal_map: Option<std::sync::Arc<Texture>>,
+    environment: Option<std::sync::Arc<CubeMap>>,
 ) -> Result<FrameCapture> {
     use std::sync::Arc;
     if !time.is_finite() {
@@ -897,6 +905,16 @@ fn material_showcase(
         fragment: programs.1.clone(),
     }));
     commands.bind_texture(0, Arc::new(Texture::checker(128)?), Sampler::default());
+    if let Some(environment) = environment {
+        commands.bind_cube_map(
+            2,
+            environment,
+            Sampler {
+                mip: MipFilter::Trilinear,
+                ..Default::default()
+            },
+        );
+    }
     let eye = Vec3::new(7.5, 5.8, 10.);
     let vp = Mat4::perspective(0.78, width as f32 / height as f32, 0.1, 60.)
         * Mat4::look_at(eye, Vec3::new(0., 1.2, 0.), Vec3::new(0., 1., 0.));
@@ -954,7 +972,7 @@ pub fn spirv_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture
         })
         .as_ref()
         .map_err(|e| e.clone())?;
-    material_showcase(width, height, time, programs, None)
+    material_showcase(width, height, time, programs, None, None)
 }
 /// A direct-light Cook-Torrance GGX metallic/roughness scene running from GLSL SPIR-V.
 pub fn pbr_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
@@ -968,7 +986,14 @@ pub fn pbr_showcase(width: u32, height: u32, time: f32) -> Result<FrameCapture> 
         })
         .as_ref()
         .map_err(|e| e.clone())?;
-    material_showcase(width, height, time, programs, Some(pbr_normal_map()))
+    material_showcase(
+        width,
+        height,
+        time,
+        programs,
+        Some(pbr_normal_map()),
+        Some(shared_environment()),
+    )
 }
 
 /// Render a CPU depth map first, then sample it from ordinary GLSL/SPIR-V fragment shaders.

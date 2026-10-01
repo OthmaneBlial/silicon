@@ -263,6 +263,12 @@ fn float_negate_preserves_sign_bits_in_scalar_and_packet_execution() {
 #[test]
 fn pbr_spirv_responds_to_roughness_and_normal_maps_and_replays_across_backends() {
     let fragment = compiled(include_bytes!("../assets/shaders/pbr.frag.spv"));
+    assert!(fragment.program.instructions().iter().any(|instruction| {
+        matches!(
+            instruction,
+            shader::Instruction::SampleCube { texture: 2, .. }
+        )
+    }));
     let inputs = [
         Vec4::new(1., 0., 0., 1.),
         Vec4::new(0.4, 0.6, 0., 0.),
@@ -275,31 +281,40 @@ fn pbr_spirv_responds_to_roughness_and_normal_maps_and_replays_across_backends()
         uniforms[16] = Vec4::new(0., 0.8, 0., roughness);
         uniforms[20] = Vec3::new(7.5, 5.8, 10.).extend(1.);
         uniforms[32] = Vec4::new(normal_strength, 0., 0., 0.);
-        fragment
+        let mut cube_lod = None;
+        let color = fragment
             .program
             .execute_with_lod(
                 &inputs,
                 &uniforms,
                 &[0., 0.],
-                |slot, _| {
-                    Ok(if slot == 0 {
-                        Vec4::new(1., 1., 1., 1.)
-                    } else {
-                        Vec4::new(0.7, 0.5, 0.95, 1.)
+                |slot, coordinate| {
+                    Ok(match slot {
+                        0 => Vec4::new(1., 1., 1., 1.),
+                        1 => Vec4::new(0.7, 0.5, 0.95, 1.),
+                        2 => {
+                            assert!(coordinate.xyz().is_finite());
+                            cube_lod = Some(coordinate.w);
+                            Vec4::new(0.25 + coordinate.w * 0.1, 0.5, 0.75, 1.)
+                        }
+                        _ => unreachable!(),
                     })
                 },
                 false,
             )
             .unwrap()
-            .outputs[0]
+            .outputs[0];
+        (color, cube_lod.unwrap())
     };
-    let smooth = shade(0.12, 0.75);
-    let rough = shade(0.85, 0.75);
+    let (smooth, smooth_lod) = shade(0.12, 0.75);
+    let (rough, rough_lod) = shade(0.85, 0.75);
+    assert!((smooth_lod - 0.6).abs() < 1e-6);
+    assert!((rough_lod - 4.25).abs() < 1e-6);
     assert_ne!(
         smooth.to_array().map(f32::to_bits),
         rough.to_array().map(f32::to_bits)
     );
-    let flat = shade(0.12, 0.);
+    let (flat, _) = shade(0.12, 0.);
     assert_ne!(
         smooth.to_array().map(f32::to_bits),
         flat.to_array().map(f32::to_bits)
@@ -307,18 +322,69 @@ fn pbr_spirv_responds_to_roughness_and_normal_maps_and_replays_across_backends()
     assert!(smooth.is_finite() && rough.is_finite() && flat.is_finite());
 
     let capture = demo::pbr_showcase(240, 160, 0.37).unwrap();
+    assert!(
+        capture
+            .commands
+            .stream()
+            .iter()
+            .any(|command| { matches!(command, Command::BindCubeMap { slot: 2, .. }) })
+    );
     let path = std::env::temp_dir().join(format!("silicon-pbr-{}.silicon", std::process::id()));
     capture.save(&path).unwrap();
     let loaded = FrameCapture::load(&path).unwrap();
     std::fs::remove_file(path).unwrap();
     let scalar = loaded.replay().unwrap();
     assert!(scalar.stats.shaded > 1000);
+    assert!(scalar.stats.texture_samples > scalar.stats.shaded as u64);
     let mut simd = Renderer::new(240, 160).unwrap();
     simd.backend = Backend::Simd;
     simd.render_bands(4, |band| Device.submit(&loaded.commands, band).map(|_| ()))
         .unwrap();
     assert_eq!(scalar.framebuffer.bytes(), simd.framebuffer.bytes());
 }
+
+#[test]
+fn sampler_cube_requires_a_cube_image_before_render_pass_clear() {
+    let device = Device::new();
+    let vertex = device
+        .create_shader(include_bytes!("../assets/shaders/pbr.vert.spv"))
+        .unwrap();
+    let fragment = device
+        .create_shader(include_bytes!("../assets/shaders/pbr.frag.spv"))
+        .unwrap();
+    let pipeline = device
+        .create_pipeline(&vertex, &fragment, Pipeline::default())
+        .unwrap();
+    let texture = std::sync::Arc::new(Texture::checker(4).unwrap());
+    let vertices = [
+        Vertex::new(Vec3::new(-0.5, -0.5, 0.), Color::WHITE),
+        Vertex::new(Vec3::new(0.5, -0.5, 0.), Color::WHITE),
+        Vertex::new(Vec3::new(0., 0.5, 0.), Color::WHITE),
+    ];
+    let mut commands = device.commands();
+    commands.begin_render_pass(Color::BLACK);
+    commands.bind_pipeline(pipeline);
+    commands.bind_vertex_buffer(device.create_vertex_buffer(vertices.to_vec()).unwrap());
+    commands.bind_index_buffer(device.create_index_buffer(vec![0, 1, 2]).unwrap());
+    commands.bind_uniform_buffer(device.create_uniform_buffer(vec![Vec4::ZERO; 36]).unwrap());
+    commands.bind_texture(0, texture.clone(), Sampler::default());
+    commands.bind_texture(1, texture.clone(), Sampler::default());
+    commands.bind_texture(2, texture, Sampler::default());
+    commands.draw_indexed(0, 3);
+    commands.end_render_pass();
+
+    let mut renderer = Renderer::new(8, 8).unwrap();
+    renderer.clear(Color::WHITE);
+    let before = renderer.framebuffer.bytes().to_vec();
+    let error = device.submit(&commands, &mut renderer).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("sampler and bound image types do not match")
+    );
+    assert_eq!(renderer.framebuffer.bytes(), before);
+}
+
 #[test]
 fn malformed_headers_ids_types_blocks_and_decorations_are_rejected() {
     let module = Module::parse(VERTEX).unwrap();

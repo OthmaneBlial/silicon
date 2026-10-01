@@ -16,9 +16,9 @@ stencil and blending generate scene pixels entirely on the CPU.
 
 *Rendered entirely on the CPU by a GPU I wrote from scratch.*
 
-![Metallic materials with tangent-space normal mapping rendered by SILICON's GLSL SPIR-V pipeline](assets/screenshots/pbr_showcase.png)
+![Metallic materials with tangent-space normal mapping and cube-map reflections rendered by SILICON's GLSL SPIR-V pipeline](assets/screenshots/pbr_showcase.png)
 
-*Cook-Torrance GGX shading. The shader, rasterizer and framebuffer all run on the CPU.*
+*Cook-Torrance GGX direct lighting and roughness-selected cube-map reflections. The shader, rasterizer and framebuffer run on the CPU.*
 
 ![A CPU-rendered sky environment reflected by the SILICON sculpture and metal rings](assets/screenshots/cubemap_showcase.png)
 
@@ -141,12 +141,13 @@ Phi/local reconvergence, early return and fragment discard.
 The `shadow_showcase` renders a CPU depth pass for the same OBJ scene and samples
 its depth texture from an ordinary GLSL fragment shader through explicit-LOD SPIR-V.
 The `pbr_showcase` runs a GLSL metallic/roughness Cook-Torrance GGX shader through
-SPIR-V and the same CPU SIR pipeline. It uses direct lighting and a procedural
-tangent-space normal map; image-based lighting remains future work.
+SPIR-V and the CPU SIR pipeline. Direct lighting, a procedural tangent-space
+normal map, and roughness-selected `samplerCube` reflections all run on the CPU.
+The environment term is a compact mip approximation, not split-sum IBL.
 The `cubemap_showcase` samples a six-face `CubeMap` for a skybox and reflected
 environment color in a native Rust shader. Material roughness selects a
-box-filtered mip level as a compact reflection-blur approximation. This is not
-split-sum IBL and is not yet a `samplerCube` binding in the SPIR-V command path.
+box-filtered mip level as a compact reflection-blur approximation. The GLSL
+path uses explicit `textureLod`; implicit cube-map derivatives remain unsupported.
 The `stencil` scene uses a circular portal mask for both a textured cube and a
 translucent overlay.
 The renderer also supports deterministic 2× and 4× multisampling with

@@ -6,6 +6,7 @@ layout(location = 3) in vec3 world;
 layout(location = 0) out vec4 outColor;
 layout(set = 1, binding = 0) uniform sampler2D tex;
 layout(set = 1, binding = 1) uniform sampler2D normalTex;
+layout(set = 1, binding = 2) uniform samplerCube environmentMap;
 layout(set = 0, binding = 3) uniform MaterialColor { vec4 value; } material;
 layout(set = 0, binding = 4) uniform MaterialParams { vec4 value; } params;
 layout(set = 0, binding = 5) uniform Camera { vec4 position; } camera;
@@ -48,6 +49,9 @@ void main() {
         / max(4.0 * nDotV * nDotL, 0.001);
     vec3 diffuse = (vec3(1.0) - fresnel) * albedo * (1.0 - metallic) / 3.14159265;
     vec3 ambient = albedo * (0.035 * (1.0 - metallic));
+    vec3 reflection = 2.0 * dot(n, v) * n - v;
+    vec3 environment = textureLod(environmentMap, reflection, roughness * 5.0).rgb;
+    ambient += environment * (fresnel * 0.32 + albedo * (1.0 - metallic) * 0.06);
     vec3 radiance = vec3(4.2, 3.8, 3.3);
     vec3 rgb = (diffuse + specular) * radiance * nDotL + ambient
         + albedo * params.value.z;

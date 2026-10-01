@@ -189,6 +189,12 @@ pub enum Instruction {
         uv: u8,
         texture: u8,
     },
+    /// Explicit-LOD cube lookup; xyz is the direction and w is the LOD.
+    SampleCube {
+        dst: u8,
+        direction: u8,
+        texture: u8,
+    },
     Output {
         slot: u8,
         src: u8,
@@ -261,6 +267,10 @@ impl Instruction {
             }
             Sample { dst, uv, .. } | SampleImplicit { dst, uv, .. } => {
                 *uv = f(*uv, false)?;
+                dst
+            }
+            SampleCube { dst, direction, .. } => {
+                *direction = f(*direction, false)?;
                 dst
             }
             Output { src, .. } => {
@@ -502,6 +512,17 @@ impl Program {
                 Instruction::Sample { dst, uv, texture }
                 | Instruction::SampleImplicit { dst, uv, texture } => {
                     source(uv)?;
+                    if texture >= 16 {
+                        return Err("SIR texture slot exceeds 15".into());
+                    }
+                    Some(dst)
+                }
+                Instruction::SampleCube {
+                    dst,
+                    direction,
+                    texture,
+                } => {
+                    source(direction)?;
                     if texture >= 16 {
                         return Err("SIR texture slot exceeds 15".into());
                     }
@@ -807,6 +828,18 @@ impl Program {
                     (
                         Some(dst),
                         sample(texture as usize, coordinate)
+                            .map_err(|e| format!("SIR instruction {pc}: {e}"))?,
+                    )
+                }
+                Instruction::SampleCube {
+                    dst,
+                    direction,
+                    texture,
+                } => {
+                    result.samples += 1;
+                    (
+                        Some(dst),
+                        sample(texture as usize, regs[direction as usize])
                             .map_err(|e| format!("SIR instruction {pc}: {e}"))?,
                     )
                 }

@@ -342,8 +342,8 @@ enum Ty {
     Float,
     Vector(u8),
     Matrix,
-    Image,
-    Sampled,
+    Image(u32),
+    Sampled(u32),
     Struct(Vec<u32>),
     Pointer(u32, u32),
     Function(u32),
@@ -621,10 +621,11 @@ impl<'a> Compiler<'a> {
         }
         match storage {
             0 => {
-                if t != Ty::Sampled || d.set != Some(1) || d.binding.is_none_or(|b| b > 15) {
-                    return Err(
-                        "samplers require sampler2D, descriptor set 1, binding 0..15".into(),
-                    );
+                if !matches!(t, Ty::Sampled(1 | 3))
+                    || d.set != Some(1)
+                    || d.binding.is_none_or(|b| b > 15)
+                {
+                    return Err("samplers require sampler2D or samplerCube, descriptor set 1, binding 0..15".into());
                 }
             }
             1 => {
@@ -794,19 +795,22 @@ impl<'a> Compiler<'a> {
                 self.types.insert(a[0], Ty::Matrix);
             }
             25 => {
-                if self.ty(a[1])? != Ty::Float || a[2..] != [1, 0, 0, 0, 1, 0] {
+                if self.ty(a[1])? != Ty::Float
+                    || !matches!(a[2], 1 | 3)
+                    || a[3..] != [0, 0, 0, 1, 0]
+                {
                     return Err(
-                        "only sampled float32 2D non-array/non-depth/non-MS images are supported"
+                        "only sampled float32 2D or cube non-array/non-depth/non-MS images are supported"
                             .into(),
                     );
                 }
-                self.types.insert(a[0], Ty::Image);
+                self.types.insert(a[0], Ty::Image(a[2]));
             }
             27 => {
-                if self.ty(a[1])? != Ty::Image {
+                let Ty::Image(dimension) = self.ty(a[1])? else {
                     return Err("sampled image requires supported image type".into());
-                }
-                self.types.insert(a[0], Ty::Sampled);
+                };
+                self.types.insert(a[0], Ty::Sampled(dimension));
             }
             30 => {
                 if a.len() != 2 || !matches!(self.ty(a[1])?, Ty::Float | Ty::Vector(_) | Ty::Matrix)
@@ -1366,7 +1370,13 @@ impl<'a> Compiler<'a> {
                 let Value::Texture(texture) = s.value else {
                     return Err("sampled image must be loaded from a sampler binding".into());
                 };
+                let Ty::Sampled(dimension) = self.ty(s.ty)? else {
+                    return Err("sampled image has an unsupported type".into());
+                };
                 let (uv, t, direct_uv) = self.reg(a[3])?;
+                if dimension != 1 {
+                    return Err("implicit cube-map sampling is unsupported; use textureLod until cube direction derivatives are available".into());
+                }
                 if self.stage != Stage::Fragment
                     || self.ty(a[0])? != Ty::Vector(4)
                     || self.ty(t)? != Ty::Vector(2)
@@ -1388,31 +1398,50 @@ impl<'a> Compiler<'a> {
                 let Value::Texture(texture) = sampled.value else {
                     return Err("sampled image must be loaded from a sampler binding".into());
                 };
+                let Ty::Sampled(dimension) = self.ty(sampled.ty)? else {
+                    return Err("sampled image has an unsupported type".into());
+                };
                 let (uv, uv_ty, _) = self.reg(a[3])?;
                 let (lod, lod_ty, _) = self.reg(a[5])?;
+                let coordinate_components = if dimension == 3 { 3 } else { 2 };
                 if self.stage != Stage::Fragment
                     || self.ty(a[0])? != Ty::Vector(4)
-                    || self.ty(uv_ty)? != Ty::Vector(2)
+                    || self.ty(uv_ty)? != Ty::Vector(coordinate_components)
                     || self.ty(lod_ty)? != Ty::Float
                 {
-                    return Err(
-                        "explicit sampling requires fragment vec2 coordinates and a scalar LOD"
-                            .into(),
-                    );
+                    return Err(format!(
+                        "explicit sampling requires fragment vec{coordinate_components} coordinates and a scalar LOD"
+                    ));
                 }
                 if a[4] != 2 {
                     return Err("explicit sampling supports only the Lod image operand".into());
                 }
-                let coordinate = self.emit(|dst| Sir::Compose {
-                    dst,
-                    sources: [uv, uv, lod, 0],
-                    lanes: [0, 1, 0, 0],
-                })?;
-                let r = self.emit(|dst| Sir::Sample {
-                    dst,
-                    uv: coordinate,
-                    texture,
-                })?;
+                let coordinate = if dimension == 3 {
+                    self.emit(|dst| Sir::Compose {
+                        dst,
+                        sources: [uv, uv, uv, lod],
+                        lanes: [0, 1, 2, 0],
+                    })?
+                } else {
+                    self.emit(|dst| Sir::Compose {
+                        dst,
+                        sources: [uv, uv, lod, 0],
+                        lanes: [0, 1, 0, 0],
+                    })?
+                };
+                let r = if dimension == 3 {
+                    self.emit(|dst| Sir::SampleCube {
+                        dst,
+                        direction: coordinate,
+                        texture,
+                    })?
+                } else {
+                    self.emit(|dst| Sir::Sample {
+                        dst,
+                        uv: coordinate,
+                        texture,
+                    })?
+                };
                 self.values.insert(
                     a[1],
                     Typed {
