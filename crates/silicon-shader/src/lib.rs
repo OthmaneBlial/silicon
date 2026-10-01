@@ -48,7 +48,11 @@ impl Logic {
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum UnaryMath {
+    Round,
+    RoundEven,
+    Trunc,
     Floor,
+    Ceil,
     Fract,
     Sin,
     Cos,
@@ -56,7 +60,11 @@ pub enum UnaryMath {
 impl UnaryMath {
     fn apply(self, value: f32) -> f32 {
         match self {
+            Self::Round => value.round(),
+            Self::RoundEven => value.round_ties_even(),
+            Self::Trunc => value.trunc(),
             Self::Floor => value.floor(),
+            Self::Ceil => value.ceil(),
             Self::Fract => value - value.floor(),
             Self::Sin => value.sin(),
             Self::Cos => value.cos(),

@@ -2000,7 +2000,7 @@ impl<'a> Compiler<'a> {
                     return Err("extended instruction set must be GLSL.std.450 import".into());
                 }
                 let count = match a[3] {
-                    8 | 10 | 13 | 14 | 66 | 69 => 1,
+                    1 | 2 | 3 | 8 | 9 | 10 | 13 | 14 | 66 | 69 => 1,
                     26 | 37 | 40 => 2,
                     43 | 46 => 3,
                     _ => return Err(format!("unsupported GLSL.std.450 instruction {}", a[3])),
@@ -2028,9 +2028,13 @@ impl<'a> Compiler<'a> {
                 }
                 let x = regs[0];
                 let r = match a[3] {
-                    8 | 10 | 13 | 14 => {
+                    1 | 2 | 3 | 8 | 9 | 10 | 13 | 14 => {
                         let operation = match a[3] {
+                            1 => super::UnaryMath::Round,
+                            2 => super::UnaryMath::RoundEven,
+                            3 => super::UnaryMath::Trunc,
                             8 => super::UnaryMath::Floor,
+                            9 => super::UnaryMath::Ceil,
                             10 => super::UnaryMath::Fract,
                             13 => super::UnaryMath::Sin,
                             14 => super::UnaryMath::Cos,
