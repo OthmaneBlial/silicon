@@ -20,9 +20,14 @@ extract `freedoom1.wad`, then run:
 ```sh
 cargo run --release --example freedoom_map -- /path/to/freedoom1.wad
 cargo run --release --example freedoom_map -- /path/to/freedoom1.wad --interactive
+cargo run --release --example freedoom_map -- /path/to/freedoom1.wad --map E1M2 /tmp/freedoom_e1m2.png
 ```
 
-The first command writes `output/freedoom_map.png`. The interactive view uses
+Map selection defaults to E1M1; `--map` accepts another marker in the WAD, such
+as E1M2, for either rendering or interactive play. Each map uses its own
+player-1 start and the same SILICON pipeline. Exiting still reports `EXITED`
+without loading the next map. The first command writes `output/freedoom_map.png`.
+The interactive view uses
 WASD to move and strafe, arrow keys to turn, Shift to run, Space to fire, `E`
 to open ordinary doors, operate manual lifts, or use the exit, and Escape to
 exit. Every frame submits the scene again through SILICON; movement stays inside

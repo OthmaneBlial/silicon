@@ -1,4 +1,4 @@
-//! Render Freedoom's E1M1 geometry through SILICON's programmable pipeline.
+//! Render Freedoom maps through SILICON's programmable pipeline.
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use silicon::api::{
     self, Address, Color, Device, Filter, MipFilter, Pipeline, Renderer, Sampler, ShaderPipeline,
@@ -12,9 +12,9 @@ use std::{
     sync::Arc,
 };
 
-const MAP_LUMPS: [&str; 11] = [
-    "E1M1", "THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES", "SEGS", "SSECTORS", "NODES", "SECTORS",
-    "REJECT", "BLOCKMAP",
+const MAP_LUMPS_AFTER_MARKER: [&str; 10] = [
+    "THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES", "SEGS", "SSECTORS", "NODES", "SECTORS", "REJECT",
+    "BLOCKMAP",
 ];
 const MAX_WAD_BYTES: u64 = 128 * 1024 * 1024;
 const DEPTH_BUCKET_SIZE: f32 = 2048.0;
@@ -192,18 +192,21 @@ fn wad_lumps(data: &[u8]) -> Result<Vec<Lump>, io::Error> {
     Ok(lumps)
 }
 
-fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
+fn parse_map(data: &[u8], map_name: &str) -> Result<Map, io::Error> {
     let lumps = wad_lumps(data)?;
     let marker = lumps
         .iter()
-        .position(|lump| lump.name() == MAP_LUMPS[0])
-        .ok_or_else(|| invalid("E1M1 not found"))?;
+        .position(|lump| lump.name() == map_name)
+        .ok_or_else(|| invalid(format!("{map_name} not found")))?;
     let map_lumps = lumps
-        .get(marker..marker + MAP_LUMPS.len())
-        .ok_or_else(|| invalid("truncated E1M1 lump sequence"))?;
-    for (lump, expected) in map_lumps.iter().zip(MAP_LUMPS) {
+        .get(marker..marker + 1 + MAP_LUMPS_AFTER_MARKER.len())
+        .ok_or_else(|| invalid(format!("truncated {map_name} lump sequence")))?;
+    for (lump, expected) in map_lumps
+        .iter()
+        .zip(std::iter::once(map_name).chain(MAP_LUMPS_AFTER_MARKER))
+    {
         if lump.name() != expected {
-            return Err(invalid(format!("expected {expected} after E1M1")));
+            return Err(invalid(format!("expected {expected} after {map_name}")));
         }
     }
     let bytes = |index: usize| {
@@ -215,7 +218,7 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
         if lump.len() % width != 0 {
             return Err(invalid(format!(
                 "{} has a partial record",
-                MAP_LUMPS[index]
+                map_lumps[index].name()
             )));
         }
         Ok(lump.chunks_exact(width).collect())
@@ -1060,6 +1063,7 @@ struct Draw {
 }
 
 struct PreparedScene {
+    map_name: String,
     map: Map,
     flat_textures: BTreeMap<[u8; 8], Arc<Texture>>,
     wall_textures: BTreeMap<[u8; 8], Arc<Texture>>,
@@ -2829,18 +2833,18 @@ fn update_projectiles(
 }
 
 impl PreparedScene {
-    fn load(path: &Path) -> api::Result<Self> {
+    fn load(path: &Path, map_name: &str) -> api::Result<Self> {
         if fs::metadata(path)?.len() > MAX_WAD_BYTES {
             return Err(invalid("WAD exceeds the 128 MiB sample limit").into());
         }
         let data = fs::read(path)?;
-        let map = parse_map(&data)?;
+        let map = parse_map(&data, map_name)?;
         let (x, y, angle, _, _) = map
             .things
             .iter()
             .copied()
             .find(|thing| thing.3 == 1)
-            .ok_or_else(|| invalid("E1M1 has no player-1 start"))?;
+            .ok_or_else(|| invalid(format!("{map_name} has no player-1 start")))?;
         let wall_textures = wall_textures(&data, &map)?;
         let flat_textures = flat_textures(&data, &map)?;
         let geometry = geometry(&map, &wall_textures)?;
@@ -2848,7 +2852,7 @@ impl PreparedScene {
             .iter()
             .all(|leaf| leaf.walls.is_empty() && leaf.flats.is_empty())
         {
-            return Err(invalid("E1M1 produced no renderable geometry").into());
+            return Err(invalid(format!("{map_name} produced no renderable geometry")).into());
         }
         let device = Device::new();
         let vertex_shader =
@@ -2931,6 +2935,7 @@ impl PreparedScene {
         }
         let draws = build_draws(geometry, &flat_textures, &wall_textures)?;
         Ok(Self {
+            map_name: map_name.to_owned(),
             map,
             flat_textures,
             wall_textures,
@@ -2974,8 +2979,12 @@ impl PreparedScene {
         weapon_firing: bool,
         renderer: &mut Renderer,
     ) -> api::Result<(api::Submission, usize)> {
-        let sector = bsp_sector_at(&self.map, player.x, player.y)
-            .ok_or_else(|| invalid("player is outside every E1M1 BSP leaf"))?;
+        let sector = bsp_sector_at(&self.map, player.x, player.y).ok_or_else(|| {
+            invalid(format!(
+                "player is outside every {} BSP leaf",
+                self.map_name
+            ))
+        })?;
         let visible_order = visible_subsector_order(&self.map, player);
         let mut visible = vec![false; self.map.subsectors.len()];
         for &leaf in &visible_order {
@@ -3026,8 +3035,12 @@ impl PreparedScene {
             } else {
                 self.pipeline.clone()
             });
-            let count = u32::try_from(vertices.len())
-                .map_err(|_| invalid("visible E1M1 geometry exceeds SILICON draw range"))?;
+            let count = u32::try_from(vertices.len()).map_err(|_| {
+                invalid(format!(
+                    "visible {} geometry exceeds SILICON draw range",
+                    self.map_name
+                ))
+            })?;
             commands.bind_texture(0, texture, self.sampler);
             commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
             commands.draw(0, count);
@@ -3065,8 +3078,12 @@ impl PreparedScene {
             if vertices.is_empty() {
                 continue;
             }
-            let count = u32::try_from(vertices.len())
-                .map_err(|_| invalid("E1M1 sprite vertex count exceeds SILICON draw range"))?;
+            let count = u32::try_from(vertices.len()).map_err(|_| {
+                invalid(format!(
+                    "{} sprite vertex count exceeds SILICON draw range",
+                    self.map_name
+                ))
+            })?;
             commands.bind_texture(0, sprite.texture.clone(), self.sampler);
             commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
             commands.draw(0, count);
@@ -3086,8 +3103,12 @@ impl PreparedScene {
                 sector,
                 sector.floor,
             );
-            let count = u32::try_from(vertices.len())
-                .map_err(|_| invalid("E1M1 pickup vertex count exceeds SILICON draw range"))?;
+            let count = u32::try_from(vertices.len()).map_err(|_| {
+                invalid(format!(
+                    "{} pickup vertex count exceeds SILICON draw range",
+                    self.map_name
+                ))
+            })?;
             commands.bind_texture(0, sprite.texture.clone(), self.sampler);
             commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
             commands.draw(0, count);
@@ -3105,8 +3126,12 @@ impl PreparedScene {
                 &self.projectile_sprite
             };
             let vertices = projectile_vertices(projectile, sprite, player.angle, sector);
-            let count = u32::try_from(vertices.len())
-                .map_err(|_| invalid("E1M1 projectile vertex count exceeds SILICON draw range"))?;
+            let count = u32::try_from(vertices.len()).map_err(|_| {
+                invalid(format!(
+                    "{} projectile vertex count exceeds SILICON draw range",
+                    self.map_name
+                ))
+            })?;
             commands.bind_texture(0, sprite.texture.clone(), self.sampler);
             commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
             commands.draw(0, count);
@@ -3117,8 +3142,12 @@ impl PreparedScene {
             &self.weapon_idle
         };
         let vertices = weapon_vertices(player, weapon, sector);
-        let count = u32::try_from(vertices.len())
-            .map_err(|_| invalid("E1M1 weapon vertex count exceeds SILICON draw range"))?;
+        let count = u32::try_from(vertices.len()).map_err(|_| {
+            invalid(format!(
+                "{} weapon vertex count exceeds SILICON draw range",
+                self.map_name
+            ))
+        })?;
         commands.bind_pipeline(self.weapon_pipeline.clone());
         commands.bind_uniform_buffer(uniform_buffer);
         commands.bind_texture(0, weapon.texture.clone(), self.sampler);
@@ -3144,8 +3173,12 @@ fn frame_triangles(
 ) -> api::Result<usize> {
     let draws =
         usize::try_from(draws).map_err(|_| invalid("SILICON draw count exceeds host range"))?;
-    let sector = bsp_sector_at(&scene.map, player.x, player.y)
-        .ok_or_else(|| invalid("player is outside every E1M1 BSP leaf"))?;
+    let sector = bsp_sector_at(&scene.map, player.x, player.y).ok_or_else(|| {
+        invalid(format!(
+            "player is outside every {} BSP leaf",
+            scene.map_name
+        ))
+    })?;
     let eye_height = sector.floor + 41.0;
     let visible = visible_subsector_order(&scene.map, player);
     let static_triangles = visible
@@ -3160,8 +3193,8 @@ fn frame_triangles(
     Ok(static_triangles + draws.saturating_sub(static_draws) * 2)
 }
 
-fn render(path: &Path, output: &Path) -> api::Result<()> {
-    let scene = PreparedScene::load(path)?;
+fn render(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
+    let scene = PreparedScene::load(path, map_name)?;
     let mut renderer = Renderer::new(960, 720)?;
     let (submission, static_draws) = scene.draw(
         scene.start,
@@ -3187,7 +3220,8 @@ fn render(path: &Path, output: &Path) -> api::Result<()> {
         .filter(|sector| sector.special == SECTOR_SECRET)
         .count();
     println!(
-        "E1M1: {triangles} triangles, {} SILICON draw(s), {visible}/{} horizontal BSP leaves, {exits} use-exit line(s), {secrets} secret sector(s), player start ({}, {}, {}°)",
+        "{}: {triangles} triangles, {} SILICON draw(s), {visible}/{} horizontal BSP leaves, {exits} use-exit line(s), {secrets} secret sector(s), player start ({}, {}, {}°)",
+        scene.map_name,
         submission.draws,
         scene.map.subsectors.len(),
         scene.start.x,
@@ -3197,11 +3231,11 @@ fn render(path: &Path, output: &Path) -> api::Result<()> {
     Ok(())
 }
 
-fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
-    let mut scene = PreparedScene::load(path)?;
+fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
+    let mut scene = PreparedScene::load(path, map_name)?;
     let mut renderer = Renderer::new(960, 720)?;
     let mut window = Window::new(
-        "SILICON | Freedoom E1M1",
+        &format!("SILICON | Freedoom {}", scene.map_name),
         960,
         720,
         WindowOptions::default(),
@@ -3376,7 +3410,8 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_subsector_order(&scene.map, player).len();
         window.set_title(&format!(
-            "SILICON | E1M1 {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | blue key {blue_key} | secrets {secrets_found}/{total_secrets} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | blue key {blue_key} | secrets {secrets_found}/{total_secrets} | items {collected} | kills {kills}/{} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            scene.map_name,
             scene.actors.len(),
             triangles,
             submission.draws,
@@ -3387,7 +3422,8 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     }
     save_frame(&renderer, output)?;
     println!(
-        "E1M1 session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, {activated_sectors} sector actions, {secrets_found}/{total_secrets} secrets, health {health}, blue key {blue_key}, exited {exited}; saved {}",
+        "{} session: {frames} SILICON-rendered frames, {kills}/{} kills, {collected} pickups, {activated_sectors} sector actions, {secrets_found}/{total_secrets} secrets, health {health}, blue key {blue_key}, exited {exited}; saved {}",
+        scene.map_name,
         scene.actors.len(),
         output.display()
     );
@@ -3399,27 +3435,45 @@ fn main() -> api::Result<()> {
     let wad = args.next().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: cargo run --release --example freedoom_map -- <freedoom1.wad> [output.png | --interactive]",
+            "usage: cargo run --release --example freedoom_map -- <freedoom1.wad> [--map E1M2] [output.png | --interactive]",
         )
     })?;
-    let output_or_mode = args.next();
-    let interactive = output_or_mode.as_deref() == Some(std::ffi::OsStr::new("--interactive"));
-    let output = if interactive {
-        std::ffi::OsString::from("output/freedoom_map.png")
-    } else {
-        output_or_mode.unwrap_or_else(|| "output/freedoom_map.png".into())
-    };
-    if args.next().is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "expected a WAD path and either an output path or --interactive",
-        )
-        .into());
+    let mut map_name = String::from("E1M1");
+    let mut output = None;
+    let mut interactive = false;
+    while let Some(argument) = args.next() {
+        if argument == "--interactive" {
+            interactive = true;
+        } else if argument == "--map" {
+            let name = args.next().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "--map requires a WAD map name")
+            })?;
+            let name = name
+                .to_str()
+                .filter(|name| {
+                    !name.is_empty()
+                        && name.len() <= 8
+                        && name.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                })
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "invalid WAD map name")
+                })?;
+            map_name = name.to_ascii_uppercase();
+        } else if output.is_none() {
+            output = Some(argument);
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "expected one output path, --interactive, or --map <name>",
+            )
+            .into());
+        }
     }
+    let output = output.unwrap_or_else(|| "output/freedoom_map.png".into());
     if interactive {
-        run_interactive(Path::new(&wad), Path::new(&output))
+        run_interactive(Path::new(&wad), &map_name, Path::new(&output))
     } else {
-        render(Path::new(&wad), Path::new(&output))
+        render(Path::new(&wad), &map_name, Path::new(&output))
     }
 }
 
@@ -3457,12 +3511,46 @@ mod tests {
 
     #[test]
     fn rejects_truncated_and_out_of_range_wads() {
-        assert!(parse_map(b"IWAD").is_err());
+        assert!(parse_map(b"IWAD", "E1M1").is_err());
         let mut wad = b"IWAD\x01\x00\x00\x00\x0c\x00\x00\x00".to_vec();
         wad.extend_from_slice(&100u32.to_le_bytes());
         wad.extend_from_slice(&4u32.to_le_bytes());
         wad.extend_from_slice(b"E1M1\0\0\0");
-        assert!(parse_map(&wad).is_err());
+        assert!(parse_map(&wad, "E1M1").is_err());
+    }
+
+    #[test]
+    fn parses_the_requested_map_marker_from_a_multi_map_wad() {
+        let mut wad = vec![0; 12];
+        wad[..4].copy_from_slice(b"IWAD");
+        let mut entries = Vec::new();
+        for (marker, light) in [("E1M1", 100i16), ("E1M2", 200i16)] {
+            for name in std::iter::once(marker).chain(MAP_LUMPS_AFTER_MARKER) {
+                let mut data = Vec::new();
+                if name == "SECTORS" {
+                    data.resize(26, 0);
+                    data[2..4].copy_from_slice(&128i16.to_le_bytes());
+                    data[20..22].copy_from_slice(&light.to_le_bytes());
+                } else if name == "SSECTORS" {
+                    data.resize(4, 0);
+                }
+                let mut entry = [0; 16];
+                entry[..4].copy_from_slice(&(wad.len() as u32).to_le_bytes());
+                entry[4..8].copy_from_slice(&(data.len() as u32).to_le_bytes());
+                entry[8..8 + name.len()].copy_from_slice(name.as_bytes());
+                wad.extend_from_slice(&data);
+                entries.push(entry);
+            }
+        }
+        let directory = wad.len() as u32;
+        for entry in entries.iter().flatten() {
+            wad.push(*entry);
+        }
+        wad[4..8].copy_from_slice(&(entries.len() as u32).to_le_bytes());
+        wad[8..12].copy_from_slice(&directory.to_le_bytes());
+
+        assert_eq!(parse_map(&wad, "E1M2").unwrap().sectors[0].light, 200);
+        assert!(parse_map(&wad, "E1M3").is_err());
     }
 
     #[test]
