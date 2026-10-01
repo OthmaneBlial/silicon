@@ -16,11 +16,11 @@ exponential/logarithmic and square-root math; min/max/mix; dot3/dot4;
 length/normalization of 1..4 components;
 legacy normalize3; saturation; swizzle and lane composition; row-major matrix-vector
 multiply; filtered texture sample; output store; comparisons, logical operations,
-component selection, structured `If`/`Else`/`EndIf`, `Merge`, `LoopStart` and
-`LoopEnd`, `Return` and `Discard`. Compute also has shared-memory loads/stores
-and a workgroup barrier. Values are f32 vec4s, including scalar splats and
-boolean 0/1 components. Integer types, shader depth writes and JIT compilation
-remain unsupported. Compute
+component selection, register `Move`, structured `If`/`Else`/`EndIf`, `Merge`,
+`LoopHeader`, `LoopStart` and `LoopEnd`, `Return` and `Discard`. Compute also has
+shared-memory loads/stores and a workgroup barrier. Values are f32 vec4s,
+including scalar splats and boolean 0/1 components. Integer types, shader depth
+writes and JIT compilation remain unsupported. Compute
 supports scalar f32 storage atomics on vec4 x components. Bounded scalar and
 SIMD4 [SIR compute dispatch](compute.md)
 are separate from the graphics shader path. A narrow SPIR-V 1.0 compute
@@ -36,13 +36,16 @@ reconverges surviving lanes at `EndIf`. `Return` and `Discard` never reactivate.
 Inactive branches perform no resource reads, samples, output writes or traces.
 Validation tracks defined registers/outputs separately on each live path.
 
-`LoopStart` tests condition.x before each iteration and skips to its paired
-`LoopEnd` when zero; otherwise execution repeats the enclosed range. The loop
-body must update its condition for termination. Validation accounts for the
-zero-iteration path, rejects loops crossing selection boundaries, and pairs at
-most 64 nested loops. Each invocation is limited to 65,536 dynamically visited
-instructions; exceeding the limit returns an error. SPIR-V `OpLoopMerge` and
-loop-carried `OpPhi` are not yet lowered into these SIR instructions.
+`LoopStart` tests condition.x and skips to its paired `LoopEnd` when zero;
+otherwise execution repeats the enclosed range. An optional `LoopHeader` marks
+where header calculations restart; without one, execution restarts at
+`LoopStart`. `Move` updates a register each trip so the repeated condition can
+observe loop-carried values. The body must update its condition for termination.
+Validation accounts for the zero-iteration path, rejects loops crossing
+selection boundaries, and pairs at most 64 nested loops. Each invocation is
+limited to 65,536 dynamically visited instructions; exceeding the limit returns
+an error. SPIR-V `OpLoopMerge` and loop-carried `OpPhi` are not yet lowered into
+these SIR instructions.
 
 `Merge { dst, a, b }` selects the immediately preceding selection's true/false
 value. Consecutive merges implement SPIR-V Phi and local snapshots; another
