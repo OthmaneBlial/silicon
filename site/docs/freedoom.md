@@ -42,8 +42,9 @@ draws and 804 of 1,104 horizontal leaves. The sky texture fills the previously
 clear opening near the right edge. Visual completeness beyond E1M2 remains in
 progress. The first command writes
 `output/freedoom_map.png`. The interactive view uses
-WASD to move and strafe, arrow keys to turn, Shift to run, Space to fire, `Q`
-to punch, `E` to open ordinary doors, operate manual lifts, or use the exit,
+WASD to move and strafe, arrow keys to turn, Shift to run, Space to fire (or
+punch while berserk), `Q` to punch at any time, `E` to open ordinary doors,
+operate manual lifts, or use the exit,
 and Escape to exit. Every frame submits the scene again through SILICON;
 movement stays inside
 a BSP-leaf floor, keeps a 16-unit margin from one-sided or explicitly blocking
@@ -166,8 +167,9 @@ remaining pose durations follow id Software's
 The punch range and damage follow id Software's [`A_Punch`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c)
 and [`MELEERANGE`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_local.h).
 A PSTR berserk pack restores up to 100 health without reducing health above 100,
-then multiplies fist damage by ten until the map ends. Its healing and power
-follow id Software's [`P_GivePower`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c);
+then selects the fist for Space and multiplies fist damage by ten until the map
+ends. Its healing, fist selection, and power follow id Software's
+[`P_TouchSpecialThing` and `P_GivePower`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c);
 the multiplier follows [`A_Punch`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c).
 Every fired shot alerts living enemies through open two-sided sectors, even
 when it misses, crossing at most one sound-blocking linedef. This models Doom's

@@ -1623,6 +1623,20 @@ struct PlayerEffects {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpaceWeapon {
+    Pistol,
+    Fist,
+}
+
+fn space_weapon(berserk: bool) -> SpaceWeapon {
+    if berserk {
+        SpaceWeapon::Fist
+    } else {
+        SpaceWeapon::Pistol
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PistolPose {
     Recoil,
     Recover,
@@ -1656,6 +1670,12 @@ fn fist_pose(remaining_tics: f32) -> Option<FistPose> {
     } else {
         None
     }
+}
+
+#[test]
+fn berserk_selects_fist_for_space() {
+    assert_eq!(space_weapon(false), SpaceWeapon::Pistol);
+    assert_eq!(space_weapon(true), SpaceWeapon::Fist);
 }
 
 struct WallSection {
@@ -4475,7 +4495,10 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 weapon_flash = (weapon_flash - delta).max(0.0);
                 punch_cooldown = (punch_cooldown - delta).max(0.0);
                 punch_flash = (punch_flash - delta).max(0.0);
-                if window.is_key_pressed(Key::Space, KeyRepeat::No)
+                let space_pressed = window.is_key_pressed(Key::Space, KeyRepeat::No);
+                let selected_space_weapon = space_weapon(effects.berserk);
+                if space_pressed
+                    && selected_space_weapon == SpaceWeapon::Pistol
                     && shot_cooldown == 0.0
                     && ammo > 0
                 {
@@ -4489,7 +4512,10 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                         &mut gameplay_rng,
                     ));
                 }
-                if window.is_key_pressed(Key::Q, KeyRepeat::No) && punch_cooldown == 0.0 {
+                if (window.is_key_pressed(Key::Q, KeyRepeat::No)
+                    || (space_pressed && selected_space_weapon == SpaceWeapon::Fist))
+                    && punch_cooldown == 0.0
+                {
                     punch_cooldown = 22.0 / DOOM_TICS_PER_SECOND;
                     punch_flash = 18.0 / DOOM_TICS_PER_SECOND;
                     kills += usize::from(punch_weapon(
@@ -4562,10 +4588,14 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
         } else {
             "PLAYING"
         };
+        let space_action = match space_weapon(effects.berserk) {
+            SpaceWeapon::Pistol => "fire",
+            SpaceWeapon::Fist => "punch",
+        };
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks).len();
         window.set_title(&format!(
-            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, Q punch, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | invis {:.0}s | visor {:.0}s | berserk {} | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space {space_action}, Q punch, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | invis {:.0}s | visor {:.0}s | berserk {} | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.map_name,
             armor.points,
             armor.class,
