@@ -53,6 +53,7 @@ const PLATFORM_SPEED: f32 = 140.0;
 const PLATFORM_WAIT: f32 = 3.0;
 const FLOOR_SPEED: f32 = 35.0;
 const DOOM_TICS_PER_SECOND: f32 = 35.0;
+const PISTOL_REFIRE_TICS: f32 = 19.0;
 const RADIATION_SUIT_TICS: f32 = 60.0 * DOOM_TICS_PER_SECOND;
 const INVULNERABILITY_TICS: f32 = 30.0 * DOOM_TICS_PER_SECOND;
 const INVISIBILITY_TICS: f32 = 60.0 * DOOM_TICS_PER_SECOND;
@@ -4550,7 +4551,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     && ammo > 0
                 {
                     ammo -= 1;
-                    shot_cooldown = 0.35;
+                    shot_cooldown = PISTOL_REFIRE_TICS / DOOM_TICS_PER_SECOND;
                     weapon_flash = 9.0 / DOOM_TICS_PER_SECOND;
                     kills += usize::from(fire_weapon(
                         &scene.map,
