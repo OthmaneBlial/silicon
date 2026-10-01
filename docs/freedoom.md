@@ -37,7 +37,7 @@ routes follow id Software's
 [`G_DoCompleted`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/g_game.c)
 and [`P_UseSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c).
 The E1M2 capture below records the
-sector-clipped BSP-cell pass with its episode sky: 7,925 triangles across 297
+sector-clipped BSP-cell pass with its episode sky: 7,929 triangles across 299
 draws and 804 of 1,104 horizontal leaves. The sky texture fills the previously
 clear opening near the right edge. Visual completeness beyond E1M2 remains in
 progress. The first command writes
@@ -84,12 +84,14 @@ tag-3 line targets sectors 76, 126, and 129; their floor heights lower from
 id Software's
 [`P_UseSpecialLine` and `lowerFloorToLowest` action](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c)
 and [`EV_DoFloor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_floor.c).
-Collect the blue keycard to use E1M1's special-26 blue-locked door lines. The
-WAD has one blue-card thing (type 5), drawn with `BKEYA0`; the original engine
+Collect a matching keycard or skull to open special-26 blue, special-27 yellow,
+or special-28 red doors. The prototype recognizes all six card/skull map-thing
+types and renders their WAD sprites; cards and skulls grant the same color key.
+E1M1 has one blue-card thing (type 5), drawn with `BKEYA0`; the original engine
 checks for the blue card or skull before opening these doors in
 [`EV_VerticalDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c).
-Other key colors, enemy-triggered platforms, and other line specials remain
-unsupported.
+Other locked-door action variants, enemy-triggered platforms, and other line
+specials remain unsupported.
 
 E1M1 contains four secret sectors (sector special 9). Entering one increments
 the secret counter in the window title once and clears its secret flag, matching
@@ -182,10 +184,10 @@ that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
-gib states, Doom's detailed actor navigation, other sound events, other key
-colors and locked-door types, crossing specials other than 2 and 88, other use
-specials, level progression after E1M1, other weapons and their ammunition, and full weapon
-animation beyond the brief idle/fire pose remain unimplemented.
+gib states, Doom's detailed actor navigation, other sound events, locked-door
+action variants, crossing specials other than 2 and 88, other use specials,
+episode finales, other weapons and their ammunition, and full weapon animation
+beyond the brief idle/fire pose remain unimplemented.
 `F_SKY1` ceilings use the map's episode sky texture, sampled by view angle. The
 checked-in [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was
 rendered from the unmodified release WAD. The WAD itself is not included. The release archive

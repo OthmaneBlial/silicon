@@ -28,6 +28,8 @@ const LINE_TWO_SIDED: u16 = 4;
 const LINE_SOUND_BLOCK: u16 = 64;
 const LINE_DOOR_RAISE: u16 = 1;
 const LINE_BLUE_LOCKED_DOOR: u16 = 26;
+const LINE_YELLOW_LOCKED_DOOR: u16 = 27;
+const LINE_RED_LOCKED_DOOR: u16 = 28;
 const LINE_BLAZING_DOOR_RAISE: u16 = 117;
 const LINE_WALK_OPEN_DOOR: u16 = 2;
 const LINE_USE_DOWN_WAIT_UP_PLATFORM: u16 = 62;
@@ -35,6 +37,9 @@ const LINE_USE_LOWER_FLOOR_TO_LOWEST: u16 = 23;
 const LINE_PLAT_DOWN_WAIT_UP: u16 = 88;
 const LINE_EXIT_USE: u16 = 11;
 const LINE_SECRET_EXIT_USE: u16 = 51;
+const KEY_BLUE: u8 = 1;
+const KEY_YELLOW: u8 = 2;
+const KEY_RED: u8 = 4;
 const USE_RANGE: f32 = 64.0;
 const DOOR_SPEED: f32 = 70.0;
 const BLAZING_DOOR_SPEED: f32 = DOOR_SPEED * 4.0;
@@ -1566,7 +1571,7 @@ struct Pickup {
     y: f32,
     health: i32,
     ammo: i32,
-    blue_key: bool,
+    keys: u8,
     active: bool,
 }
 
@@ -1712,13 +1717,18 @@ fn projectile_vertices(
     )
 }
 
-fn pickup_definition(kind: u16) -> Option<([u8; 4], i32, i32, bool)> {
+fn pickup_definition(kind: u16) -> Option<([u8; 4], i32, i32, u8)> {
     match kind {
-        5 => Some((*b"BKEY", 0, 0, true)),
-        2011 => Some((*b"STIM", 10, 0, false)),
-        2012 => Some((*b"MEDI", 25, 0, false)),
-        2007 => Some((*b"CLIP", 0, 10, false)),
-        2048 => Some((*b"AMMO", 0, 50, false)),
+        5 => Some((*b"BKEY", 0, 0, KEY_BLUE)),
+        6 => Some((*b"YKEY", 0, 0, KEY_YELLOW)),
+        13 => Some((*b"RKEY", 0, 0, KEY_RED)),
+        40 => Some((*b"BSKU", 0, 0, KEY_BLUE)),
+        39 => Some((*b"YSKU", 0, 0, KEY_YELLOW)),
+        38 => Some((*b"RSKU", 0, 0, KEY_RED)),
+        2011 => Some((*b"STIM", 10, 0, 0)),
+        2012 => Some((*b"MEDI", 25, 0, 0)),
+        2007 => Some((*b"CLIP", 0, 10, 0)),
+        2048 => Some((*b"AMMO", 0, 50, 0)),
         _ => None,
     }
 }
@@ -1729,7 +1739,7 @@ fn collect_pickups(
     player: Player,
     health: &mut i32,
     ammo: &mut i32,
-    blue_key: &mut bool,
+    keys: &mut u8,
 ) -> usize {
     let mut collected = 0;
     for pickup in pickups.iter_mut().filter(|pickup| pickup.active) {
@@ -1752,13 +1762,13 @@ fn collect_pickups(
         }
         let next_health = (*health + pickup.health).min(100);
         let next_ammo = (*ammo + pickup.ammo).min(200);
-        let next_blue_key = *blue_key || pickup.blue_key;
-        if next_health == *health && next_ammo == *ammo && next_blue_key == *blue_key {
+        let next_keys = *keys | pickup.keys;
+        if next_health == *health && next_ammo == *ammo && next_keys == *keys && pickup.keys == 0 {
             continue;
         }
         *health = next_health;
         *ammo = next_ammo;
-        *blue_key = next_blue_key;
+        *keys = next_keys;
         pickup.active = false;
         collected += 1;
     }
@@ -2756,12 +2766,22 @@ fn use_line(map: &Map, player: Player) -> Option<(usize, u16)> {
     None
 }
 
-fn manual_door(map: &Map, line_index: usize, blue_key: bool) -> Option<Door> {
+fn manual_door(map: &Map, line_index: usize, keys: u8) -> Option<Door> {
     let line = *map.lines.get(line_index)?;
+    let required_key = match line[5] {
+        LINE_BLUE_LOCKED_DOOR => KEY_BLUE,
+        LINE_YELLOW_LOCKED_DOOR => KEY_YELLOW,
+        LINE_RED_LOCKED_DOOR => KEY_RED,
+        _ => 0,
+    };
     if !matches!(
         line[5],
-        LINE_DOOR_RAISE | LINE_BLUE_LOCKED_DOOR | LINE_BLAZING_DOOR_RAISE
-    ) || (line[5] == LINE_BLUE_LOCKED_DOOR && !blue_key)
+        LINE_DOOR_RAISE
+            | LINE_BLUE_LOCKED_DOOR
+            | LINE_YELLOW_LOCKED_DOOR
+            | LINE_RED_LOCKED_DOOR
+            | LINE_BLAZING_DOOR_RAISE
+    ) || (required_key != 0 && keys & required_key == 0)
         || line[4] == u16::MAX
     {
         return None;
@@ -3490,7 +3510,7 @@ impl PreparedScene {
                     animation_time: 0.0,
                     angle: thing_angle as f32,
                 });
-            } else if let Some((prefix, health, ammo, blue_key)) = pickup_definition(kind) {
+            } else if let Some((prefix, health, ammo, keys)) = pickup_definition(kind) {
                 if let Entry::Vacant(entry) = pickup_sprites.entry(prefix) {
                     let mut name = [0; 8];
                     name[..4].copy_from_slice(&prefix);
@@ -3503,7 +3523,7 @@ impl PreparedScene {
                     y: y as f32,
                     health,
                     ammo,
-                    blue_key,
+                    keys,
                     active: true,
                 });
             }
@@ -3883,7 +3903,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     let mut pickups = scene.pickups.clone();
     let mut health = 100;
     let mut ammo = 50;
-    let mut blue_key = false;
+    let mut keys = 0;
     let mut light_rng = 0x4c49_4748u32;
     let mut sector_lights = spawn_sector_lights(&mut scene.map, &mut light_rng);
     let mut nukage_damage_tics = 0.0;
@@ -3992,10 +4012,15 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 if matches!(special, LINE_EXIT_USE | LINE_SECRET_EXIT_USE) {
                     secret_exit = special == LINE_SECRET_EXIT_USE;
                     exited = true;
-                } else if matches!(special, LINE_DOOR_RAISE | LINE_BLAZING_DOOR_RAISE)
-                    || special == LINE_BLUE_LOCKED_DOOR
-                {
-                    if let Some(door) = manual_door(&scene.map, line, blue_key)
+                } else if matches!(
+                    special,
+                    LINE_DOOR_RAISE
+                        | LINE_BLUE_LOCKED_DOOR
+                        | LINE_YELLOW_LOCKED_DOOR
+                        | LINE_RED_LOCKED_DOOR
+                        | LINE_BLAZING_DOOR_RAISE
+                ) {
+                    if let Some(door) = manual_door(&scene.map, line, keys)
                         && !doors
                             .iter()
                             .any(|active: &Door| active.sector == door.sector)
@@ -4020,7 +4045,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     player,
                     &mut health,
                     &mut ammo,
-                    &mut blue_key,
+                    &mut keys,
                 );
                 shot_cooldown = (shot_cooldown - delta).max(0.0);
                 weapon_flash = (weapon_flash - delta).max(0.0);
@@ -4079,8 +4104,11 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks).len();
         window.set_title(&format!(
-            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | blue key {blue_key} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.map_name,
+            keys & KEY_RED != 0,
+            keys & KEY_YELLOW != 0,
+            keys & KEY_BLUE != 0,
             levels_completed + 1,
             triangles,
             submission.draws,
@@ -4091,11 +4119,14 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     }
     save_frame(&renderer, output)?;
     println!(
-        "{} session: {frames} SILICON-rendered frames, {} map(s), {kills} kills, {collected} pickups, {activated_sectors} sector actions, {} / {} secrets, health {health}, blue key {blue_key}, exited {exited}; saved {}",
+        "{} session: {frames} SILICON-rendered frames, {} map(s), {kills} kills, {collected} pickups, {activated_sectors} sector actions, {} / {} secrets, health {health}, keys R{} Y{} B{}, exited {exited}; saved {}",
         scene.map_name,
         levels_completed + 1,
         session_secrets_found + secrets_found,
         session_secret_total + total_secrets,
+        keys & KEY_RED != 0,
+        keys & KEY_YELLOW != 0,
+        keys & KEY_BLUE != 0,
         output.display()
     );
     Ok(())
@@ -5087,7 +5118,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_doors_raise_reopen_the_portal_and_blue_locks_require_the_card() {
+    fn manual_doors_raise_reopen_the_portal_and_color_locks_require_matching_keys() {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
@@ -5144,7 +5175,7 @@ mod tests {
         );
         let point = Vertex2 { x: 0.0, y: 0.0 };
         assert!(!actor_path_clear(&map, point, point));
-        let mut doors = vec![manual_door(&map, 0, false).unwrap()];
+        let mut doors = vec![manual_door(&map, 0, 0).unwrap()];
         assert!(update_doors(
             &mut map,
             &mut doors,
@@ -5172,9 +5203,19 @@ mod tests {
         assert_eq!(map.sectors[1].ceiling, 0.0);
         assert!(doors.is_empty());
 
-        map.lines[0][5] = LINE_BLUE_LOCKED_DOOR;
-        assert!(manual_door(&map, 0, false).is_none());
-        assert_eq!(manual_door(&map, 0, true).unwrap().speed, DOOR_SPEED);
+        for (special, matching_key, wrong_key) in [
+            (LINE_BLUE_LOCKED_DOOR, KEY_BLUE, KEY_RED),
+            (LINE_YELLOW_LOCKED_DOOR, KEY_YELLOW, KEY_BLUE),
+            (LINE_RED_LOCKED_DOOR, KEY_RED, KEY_YELLOW),
+        ] {
+            map.lines[0][5] = special;
+            assert!(manual_door(&map, 0, 0).is_none());
+            assert!(manual_door(&map, 0, wrong_key).is_none());
+            assert_eq!(
+                manual_door(&map, 0, matching_key).unwrap().speed,
+                DOOR_SPEED
+            );
+        }
 
         map.lines[0][5] = LINE_BLAZING_DOOR_RAISE;
         let player = Player {
@@ -5183,7 +5224,7 @@ mod tests {
             angle: 180.0,
         };
         assert_eq!(use_line(&map, player), Some((0, LINE_BLAZING_DOOR_RAISE)));
-        let mut doors = vec![manual_door(&map, 0, false).unwrap()];
+        let mut doors = vec![manual_door(&map, 0, 0).unwrap()];
         assert_eq!(doors[0].speed, BLAZING_DOOR_SPEED);
         assert!(update_doors(
             &mut map,
@@ -6375,8 +6416,17 @@ mod tests {
     }
 
     #[test]
-    fn health_ammo_and_blue_key_pickups_apply_caps_and_stay_when_unneeded() {
-        assert_eq!(pickup_definition(5), Some((*b"BKEY", 0, 0, true)));
+    fn health_ammo_stay_when_unneeded_and_duplicate_color_keys_are_consumed() {
+        for (kind, sprite, key) in [
+            (5, *b"BKEY", KEY_BLUE),
+            (6, *b"YKEY", KEY_YELLOW),
+            (13, *b"RKEY", KEY_RED),
+            (40, *b"BSKU", KEY_BLUE),
+            (39, *b"YSKU", KEY_YELLOW),
+            (38, *b"RSKU", KEY_RED),
+        ] {
+            assert_eq!(pickup_definition(kind), Some((sprite, 0, 0, key)));
+        }
         let mut map = Map {
             vertices: vec![Vertex2 { x: 12.0, y: -32.0 }, Vertex2 { x: 12.0, y: 32.0 }],
             sectors: vec![],
@@ -6399,7 +6449,7 @@ mod tests {
                 y: 0.0,
                 health: 10,
                 ammo: 0,
-                blue_key: false,
+                keys: 0,
                 active: true,
             },
             Pickup {
@@ -6408,7 +6458,7 @@ mod tests {
                 y: 0.0,
                 health: 0,
                 ammo: 10,
-                blue_key: false,
+                keys: 0,
                 active: true,
             },
             Pickup {
@@ -6417,7 +6467,7 @@ mod tests {
                 y: 0.0,
                 health: 25,
                 ammo: 0,
-                blue_key: false,
+                keys: 0,
                 active: true,
             },
             Pickup {
@@ -6426,13 +6476,31 @@ mod tests {
                 y: 0.0,
                 health: 0,
                 ammo: 0,
-                blue_key: true,
+                keys: KEY_BLUE,
+                active: true,
+            },
+            Pickup {
+                sprite: *b"YKEY",
+                x: 0.0,
+                y: 0.0,
+                health: 0,
+                ammo: 0,
+                keys: KEY_YELLOW,
+                active: true,
+            },
+            Pickup {
+                sprite: *b"RKEY",
+                x: 0.0,
+                y: 0.0,
+                health: 0,
+                ammo: 0,
+                keys: KEY_RED,
                 active: true,
             },
         ];
         let mut health = 95;
         let mut ammo = 195;
-        let mut blue_key = false;
+        let mut keys = 0;
         assert_eq!(
             collect_pickups(
                 &map,
@@ -6440,13 +6508,26 @@ mod tests {
                 player,
                 &mut health,
                 &mut ammo,
-                &mut blue_key
+                &mut keys
             ),
-            3
+            5
         );
         assert_eq!((health, ammo), (100, 200));
-        assert!(blue_key);
+        assert_eq!(keys, KEY_BLUE | KEY_YELLOW | KEY_RED);
         assert!(!pickups[0].active && !pickups[1].active && pickups[2].active);
+        assert!(!pickups[3].active && !pickups[4].active && !pickups[5].active);
+        pickups[3].active = true;
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys
+            ),
+            1
+        );
         assert!(!pickups[3].active);
         assert_eq!(
             collect_pickups(
@@ -6455,7 +6536,7 @@ mod tests {
                 player,
                 &mut health,
                 &mut ammo,
-                &mut blue_key
+                &mut keys
             ),
             0
         );
@@ -6467,7 +6548,7 @@ mod tests {
                 player,
                 &mut health,
                 &mut ammo,
-                &mut blue_key
+                &mut keys
             ),
             0
         );
@@ -6480,19 +6561,12 @@ mod tests {
             y: 0.0,
             health: 10,
             ammo: 0,
-            blue_key: false,
+            keys: 0,
             active: true,
         }];
         health = 80;
         assert_eq!(
-            collect_pickups(
-                &map,
-                &mut hidden,
-                player,
-                &mut health,
-                &mut ammo,
-                &mut blue_key
-            ),
+            collect_pickups(&map, &mut hidden, player, &mut health, &mut ammo, &mut keys),
             0
         );
         assert_eq!(health, 80);

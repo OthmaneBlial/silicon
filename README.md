@@ -142,9 +142,10 @@ unchanged upstream fragment shader run through SILICON. See the
 [source, license, and adaptation notes](docs/third-party-demo.md).
 
 Phase 70 renders Freedoom E1M1 geometry, textures, all 29 normal-skill enemy
-sprites, nine health/ammo pickups, the blue keycard, and the pistol through
-SILICON. BSP child bounds cull the horizontal view cone, and per-mesh bounds
-test all six frustum planes.
+sprites, nine health/ammo pickups, one blue keycard, and the pistol through
+SILICON. Its map loader also renders and collects matching red, yellow, and blue
+keycards and skulls on maps that contain them. BSP child bounds cull the
+horizontal view cone, and per-mesh bounds test all six frustum planes.
 The checked-in start view submits 5,613 triangles across 210 draws: 5,509 map
 triangles, 64 episode-sky triangles, 29 enemy billboards, ten pickup billboards,
 and one weapon billboard. `F_SKY1` surfaces use the map's WAD sky texture.
@@ -167,9 +168,9 @@ advance when the next WAD map exists; special-51 exits route through episode
 secret maps. The player can cross a special-88 line or use a
 special-62 line to move its tagged platform down, wait, then return it to its
 starting height. The special-23 use line lowers its three tagged floors to
-their lowest neighboring height once. The blue keycard can be collected to
-open special-26 blue-locked doors. Other locked-door types and other
-crossing-triggered specials remain unsupported.
+their lowest neighboring height once. Matching red, yellow, or blue cards and
+skulls open special-28, special-27, and special-26 doors. Other locked-door
+types and other crossing-triggered specials remain unsupported.
 E1M1's four special-9 sectors add to a once-per-sector secret counter in the
 window title. Its three special-7 nukage sectors deal 5 HP every 32 game tics
 spent on them.

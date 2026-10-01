@@ -4,6 +4,8 @@
 
 - Route Doom special-51 exits to the episode's M9 map and ordinary M9 exits back
   to the original episode path when the target map exists in the WAD.
+- Render and collect all six Doom keycard/skull map things; red, yellow, and blue
+  keys now open their matching special-28, special-27, and special-26 doors.
 
 ## 0.7.0 — 2026-10-01
 
