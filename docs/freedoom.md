@@ -48,7 +48,7 @@ and Escape to exit. Every frame submits the scene again through SILICON;
 movement stays inside
 a BSP-leaf floor, keeps a 16-unit margin from one-sided or explicitly blocking
 lines, limits steps to 24 units, and requires 56 units of ceiling clearance.
-WAD stim packs, medikits, health bonuses, soul spheres, radiation suits,
+WAD stim packs, medikits, health bonuses, soul spheres, berserk packs, radiation suits,
 invulnerability and partial-invisibility spheres, light-amplification visors,
 clips, ammo boxes, green/blue
 armor, armor bonuses, and keys render as cutout
@@ -162,6 +162,10 @@ and Doom's randomized 2–20 damage. It hits the nearest living enemy whose
 line comes first. The WAD's PUNGC0 patch shows the punch. Its range and damage
 follow id Software's [`A_Punch`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c)
 and [`MELEERANGE`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_local.h).
+A PSTR berserk pack restores up to 100 health without reducing health above 100,
+then multiplies fist damage by ten until the map ends. Its healing and power
+follow id Software's [`P_GivePower`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c);
+the multiplier follows [`A_Punch`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c).
 Every fired shot alerts living enemies through open two-sided sectors, even
 when it misses, crossing at most one sound-blocking linedef. This models Doom's
 pistol noise alert and recursive sector sound flood, not every sound event.

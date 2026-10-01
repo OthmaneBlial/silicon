@@ -1597,6 +1597,7 @@ enum PickupEffect {
         class: u8,
     },
     ArmorBonus,
+    Berserk,
     RadiationSuit,
     Invulnerability,
     PartialInvisibility,
@@ -1611,6 +1612,7 @@ struct Armor {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct PlayerEffects {
+    berserk: bool,
     radiation_suit_tics: f32,
     invulnerability_tics: f32,
     partial_invisibility_tics: f32,
@@ -1828,6 +1830,7 @@ fn pickup_definition(kind: u16) -> Option<([u8; 4], PickupEffect)> {
         2015 => Some((*b"BON2", PickupEffect::ArmorBonus)),
         2025 => Some((*b"SUIT", PickupEffect::RadiationSuit)),
         2022 => Some((*b"PINV", PickupEffect::Invulnerability)),
+        2023 => Some((*b"PSTR", PickupEffect::Berserk)),
         2024 => Some((*b"PINS", PickupEffect::PartialInvisibility)),
         2045 => Some((*b"PVIS", PickupEffect::LightAmplification)),
         _ => None,
@@ -1895,6 +1898,12 @@ fn collect_pickups(
                 }
             }
             PickupEffect::ArmorBonus => {}
+            PickupEffect::Berserk => {
+                if *health < 100 {
+                    next_health = (*health + 100).min(100);
+                }
+                next_effects.berserk = true;
+            }
             PickupEffect::RadiationSuit => {
                 next_effects.radiation_suit_tics = RADIATION_SUIT_TICS;
             }
@@ -1917,6 +1926,7 @@ fn collect_pickups(
                 pickup.effect,
                 PickupEffect::Key(_)
                     | PickupEffect::ArmorBonus
+                    | PickupEffect::Berserk
                     | PickupEffect::RadiationSuit
                     | PickupEffect::Invulnerability
                     | PickupEffect::PartialInvisibility
@@ -3470,7 +3480,13 @@ fn damage_actor(actor: &mut Actor, damage: i32, pain_rng: &mut u32) -> bool {
     }
 }
 
-fn punch_weapon(map: &Map, actors: &mut [Actor], player: Player, rng: &mut u32) -> bool {
+fn punch_weapon(
+    map: &Map,
+    actors: &mut [Actor],
+    player: Player,
+    effects: &PlayerEffects,
+    rng: &mut u32,
+) -> bool {
     let origin = Vertex2 {
         x: player.x,
         y: player.y,
@@ -3500,7 +3516,8 @@ fn punch_weapon(map: &Map, actors: &mut [Actor], player: Player, rng: &mut u32) 
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(index, _)| index);
-    let damage = i32::from(gameplay_random_byte(rng) % 10 + 1) * 2;
+    let damage =
+        i32::from(gameplay_random_byte(rng) % 10 + 1) * 2 * if effects.berserk { 10 } else { 1 };
     target.is_some_and(|index| damage_actor(&mut actors[index], damage, rng))
 }
 
@@ -4304,6 +4321,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             levels_completed += 1;
             exited = false;
             secret_exit = false;
+            effects.berserk = false;
         }
         let now = std::time::Instant::now();
         let delta = now.duration_since(last).as_secs_f32().min(0.05);
@@ -4429,6 +4447,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                         &scene.map,
                         &mut actors,
                         player,
+                        &effects,
                         &mut gameplay_rng,
                     ));
                 }
@@ -4497,7 +4516,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks).len();
         window.set_title(&format!(
-            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, Q punch, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | invis {:.0}s | visor {:.0}s | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, Q punch, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | invis {:.0}s | visor {:.0}s | berserk {} | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.map_name,
             armor.points,
             armor.class,
@@ -4505,6 +4524,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             effects.invulnerability_tics / DOOM_TICS_PER_SECOND,
             effects.partial_invisibility_tics / DOOM_TICS_PER_SECOND,
             effects.light_amplification_tics / DOOM_TICS_PER_SECOND,
+            effects.berserk,
             keys & KEY_RED != 0,
             keys & KEY_YELLOW != 0,
             keys & KEY_BLUE != 0,
@@ -6673,27 +6693,79 @@ mod tests {
             animation_time: 0.0,
             angle: 0.0,
         }];
+        let effects = PlayerEffects::default();
         let mut rng = 1;
-        assert!(!punch_weapon(&empty_map, &mut actors, player, &mut rng));
+        assert!(!punch_weapon(
+            &empty_map,
+            &mut actors,
+            player,
+            &effects,
+            &mut rng
+        ));
         let damage = 200 - actors[0].health;
         assert!((2..=20).contains(&damage));
         assert_eq!(damage % 2, 0);
         assert_eq!(actors[0].target_time_remaining, ACTOR_TARGET_THRESHOLD);
 
+        let mut unpowered = [Actor {
+            health: 1000,
+            ..actors[0]
+        }];
+        let mut powered = unpowered;
+        let mut normal_rng = 1;
+        let mut berserk_rng = 1;
+        let berserk = PlayerEffects {
+            berserk: true,
+            ..PlayerEffects::default()
+        };
+        assert!(!punch_weapon(
+            &empty_map,
+            &mut unpowered,
+            player,
+            &effects,
+            &mut normal_rng
+        ));
+        assert!(!punch_weapon(
+            &empty_map,
+            &mut powered,
+            player,
+            &berserk,
+            &mut berserk_rng
+        ));
+        assert_eq!(1000 - powered[0].health, (1000 - unpowered[0].health) * 10);
+
         actors[0].x = 81.0;
         actors[0].health = 200;
-        assert!(!punch_weapon(&empty_map, &mut actors, player, &mut rng));
+        assert!(!punch_weapon(
+            &empty_map,
+            &mut actors,
+            player,
+            &effects,
+            &mut rng
+        ));
         assert_eq!(actors[0].health, 200);
 
         actors[0].x = 40.0;
         actors[0].y = 17.0;
-        assert!(!punch_weapon(&empty_map, &mut actors, player, &mut rng));
+        assert!(!punch_weapon(
+            &empty_map,
+            &mut actors,
+            player,
+            &effects,
+            &mut rng
+        ));
         assert_eq!(actors[0].health, 200);
 
         actors[0].y = 0.0;
         actors[0].health = 1;
         let mut rng = 1;
-        assert!(punch_weapon(&empty_map, &mut actors, player, &mut rng));
+        assert!(punch_weapon(
+            &empty_map,
+            &mut actors,
+            player,
+            &effects,
+            &mut rng
+        ));
         assert_eq!(actors[0].death_animation_time, Some(0.0));
 
         actors[0].health = 200;
@@ -6703,7 +6775,13 @@ mod tests {
             lines: vec![[0, 1, 1, u16::MAX, u16::MAX, 0, 0]],
             ..empty_map
         };
-        assert!(!punch_weapon(&blocked_map, &mut actors, player, &mut rng));
+        assert!(!punch_weapon(
+            &blocked_map,
+            &mut actors,
+            player,
+            &effects,
+            &mut rng
+        ));
         assert_eq!(actors[0].health, 200);
     }
 
@@ -7536,6 +7614,87 @@ mod tests {
         );
         assert_eq!(effects.radiation_suit_tics, RADIATION_SUIT_TICS);
         assert!(!pickups[0].active);
+    }
+
+    #[test]
+    fn berserk_packs_heal_to_one_hundred_and_enable_strength() {
+        assert_eq!(
+            pickup_definition(2023),
+            Some((*b"PSTR", PickupEffect::Berserk))
+        );
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut pickups = [pickup(2023, 0.0, 0.0)];
+        let mut health = 35;
+        let mut ammo = 0;
+        let mut keys = 0;
+        let mut armor = Armor::default();
+        let mut effects = PlayerEffects::default();
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+                &mut effects,
+            ),
+            1
+        );
+        assert_eq!(health, 100);
+        assert!(effects.berserk);
+        assert!(!pickups[0].active);
+
+        let mut duplicate = [pickup(2023, 0.0, 0.0)];
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut duplicate,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+                &mut effects,
+            ),
+            1
+        );
+        assert_eq!(health, 100);
+        assert!(effects.berserk);
+        assert!(!duplicate[0].active);
+
+        health = 150;
+        let mut overcharged = [pickup(2023, 0.0, 0.0)];
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut overcharged,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+                &mut effects,
+            ),
+            1
+        );
+        assert_eq!(health, 150);
+        assert!(!overcharged[0].active);
     }
 
     #[test]
