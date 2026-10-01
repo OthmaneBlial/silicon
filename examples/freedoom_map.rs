@@ -80,6 +80,8 @@ const DOOM_SKY_BASE_WIDTH: f32 = 320.0;
 const DOOM_SKY_ANGLE_COLUMNS: f32 = 1024.0;
 const SKY_MESH_SEGMENTS: usize = 32;
 const DOOM_VIEW_FAR: f32 = 8192.0;
+const DOOM_FRAME_WIDTH: u32 = 960;
+const DOOM_FRAME_HEIGHT: u32 = 720;
 // Keep the panorama inside clip space despite f32 view-transform rounding.
 const SKY_CLIP_MARGIN: f32 = 64.0;
 
@@ -2448,6 +2450,155 @@ fn depth_bucket(bounds: Bounds3, player: Player) -> u32 {
     (nearest / DEPTH_BUCKET_SIZE) as u32
 }
 
+fn project_doom_point(
+    point: Vec3,
+    player: Player,
+    eye_height: f32,
+    width: u32,
+    height: u32,
+) -> Option<(f32, f32, f32)> {
+    let (sin, cos) = player.angle.to_radians().sin_cos();
+    let dx = point.x - player.x;
+    let dz = point.z + player.y;
+    let forward = dx * cos + dz * sin;
+    if !forward.is_finite() || !(1.0..=DOOM_VIEW_FAR).contains(&forward) {
+        return None;
+    }
+    let right = dx * sin - dz * cos;
+    let half_vfov = (1.22_f32 * 0.5).tan();
+    let half_hfov = half_vfov * width as f32 / height as f32;
+    Some((
+        width as f32 * 0.5 + right / (forward * half_hfov) * width as f32 * 0.5,
+        height as f32 * 0.5 - (point.y - eye_height) / (forward * half_vfov) * height as f32 * 0.5,
+        forward,
+    ))
+}
+
+// ponytail: full-screen-height walls only; vertical bands are the upgrade for portal clipping.
+/// Add only walls that cover a whole screen column; partial portals stay visible.
+fn add_solid_wall_columns(
+    columns: &mut [f32],
+    height: u32,
+    player: Player,
+    eye_height: f32,
+    corners: [Vec3; 4], // lower A/B, upper B/A
+) {
+    let width = columns.len() as u32;
+    let [lower_a, lower_b, upper_b, upper_a] = corners;
+    let Some((x0, lower_y0, depth0)) =
+        project_doom_point(lower_a, player, eye_height, width, height)
+    else {
+        return;
+    };
+    let Some((x1, lower_y1, depth1)) =
+        project_doom_point(lower_b, player, eye_height, width, height)
+    else {
+        return;
+    };
+    let Some((_, upper_y0, _)) = project_doom_point(upper_a, player, eye_height, width, height)
+    else {
+        return;
+    };
+    let Some((_, upper_y1, _)) = project_doom_point(upper_b, player, eye_height, width, height)
+    else {
+        return;
+    };
+    if upper_y0 > 0.0
+        || upper_y1 > 0.0
+        || lower_y0 < height as f32
+        || lower_y1 < height as f32
+        || (x1 - x0).abs() < f32::EPSILON
+    {
+        return;
+    }
+    let start = x0.min(x1).ceil().max(0.0) as usize;
+    let end = x0.max(x1).floor().min(width as f32) as usize;
+    for (x, column) in columns.iter_mut().enumerate().take(end).skip(start) {
+        let t = (x as f32 + 0.5 - x0) / (x1 - x0);
+        let depth = 1.0 / ((1.0 - t) / depth0 + t / depth1);
+        *column = column.min(depth);
+    }
+}
+
+fn bounds_hidden_by_walls(
+    bounds: Bounds3,
+    columns: &[f32],
+    player: Player,
+    eye_height: f32,
+    height: u32,
+) -> bool {
+    let width = columns.len() as u32;
+    let mut min_x = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut nearest = f32::INFINITY;
+    for x in [bounds.min.x, bounds.max.x] {
+        for y in [bounds.min.y, bounds.max.y] {
+            for z in [bounds.min.z, bounds.max.z] {
+                let Some((screen_x, _, forward)) =
+                    project_doom_point(Vec3::new(x, y, z), player, eye_height, width, height)
+                else {
+                    return false;
+                };
+                min_x = min_x.min(screen_x);
+                max_x = max_x.max(screen_x);
+                nearest = nearest.min(forward);
+            }
+        }
+    }
+    let start = min_x.floor().max(0.0) as usize;
+    let end = max_x.ceil().min(width as f32) as usize;
+    start < end
+        && columns
+            .get(start..end)
+            .is_some_and(|span| span.iter().all(|&depth| depth + 0.01 < nearest))
+}
+
+fn visible_map_draws(
+    map: &Map,
+    draws: &[Vec<Draw>],
+    player: Player,
+    fallback_bounds: &[(usize, Bounds2)],
+    width: u32,
+    height: u32,
+    eye_height: f32,
+) -> Vec<Vec<usize>> {
+    let mut solid_columns = vec![f32::INFINITY; width as usize];
+    let mut visible = vec![Vec::new(); draws.len()];
+    for leaf in visible_geometry_order(map, player, fallback_bounds) {
+        let Some(leaf_draws) = draws.get(leaf) else {
+            continue;
+        };
+        for (index, draw) in leaf_draws.iter().enumerate() {
+            if draw
+                .bounds
+                .is_some_and(|bounds| bounds3_in_view(bounds, player, eye_height))
+                && !draw.bounds.is_some_and(|bounds| {
+                    bounds_hidden_by_walls(bounds, &solid_columns, player, eye_height, height)
+                })
+            {
+                visible[leaf].push(index);
+            }
+        }
+        for draw in leaf_draws.iter().filter(|draw| draw.wall && !draw.masked) {
+            for quad in draw.vertices.chunks_exact(6) {
+                add_solid_wall_columns(
+                    &mut solid_columns,
+                    height,
+                    player,
+                    eye_height,
+                    [
+                        quad[0].position,
+                        quad[1].position,
+                        quad[2].position,
+                        quad[5].position,
+                    ],
+                );
+            }
+        }
+    }
+    visible
+}
+
 fn visible_subsector_order(map: &Map, player: Player) -> Vec<usize> {
     if map.nodes.is_empty() {
         return subsector_at(
@@ -4171,11 +4322,6 @@ impl PreparedScene {
                 self.map_name
             ))
         })?;
-        let visible_order = visible_geometry_order(&self.map, player, &self.visibility_fallbacks);
-        let mut visible = vec![false; self.map.subsectors.len()];
-        for &leaf in &visible_order {
-            visible[leaf] = true;
-        }
         let eye = Vec3::new(player.x, sector.floor + 41.0, -player.y);
         let eye_height = sector.floor + 41.0;
         let radians = player.angle.to_radians();
@@ -4192,18 +4338,19 @@ impl PreparedScene {
         commands.begin_render_pass(Color::new(0.12, 0.22, 0.36, 1.0));
         commands.bind_pipeline(self.pipeline.clone());
         commands.bind_uniform_buffer(uniform_buffer.clone());
+        let visible_draws = visible_map_draws(
+            &self.map,
+            &self.draws,
+            player,
+            &self.visibility_fallbacks,
+            renderer.framebuffer.width,
+            renderer.framebuffer.height,
+            eye_height,
+        );
         let mut batches = BTreeMap::new();
         for (leaf, draws) in self.draws.iter().enumerate() {
-            if !visible[leaf] {
-                continue;
-            }
-            for draw in draws {
-                if !draw
-                    .bounds
-                    .is_some_and(|bounds| bounds3_in_view(bounds, player, eye_height))
-                {
-                    continue;
-                }
+            for &index in visible_draws.get(leaf).into_iter().flatten() {
+                let draw = &draws[index];
                 let depth = draw
                     .bounds
                     .map(|bounds| depth_bucket(bounds, player))
@@ -4241,7 +4388,7 @@ impl PreparedScene {
                 player,
                 eye_height,
                 (texture.levels[0].width, texture.levels[0].height),
-                (960, 720),
+                (renderer.framebuffer.width, renderer.framebuffer.height),
             );
             let count = u32::try_from(vertices.len())
                 .map_err(|_| invalid("sky vertex count exceeds SILICON draw range"))?;
@@ -4409,14 +4556,19 @@ fn frame_triangles(
         ))
     })?;
     let eye_height = sector.floor + 41.0;
-    let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks);
+    let visible = visible_map_draws(
+        &scene.map,
+        &scene.draws,
+        player,
+        &scene.visibility_fallbacks,
+        DOOM_FRAME_WIDTH,
+        DOOM_FRAME_HEIGHT,
+        eye_height,
+    );
     let static_triangles = visible
         .iter()
-        .flat_map(|&leaf| &scene.draws[leaf])
-        .filter(|draw| {
-            draw.bounds
-                .is_some_and(|bounds| bounds3_in_view(bounds, player, eye_height))
-        })
+        .enumerate()
+        .flat_map(|(leaf, indices)| indices.iter().map(move |&index| &scene.draws[leaf][index]))
         .map(|draw| draw.vertices.len() / 3)
         .sum::<usize>();
     let sky_triangles = usize::from(scene.sky_texture.is_some()) * SKY_MESH_SEGMENTS * 2;
@@ -4426,7 +4578,7 @@ fn frame_triangles(
 
 fn render(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
     let scene = PreparedScene::load(path, map_name)?;
-    let mut renderer = Renderer::new(960, 720)?;
+    let mut renderer = Renderer::new(DOOM_FRAME_WIDTH, DOOM_FRAME_HEIGHT)?;
     let effects = PlayerEffects::default();
     let (submission, static_draws) = scene.draw(
         scene.start,
@@ -4504,7 +4656,7 @@ fn wad_has_map(path: &Path, map_name: &str) -> Result<bool, io::Error> {
 
 fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()> {
     let mut scene = PreparedScene::load(path, map_name)?;
-    let mut renderer = Renderer::new(960, 720)?;
+    let mut renderer = Renderer::new(DOOM_FRAME_WIDTH, DOOM_FRAME_HEIGHT)?;
     let mut window = Window::new(
         &format!("SILICON | Freedoom {}", scene.map_name),
         960,
@@ -7017,6 +7169,70 @@ mod tests {
         assert!(visible_subsector_order(&map, player).is_empty());
         map.nodes[0].children = [0x8000, 0x8000];
         assert_eq!(visible_subsector_order(&map, player), vec![0]);
+    }
+
+    #[test]
+    fn full_height_wall_columns_hide_only_geometry_behind_the_wall() {
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut columns = vec![f32::INFINITY; DOOM_FRAME_WIDTH as usize];
+        add_solid_wall_columns(
+            &mut columns,
+            DOOM_FRAME_HEIGHT,
+            player,
+            41.0,
+            [
+                Vec3::new(20.0, 0.0, 10.0),
+                Vec3::new(20.0, 0.0, -10.0),
+                Vec3::new(20.0, 128.0, -10.0),
+                Vec3::new(20.0, 128.0, 10.0),
+            ],
+        );
+        let covered = columns.iter().filter(|depth| depth.is_finite()).count();
+        assert!(covered > 0 && covered < columns.len());
+        let bounds = |near, far, min_z, max_z| Bounds3 {
+            min: Vec3::new(near, 16.0, min_z),
+            max: Vec3::new(far, 64.0, max_z),
+        };
+        assert!(bounds_hidden_by_walls(
+            bounds(40.0, 48.0, -4.0, 4.0),
+            &columns,
+            player,
+            41.0,
+            DOOM_FRAME_HEIGHT,
+        ));
+        assert!(!bounds_hidden_by_walls(
+            bounds(8.0, 12.0, -4.0, 4.0),
+            &columns,
+            player,
+            41.0,
+            DOOM_FRAME_HEIGHT,
+        ));
+        assert!(!bounds_hidden_by_walls(
+            bounds(40.0, 48.0, -40.0, -35.0),
+            &columns,
+            player,
+            41.0,
+            DOOM_FRAME_HEIGHT,
+        ));
+
+        let mut partial = vec![f32::INFINITY; DOOM_FRAME_WIDTH as usize];
+        add_solid_wall_columns(
+            &mut partial,
+            DOOM_FRAME_HEIGHT,
+            player,
+            41.0,
+            [
+                Vec3::new(20.0, 0.0, 10.0),
+                Vec3::new(20.0, 0.0, -10.0),
+                Vec3::new(20.0, 45.0, -10.0),
+                Vec3::new(20.0, 45.0, 10.0),
+            ],
+        );
+        assert!(partial.iter().all(|depth| depth.is_infinite()));
     }
 
     #[test]
