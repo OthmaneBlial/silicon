@@ -142,6 +142,10 @@ and 34 do the same for blue, red, and yellow locks; they require the matching
 card or skull and clear the one-shot line after activation. The open-stay and
 key mapping follow id Software's [`EV_VerticalDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c)
 and [`P_UseSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c).
+Press `E` at a front-facing special-29 line to raise each tagged door, wait,
+then close it. The one-shot trigger clears after a door starts moving, matching
+the original `P_UseSpecialLine` action in
+[`p_switch.c`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c).
 Other locked-door action variants, enemy-triggered platform actions besides
 specials 10 and 88, and other line specials remain unsupported.
 
