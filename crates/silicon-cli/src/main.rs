@@ -210,6 +210,11 @@ fn report(r: &Renderer, elapsed: f64, submission: Option<&Submission>) {
             r.stats.blend_write_time.as_secs_f64() * 1000.
         );
         println!("  Presentation: not measured (headless profile)");
+        println!("Vertices: {}", r.stats.vertices);
+        println!(
+            "Vertex shader invocations: {}",
+            r.stats.vertex_shader_invocations
+        );
         println!("Triangles: {}", r.stats.triangles);
         println!("Triangles culled: {}", r.stats.culled);
         println!("Fragments generated: {}", r.stats.fragments);
@@ -220,8 +225,12 @@ fn report(r: &Renderer, elapsed: f64, submission: Option<&Submission>) {
         println!("Stage sums can overlap with parallel workers; they are not wall-time shares.");
     } else {
         println!(
-            "Vertices: {} | triangles: {} | clipped: {} | culled: {}",
-            r.stats.vertices, r.stats.triangles, r.stats.clipped, r.stats.culled
+            "Vertices: {} | vertex shader invocations: {} | triangles: {} | clipped: {} | culled: {}",
+            r.stats.vertices,
+            r.stats.vertex_shader_invocations,
+            r.stats.triangles,
+            r.stats.clipped,
+            r.stats.culled
         );
         println!(
             "Tile visits: {} | fragments: {} | early-Z: {} | shaded: {} | discarded: {}",

@@ -337,7 +337,8 @@ python3 benchmarks/run.py --frames 30
 ```
 
 Benchmarks include frame rendering, exclude image encoding/window presentation,
-and report measured median/p95 and throughput. `--report` retains chronological
+and report measured median/p95 and throughput. `silicon profile` distinguishes
+logical input vertices from actual vertex shader invocations. `--report` retains chronological
 frame times, backend/worker configuration, actual shader packet occupancy and executed
 instruction/sample/discard counts. Profile additionally instruments
 fragment shader time; per-worker accumulated stage times can exceed wall time.

@@ -132,6 +132,7 @@ pub struct Statistics {
     pub texture_samples: u64,
     pub discarded: u64,
     pub vertices: u64,
+    pub vertex_shader_invocations: u64,
     pub triangles: u64,
     pub clipped: u64,
     pub culled: u64,
@@ -156,6 +157,7 @@ impl std::ops::AddAssign<&Self> for Statistics {
         self.texture_samples += other.texture_samples;
         self.discarded += other.discarded;
         self.vertices += other.vertices;
+        self.vertex_shader_invocations += other.vertex_shader_invocations;
         self.triangles += other.triangles;
         self.clipped += other.clipped;
         self.culled += other.culled;
@@ -364,21 +366,25 @@ impl Renderer {
             }
             Ok(transformed)
         };
-        let transformed: Arc<[VertexOutput]> = if let Some(cache) = &self.shared_vertices {
-            let start = Instant::now();
-            let (transformed, computed) =
-                cache.get_or_compute(draw_index, vertices, indices, pipeline, transform)?;
-            if computed {
+        let (transformed, vertex_shader_invoked): (Arc<[VertexOutput]>, bool) =
+            if let Some(cache) = &self.shared_vertices {
+                let start = Instant::now();
+                let (transformed, computed) =
+                    cache.get_or_compute(draw_index, vertices, indices, pipeline, transform)?;
+                if computed {
+                    self.stats.vertex_time += start.elapsed();
+                }
+                (transformed, computed)
+            } else {
+                let start = Instant::now();
+                let transformed: Arc<[VertexOutput]> = transform()?.into();
                 self.stats.vertex_time += start.elapsed();
-            }
-            transformed
-        } else {
-            let start = Instant::now();
-            let transformed: Arc<[VertexOutput]> = transform()?.into();
-            self.stats.vertex_time += start.elapsed();
-            transformed
-        };
+                (transformed, true)
+            };
         self.stats.vertices += vertices.len() as u64;
+        if vertex_shader_invoked {
+            self.stats.vertex_shader_invocations += vertices.len() as u64;
+        }
         let start = Instant::now();
         let render_result = (|| {
             let tiles_x = self.framebuffer.width.div_ceil(TILE);
@@ -1075,6 +1081,7 @@ impl Renderer {
                 self.stats.clipped = band.stats.clipped;
                 self.stats.culled = band.stats.culled;
             }
+            self.stats.vertex_shader_invocations += band.stats.vertex_shader_invocations;
             self.stats.tiles += band.stats.tiles;
             self.stats.command_processing_time += band.stats.command_processing_time;
             self.stats.primitive_setup_time += band.stats.primitive_setup_time;

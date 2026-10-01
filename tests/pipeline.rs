@@ -252,6 +252,10 @@ fn scalar_simd_and_parallel_frames_are_identical() {
             assert_eq!(r.stats.fragments, expected.stats.fragments);
             assert_eq!(r.stats.shaded, expected.stats.shaded);
             assert_eq!(r.stats.triangles, 12);
+            assert_eq!(
+                r.stats.vertex_shader_invocations,
+                expected.stats.vertices * threads as u64
+            );
         }
     }
 }
@@ -288,6 +292,10 @@ fn shared_vertex_bands_run_each_vertex_shader_once() {
     assert_eq!(calls.load(Ordering::Relaxed), vertices.len());
     assert_eq!(parallel.framebuffer.bytes(), expected.framebuffer.bytes());
     assert_eq!(parallel.stats.vertices, vertices.len() as u64);
+    assert_eq!(
+        parallel.stats.vertex_shader_invocations,
+        vertices.len() as u64
+    );
     assert_eq!(parallel.stats.fragments, expected.stats.fragments);
 }
 #[test]

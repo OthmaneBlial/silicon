@@ -329,7 +329,8 @@ warmups. SIR scene command creation and validation are included. All allocations
 clipping, shader execution, depth/stencil and blending during rendering are
 included. `silicon profile` reports command processing, vertex processing,
 primitive setup, coverage/depth rasterization, fragment shading, and blend/write
-time, plus the triangle, fragment, early-Z, shader, and texture counters. Stage
+time, plus logical vertex and actual vertex-shader invocation counts and the
+triangle, fragment, early-Z, shader, and texture counters. Stage
 timers are instrumented; parallel worker sums can overlap and exceed wall time.
 Presentation is not measured by the headless profile command.
 

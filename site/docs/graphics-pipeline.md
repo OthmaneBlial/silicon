@@ -106,6 +106,8 @@ identical per-band draw streams: it validates geometry and pipeline state and
 runs each draw's vertex shader once, then shares the immutable outputs. Primitive
 setup and tile bins remain local to each band; persistent workers remain future
 optimization work. The CLI and offline animation use the shared-vertex path.
+`Statistics::vertices` reports logical input vertices; `vertex_shader_invocations`
+reports actual calls, so the two distinguish geometry volume from repeated band work.
 
 See [Khronos rasterization conventions](https://docs.vulkan.org/spec/latest/chapters/primsrast.html)
 for background on pixel coverage and interpolation. These conventions do not
