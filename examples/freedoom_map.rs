@@ -3401,6 +3401,7 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, pain_rng: &mut u
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_actors(
     map: &Map,
     actors: &mut [Actor],
