@@ -1170,6 +1170,117 @@ fn bsp_polygon_belongs_to_sector(map: &Map, polygon: &[Vertex2], sector: u16) ->
     true
 }
 
+fn line_side(a: Vertex2, b: Vertex2, point: Vertex2) -> f64 {
+    (b.x - a.x) as f64 * (point.y - a.y) as f64 - (b.y - a.y) as f64 * (point.x - a.x) as f64
+}
+
+fn point_inside_convex_polygon(point: Vertex2, polygon: &[Vertex2]) -> bool {
+    let mut positive = false;
+    let mut negative = false;
+    for i in 0..polygon.len() {
+        let side = line_side(polygon[i], polygon[(i + 1) % polygon.len()], point);
+        positive |= side > 0.0;
+        negative |= side < 0.0;
+    }
+    !(positive && negative) && (positive || negative)
+}
+
+fn sector_boundary_crosses_polygon(a: Vertex2, b: Vertex2, polygon: &[Vertex2]) -> bool {
+    if point_inside_convex_polygon(a, polygon) || point_inside_convex_polygon(b, polygon) {
+        return true;
+    }
+    for i in 0..polygon.len() {
+        let c = polygon[i];
+        let d = polygon[(i + 1) % polygon.len()];
+        if (line_side(a, b, c) > 0.0) != (line_side(a, b, d) > 0.0)
+            && (line_side(c, d, a) > 0.0) != (line_side(c, d, b) > 0.0)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn clip_polygon_to_line(
+    polygon: &[Vertex2],
+    a: Vertex2,
+    b: Vertex2,
+    positive: bool,
+) -> Vec<Vertex2> {
+    let distance = |point| line_side(a, b, point) * if positive { 1.0 } else { -1.0 };
+    let Some(&last) = polygon.last() else {
+        return Vec::new();
+    };
+    let mut clipped = Vec::with_capacity(polygon.len() + 1);
+    let mut previous = last;
+    let mut previous_distance = distance(previous);
+    for &current in polygon {
+        let current_distance = distance(current);
+        if (previous_distance < 0.0) != (current_distance < 0.0) {
+            let t = previous_distance / (previous_distance - current_distance);
+            clipped.push(Vertex2 {
+                x: (previous.x as f64 + (current.x as f64 - previous.x as f64) * t) as f32,
+                y: (previous.y as f64 + (current.y as f64 - previous.y as f64) * t) as f32,
+            });
+        }
+        if current_distance >= 0.0 {
+            clipped.push(current);
+        }
+        previous = current;
+        previous_distance = current_distance;
+    }
+    clipped
+}
+
+fn split_polygon_by_line(
+    polygon: &[Vertex2],
+    a: Vertex2,
+    b: Vertex2,
+) -> Option<(Vec<Vertex2>, Vec<Vertex2>)> {
+    let positive = polygon.iter().any(|&point| line_side(a, b, point) > 0.0);
+    let negative = polygon.iter().any(|&point| line_side(a, b, point) < 0.0);
+    (positive && negative).then(|| {
+        (
+            convex_hull(clip_polygon_to_line(polygon, a, b, true)),
+            convex_hull(clip_polygon_to_line(polygon, a, b, false)),
+        )
+    })
+}
+
+fn sector_clipped_bsp_polygons(map: &Map, polygon: &[Vertex2], sector: u16) -> Vec<Vec<Vertex2>> {
+    if polygon.len() < 3 {
+        return Vec::new();
+    }
+    let mut polygons = vec![polygon.to_vec()];
+    for line in &map.lines {
+        let front = map.sides.get(line[3] as usize).map(|side| side.sector);
+        let back = map.sides.get(line[4] as usize).map(|side| side.sector);
+        if (front == Some(sector)) == (back == Some(sector)) {
+            continue;
+        }
+        let (Some(&a), Some(&b)) = (
+            map.vertices.get(line[0] as usize),
+            map.vertices.get(line[1] as usize),
+        ) else {
+            continue;
+        };
+        let mut split = Vec::with_capacity(polygons.len() + 1);
+        for piece in polygons {
+            if sector_boundary_crosses_polygon(a, b, &piece)
+                && let Some((positive, negative)) = split_polygon_by_line(&piece, a, b)
+            {
+                split.push(positive);
+                split.push(negative);
+                continue;
+            }
+            split.push(piece);
+        }
+        polygons = split;
+    }
+    polygons.retain(|piece| bsp_polygon_belongs_to_sector(map, piece, sector));
+    polygons
+}
+
 #[derive(Default)]
 struct Geometry {
     flats: BTreeMap<[u8; 8], Vec<Vertex>>,
@@ -1528,16 +1639,20 @@ fn geometry(
             let front_side = map.lines[first[2] as usize][3 + first[3] as usize];
             let sector_index = map.sides[front_side as usize].sector;
             let sector = map.sectors[sector_index as usize];
-            let mut polygon = convex_hull(
+            let polygon = convex_hull(
                 segs.iter()
                     .flat_map(|seg| [map.vertices[seg[0] as usize], map.vertices[seg[1] as usize]])
                     .collect(),
             );
             let cell = convex_hull(bsp_polygons[leaf_index].clone());
-            if bsp_polygon_belongs_to_sector(map, &cell, sector_index) {
-                polygon = cell;
+            let mut polygons = sector_clipped_bsp_polygons(map, &cell, sector_index);
+            if polygons.is_empty() {
+                polygons.push(polygon);
             }
-            if polygon.len() >= 3 {
+            for polygon in polygons {
+                if polygon.len() < 3 {
+                    continue;
+                }
                 let root = world(polygon[0], sector.floor);
                 let light = 0.38 + sector.light as f32 / 255.0 * 0.62;
                 let floor = Vec4::new(light, light, light, 1.0);
@@ -4111,6 +4226,82 @@ mod tests {
         assert_eq!(geometry[0].flats[b"CEIL0_1\0"].len(), 6);
         assert_eq!(geometry[1].flats[b"FLOOR0_1"].len(), 6);
         assert_eq!(geometry[1].flats[b"CEIL0_1\0"].len(), 6);
+    }
+
+    #[test]
+    fn bsp_cells_are_split_at_concave_sector_boundaries_before_flat_fill() {
+        let sector = Sector {
+            floor: 0.0,
+            ceiling: 10.0,
+            special: 0,
+            light: 255,
+            tag: 0,
+            floor_flat: *b"FLOOR0_1",
+            ceiling_flat: *b"CEIL0_1\0",
+        };
+        let map = Map {
+            vertices: vec![
+                Vertex2 { x: 0.0, y: 0.0 },
+                Vertex2 { x: 10.0, y: 0.0 },
+                Vertex2 { x: 10.0, y: 5.0 },
+                Vertex2 { x: 5.0, y: 5.0 },
+                Vertex2 { x: 5.0, y: 10.0 },
+                Vertex2 { x: 0.0, y: 10.0 },
+            ],
+            sectors: vec![sector],
+            sides: (0..6)
+                .map(|_| SideDef {
+                    x_offset: 0,
+                    y_offset: 0,
+                    upper: [0; 8],
+                    lower: [0; 8],
+                    middle: [0; 8],
+                    sector: 0,
+                })
+                .collect(),
+            lines: vec![
+                [0, 1, 0, 0, u16::MAX, 0, 0],
+                [1, 2, 0, 1, u16::MAX, 0, 0],
+                [2, 3, 0, 2, u16::MAX, 0, 0],
+                [3, 4, 0, 3, u16::MAX, 0, 0],
+                [4, 5, 0, 4, u16::MAX, 0, 0],
+                [5, 0, 0, 5, u16::MAX, 0, 0],
+            ],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let cell = [
+            Vertex2 { x: 0.0, y: 0.0 },
+            Vertex2 { x: 10.0, y: 0.0 },
+            Vertex2 { x: 10.0, y: 10.0 },
+            Vertex2 { x: 0.0, y: 10.0 },
+        ];
+
+        let clipped = sector_clipped_bsp_polygons(&map, &cell, 0);
+        assert_eq!(clipped.len(), 3);
+        assert!(
+            clipped
+                .iter()
+                .all(|piece| bsp_polygon_belongs_to_sector(&map, piece, 0))
+        );
+        let area = clipped
+            .iter()
+            .map(|polygon| {
+                (0..polygon.len())
+                    .map(|i| {
+                        let a = polygon[i];
+                        let b = polygon[(i + 1) % polygon.len()];
+                        a.x * b.y - b.x * a.y
+                    })
+                    .sum::<f32>()
+                    .abs()
+                    * 0.5
+            })
+            .sum::<f32>();
+        assert_eq!(area, 75.0);
+        assert!(!sector_contains_point(&map, 0, Vertex2 { x: 8.0, y: 8.0 }));
     }
 
     #[test]
