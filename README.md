@@ -24,6 +24,10 @@ stencil and blending generate scene pixels entirely on the CPU.
 
 *Six-face cube-map skybox and roughness-selected environment reflections in the native Rust reference scene.*
 
+![The cube-map reflection scene rendered with four samples per pixel](assets/screenshots/cubemap_showcase_msaa4.png)
+
+*The same CPU scene with 4× multisample coverage and a resolved color buffer.*
+
 [Watch the CPU-rendered animation](assets/demos/spirv_showcase.mp4) ·
 [Architecture](docs/architecture.md) · [Pipeline](docs/graphics-pipeline.md) ·
 [Shader VM](docs/sir.md) · [SIMD](docs/simd.md) · [SPIR-V subset](docs/spirv.md) · [Roadmap](docs/roadmap.md)
@@ -48,6 +52,7 @@ Headless rendering requires no graphics device or display.
 cargo run --release -p silicon-cli -- render assets/scenes/showcase.json --output output/scene.png
 cargo run --release -p silicon-cli -- render assets/scenes/pbr_showcase.json --backend simd --threads 4 --output output/pbr.png
 cargo run --release -p silicon-cli -- render assets/scenes/cubemap_showcase.json --backend simd --threads 4 --output output/cubemap.png
+cargo run --release -p silicon-cli -- render cubemap_showcase --samples 4 --backend simd --threads 4 --output output/cubemap-msaa4.png
 cargo run --release -p silicon-cli -- render showcase --width 640 --height 400 --threads 4
 cargo run --release -p silicon-cli -- render stencil --backend simd --threads 4 --output output/stencil.png
 cargo run --release --example triangle
@@ -82,6 +87,9 @@ box-filtered mip level as a compact reflection-blur approximation. This is not
 split-sum IBL and is not yet a `samplerCube` binding in the SPIR-V command path.
 The `stencil` scene uses a circular portal mask for both a textured cube and a
 translucent overlay.
+The renderer also supports deterministic 2× and 4× multisampling with
+per-sample color, depth and stencil attachments; `--samples 1` keeps the
+single-sample default.
 
 ```sh
 cargo run --release -p silicon-cli -- run spirv_showcase --threads 4

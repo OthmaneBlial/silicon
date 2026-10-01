@@ -27,6 +27,7 @@ struct Options {
     capture: Option<String>,
     pixel: Option<(u32, u32)>,
     backend: Backend,
+    samples: SampleCount,
     threads: usize,
     benchmark_report: Option<String>,
 }
@@ -60,6 +61,7 @@ fn options(args: &[String]) -> Result<Options> {
         capture: None,
         pixel: None,
         backend: Backend::Scalar,
+        samples: SampleCount::One,
         threads: 1,
         benchmark_report: None,
     };
@@ -76,6 +78,14 @@ fn options(args: &[String]) -> Result<Options> {
                     "scalar" => Backend::Scalar,
                     "simd" => Backend::Simd,
                     _ => return Err("backend must be scalar or simd".into()),
+                }
+            }
+            "--samples" => {
+                o.samples = match value.as_str() {
+                    "1" => SampleCount::One,
+                    "2" => SampleCount::Two,
+                    "4" => SampleCount::Four,
+                    _ => return Err("samples must be 1, 2 or 4".into()),
                 }
             }
             "--width" => o.scene.width = value.parse()?,
@@ -159,6 +169,7 @@ fn report(r: &Renderer, elapsed: f64, submission: Option<&Submission>) {
         elapsed * 1000.,
         1. / elapsed
     );
+    println!("Multisample coverage: {}x", r.sample_count().get());
     println!(
         "Vertices: {} | triangles: {} | clipped: {} | culled: {}",
         r.stats.vertices, r.stats.triangles, r.stats.clipped, r.stats.culled
@@ -218,7 +229,7 @@ fn run() -> Result<()> {
     let command = args.first().map_or("help", String::as_str);
     if command == "help" || command == "--help" {
         println!(
-            "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N --report timings.json]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n  silicon inspect-shader shader.spv\n  silicon render-shaders vertex.spv fragment.spv [render options]\n\nExecution: --backend scalar|simd --threads 1..64\nScenes: showcase, cubemap_showcase, cube, textured_cube, triangle_3d, shader_cube, spirv_cube, spirv_showcase, spirv_cutout, shadow_showcase, pbr_showcase, stencil\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
+            "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N --report timings.json]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n  silicon inspect-shader shader.spv\n  silicon render-shaders vertex.spv fragment.spv [render options]\n\nExecution: --backend scalar|simd --threads 1..64 --samples 1|2|4\nScenes: showcase, cubemap_showcase, cube, textured_cube, triangle_3d, shader_cube, spirv_cube, spirv_showcase, spirv_cutout, shadow_showcase, pbr_showcase, stencil\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
         );
         return Ok(());
     }
@@ -265,6 +276,9 @@ fn run() -> Result<()> {
         let (_, fragment) = load_shader(fragment_path)?;
         shader::spirv::link(&vertex, &fragment)?;
         let o = options(&args[3..])?;
+        if o.capture.is_some() && o.samples != SampleCount::One {
+            return Err("frame captures do not store multisample state".into());
+        }
         let c = demo::shader_cube_with_programs(
             o.scene.width,
             o.scene.height,
@@ -273,6 +287,7 @@ fn run() -> Result<()> {
             fragment.program,
         )?;
         let mut r = Renderer::new(o.scene.width, o.scene.height)?;
+        r.set_sample_count(o.samples)?;
         r.backend = o.backend;
         r.debug_pixel = o.pixel;
         let start = Instant::now();
@@ -347,7 +362,11 @@ fn run() -> Result<()> {
         return Err(format!("unknown command {command}; run silicon --help").into());
     }
     let mut o = options(&args[1..])?;
+    if o.capture.is_some() && o.samples != SampleCount::One {
+        return Err("frame captures do not store multisample state".into());
+    }
     let mut r = Renderer::new(o.scene.width, o.scene.height)?;
+    r.set_sample_count(o.samples)?;
     if o.benchmark_report.is_some() && command != "benchmark" {
         return Err("--report is a benchmark option".into());
     }
@@ -391,6 +410,7 @@ fn run() -> Result<()> {
                 "version": env!("CARGO_PKG_VERSION"),
                 "scene": o.scene,
                 "coverage_backend": simd::name(o.backend),
+                "sample_count": o.samples.get(),
                 "shader_packet_backend": if total_packets > 0 {
                     Some(shader::packet_backend_name())
                 } else { None },

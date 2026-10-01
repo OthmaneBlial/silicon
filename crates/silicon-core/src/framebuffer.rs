@@ -23,6 +23,23 @@ pub enum PixelFormat {
     Rgba8,
     Bgra8,
 }
+/// The number of coverage/color/depth/stencil samples stored per pixel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SampleCount {
+    #[default]
+    One,
+    Two,
+    Four,
+}
+impl SampleCount {
+    pub const fn get(self) -> usize {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+            Self::Four => 4,
+        }
+    }
+}
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
     pub x: u32,
@@ -49,6 +66,14 @@ pub struct Framebuffer {
     pub(crate) pixels: Vec<u8>,
     pub(crate) depth: Vec<f32>,
     pub(crate) stencil: Vec<u8>,
+    samples: Option<MultisampleAttachments>,
+}
+#[derive(Clone)]
+struct MultisampleAttachments {
+    count: usize,
+    colors: Vec<[u8; 4]>,
+    depth: Vec<f32>,
+    stencil: Vec<u8>,
 }
 impl Framebuffer {
     pub fn new(width: u32, height: u32) -> Result<Self> {
@@ -69,7 +94,63 @@ impl Framebuffer {
             pixels: vec![0; count * 4],
             depth: vec![1.; count],
             stencil: vec![0; count],
+            samples: None,
         })
+    }
+    pub(crate) fn set_sample_count(&mut self, count: SampleCount) -> Result<()> {
+        if self.sample_count() == count {
+            return Ok(());
+        }
+        if count == SampleCount::One {
+            self.samples = None;
+            return Ok(());
+        }
+        let sample_count = count.get();
+        let sample_len = self
+            .depth
+            .len()
+            .checked_mul(sample_count)
+            .ok_or("multisample attachment size overflow")?;
+        if sample_len
+            .checked_mul(9)
+            .is_none_or(|bytes| bytes > 512 * 1024 * 1024)
+        {
+            return Err("multisample attachments exceed 512 MiB".into());
+        }
+        let mut colors = Vec::new();
+        let mut depth = Vec::new();
+        let mut stencil = Vec::new();
+        colors
+            .try_reserve_exact(sample_len)
+            .map_err(|_| "could not allocate multisample color attachment")?;
+        depth
+            .try_reserve_exact(sample_len)
+            .map_err(|_| "could not allocate multisample depth attachment")?;
+        stencil
+            .try_reserve_exact(sample_len)
+            .map_err(|_| "could not allocate multisample stencil attachment")?;
+        for index in 0..self.depth.len() {
+            let color = self.read(index).rgba8();
+            for _ in 0..sample_count {
+                colors.push(color);
+                depth.push(self.depth[index]);
+                stencil.push(self.stencil[index]);
+            }
+        }
+        self.samples = Some(MultisampleAttachments {
+            count: sample_count,
+            colors,
+            depth,
+            stencil,
+        });
+        Ok(())
+    }
+    pub(crate) fn sample_count(&self) -> SampleCount {
+        match self.samples.as_ref().map(|samples| samples.count) {
+            Some(2) => SampleCount::Two,
+            Some(4) => SampleCount::Four,
+            _ => SampleCount::One,
+        }
     }
     pub fn clear(&mut self, color: Color) {
         let mut c = color.rgba8();
@@ -79,12 +160,21 @@ impl Framebuffer {
         for p in self.pixels.chunks_exact_mut(4) {
             p.copy_from_slice(&c);
         }
+        if let Some(samples) = &mut self.samples {
+            samples.colors.fill(color.rgba8());
+        }
     }
     pub fn clear_depth(&mut self, z: f32) {
         self.depth.fill(z);
+        if let Some(samples) = &mut self.samples {
+            samples.depth.fill(z);
+        }
     }
     pub fn clear_stencil(&mut self, value: u8) {
         self.stencil.fill(value);
+        if let Some(samples) = &mut self.samples {
+            samples.stencil.fill(value);
+        }
     }
     pub fn bytes(&self) -> &[u8] {
         &self.pixels
@@ -93,7 +183,12 @@ impl Framebuffer {
         if x >= self.width || y >= self.height {
             return Err("pixel outside framebuffer".into());
         }
-        self.write((y * self.width + x) as usize, c);
+        let index = (y * self.width + x) as usize;
+        self.write(index, c);
+        if let Some(samples) = &mut self.samples {
+            let start = index * samples.count;
+            samples.colors[start..start + samples.count].fill(c.rgba8());
+        }
         Ok(())
     }
     pub fn pixel(&self, x: u32, y: u32) -> Option<Color> {
@@ -129,6 +224,127 @@ impl Framebuffer {
             c.swap(0, 2);
         }
         self.pixels[index * 4..index * 4 + 4].copy_from_slice(&c);
+    }
+    pub(crate) fn sample_depth(&self, index: usize, sample: usize) -> f32 {
+        self.samples.as_ref().map_or(self.depth[index], |samples| {
+            samples.depth[index * samples.count + sample]
+        })
+    }
+    pub(crate) fn sample_stencil(&self, index: usize, sample: usize) -> u8 {
+        self.samples
+            .as_ref()
+            .map_or(self.stencil[index], |samples| {
+                samples.stencil[index * samples.count + sample]
+            })
+    }
+    pub(crate) fn write_sample_depth(&mut self, index: usize, sample: usize, z: f32) {
+        if let Some(samples) = &mut self.samples {
+            let sample_index = index * samples.count + sample;
+            samples.depth[sample_index] = z;
+        } else {
+            self.depth[index] = z;
+        }
+    }
+    pub(crate) fn write_sample_stencil(&mut self, index: usize, sample: usize, value: u8) {
+        if let Some(samples) = &mut self.samples {
+            let sample_index = index * samples.count + sample;
+            samples.stencil[sample_index] = value;
+        } else {
+            self.stencil[index] = value;
+        }
+    }
+    pub(crate) fn read_sample_color(&self, index: usize, sample: usize) -> Color {
+        self.samples.as_ref().map_or_else(
+            || self.read(index),
+            |samples| Color::from_rgba8(samples.colors[index * samples.count + sample]),
+        )
+    }
+    pub(crate) fn write_sample_color(&mut self, index: usize, sample: usize, color: Color) {
+        if let Some(samples) = &mut self.samples {
+            let sample_index = index * samples.count + sample;
+            samples.colors[sample_index] = color.rgba8();
+        } else {
+            self.write(index, color);
+        }
+    }
+    pub(crate) fn resolve_samples(&mut self) {
+        let Self {
+            pixels,
+            depth,
+            stencil,
+            format,
+            samples,
+            ..
+        } = self;
+        let Some(samples) = samples.as_ref() else {
+            return;
+        };
+        let count = samples.count;
+        for index in 0..depth.len() {
+            let start = index * count;
+            let mut color = [0u32; 4];
+            for sample in &samples.colors[start..start + count] {
+                for channel in 0..4 {
+                    color[channel] += sample[channel] as u32;
+                }
+            }
+            let mut color =
+                color.map(|channel| ((channel + count as u32 / 2) / count as u32) as u8);
+            if *format == PixelFormat::Bgra8 {
+                color.swap(0, 2);
+            }
+            pixels[index * 4..index * 4 + 4].copy_from_slice(&color);
+            depth[index] = samples.depth[start..start + count]
+                .iter()
+                .copied()
+                .fold(f32::INFINITY, f32::min);
+            stencil[index] = samples.stencil[start];
+        }
+    }
+    pub(crate) fn band(&self, y: u32, height: u32) -> Result<Self> {
+        if height == 0 || y + height > self.height {
+            return Err("framebuffer band outside surface".into());
+        }
+        let start = (y * self.width) as usize;
+        let end = ((y + height) * self.width) as usize;
+        let sample_range = |count: usize| start * count..end * count;
+        Ok(Self {
+            width: self.width,
+            height,
+            stride: self.stride,
+            format: self.format,
+            pixels: self.pixels[start * 4..end * 4].to_vec(),
+            depth: self.depth[start..end].to_vec(),
+            stencil: self.stencil[start..end].to_vec(),
+            samples: self.samples.as_ref().map(|samples| MultisampleAttachments {
+                count: samples.count,
+                colors: samples.colors[sample_range(samples.count)].to_vec(),
+                depth: samples.depth[sample_range(samples.count)].to_vec(),
+                stencil: samples.stencil[sample_range(samples.count)].to_vec(),
+            }),
+        })
+    }
+    pub(crate) fn copy_band_from(&mut self, y: u32, band: &Self) -> Result<()> {
+        if band.width != self.width
+            || band.height == 0
+            || y + band.height > self.height
+            || self.sample_count() != band.sample_count()
+        {
+            return Err("incompatible framebuffer band".into());
+        }
+        let start = (y * self.width) as usize;
+        let end = start + (band.height * self.width) as usize;
+        self.pixels[start * 4..end * 4].copy_from_slice(&band.pixels);
+        self.depth[start..end].copy_from_slice(&band.depth);
+        self.stencil[start..end].copy_from_slice(&band.stencil);
+        if let (Some(dst), Some(src)) = (&mut self.samples, &band.samples) {
+            let sample_start = start * dst.count;
+            let sample_end = end * dst.count;
+            dst.colors[sample_start..sample_end].copy_from_slice(&src.colors);
+            dst.depth[sample_start..sample_end].copy_from_slice(&src.depth);
+            dst.stencil[sample_start..sample_end].copy_from_slice(&src.stencil);
+        }
+        Ok(())
     }
     pub fn present_into(&self, output: &mut [u32]) -> Result<()> {
         if output.len() != self.pixels.len() / 4 {

@@ -2,6 +2,8 @@ use crate::*;
 use std::time::{Duration, Instant};
 const SUBPIXEL: i64 = 256;
 const TILE: u32 = 16;
+const SAMPLE_2X: [(i64, i64); 2] = [(64, 64), (192, 192)];
+const SAMPLE_4X: [(i64, i64); 4] = [(96, 32), (224, 96), (32, 160), (160, 224)];
 #[derive(Clone, Debug, Default)]
 pub struct Statistics {
     pub shader_time: Duration,
@@ -77,6 +79,8 @@ struct PreparedFragment {
     previous_depth: f32,
     stencil_pass: bool,
     depth_pass: bool,
+    passing_samples: u8,
+    sample_depths: [f32; 4],
     debug: bool,
 }
 fn edge(a: ScreenVertex, b: ScreenVertex, x: i64, y: i64) -> i64 {
@@ -97,6 +101,13 @@ impl Renderer {
             debug_pixel: None,
             traces: Vec::new(),
         })
+    }
+    /// Select single-sample, 2× or 4× attachments before drawing.
+    pub fn set_sample_count(&mut self, count: SampleCount) -> Result<()> {
+        self.framebuffer.set_sample_count(count)
+    }
+    pub fn sample_count(&self) -> SampleCount {
+        self.framebuffer.sample_count()
     }
     pub fn clear(&mut self, color: Color) {
         self.framebuffer.clear(color);
@@ -176,30 +187,34 @@ impl Renderer {
         self.stats.vertices += vertices.len() as u64;
         self.stats.vertex_time += start.elapsed();
         let start = Instant::now();
-        for i in (0..count).step_by(3) {
-            let ix = |n: usize| indices.map_or(n, |ind| ind[n] as usize);
-            let original = [
-                transformed[ix(i)],
-                transformed[ix(i + 1)],
-                transformed[ix(i + 2)],
-            ];
-            let poly = clip_triangle(original);
-            self.stats.triangles += 1;
-            if poly.as_slice() != original.as_slice() {
-                self.stats.clipped += 1;
+        let render_result = (|| {
+            for i in (0..count).step_by(3) {
+                let ix = |n: usize| indices.map_or(n, |ind| ind[n] as usize);
+                let original = [
+                    transformed[ix(i)],
+                    transformed[ix(i + 1)],
+                    transformed[ix(i + 2)],
+                ];
+                let poly = clip_triangle(original);
+                self.stats.triangles += 1;
+                if poly.as_slice() != original.as_slice() {
+                    self.stats.clipped += 1;
+                }
+                let primitive = (self.stats.triangles - 1) as u32;
+                for k in 1..poly.len().saturating_sub(1) {
+                    self.triangle(
+                        [poly[0], poly[k], poly[k + 1]],
+                        primitive,
+                        pipeline,
+                        &fragment,
+                    )?;
+                }
             }
-            let primitive = (self.stats.triangles - 1) as u32;
-            for k in 1..poly.len().saturating_sub(1) {
-                self.triangle(
-                    [poly[0], poly[k], poly[k + 1]],
-                    primitive,
-                    pipeline,
-                    &fragment,
-                )?;
-            }
-        }
+            Ok(())
+        })();
+        self.framebuffer.resolve_samples();
         self.stats.raster_time += start.elapsed();
-        Ok(())
+        render_result
     }
     fn triangle<F: Fn(&[Fragment; 4], u8) -> Result<[Option<Color>; 4]>>(
         &mut self,
@@ -258,6 +273,18 @@ impl Renderer {
             .clamp(0, h as i64) as u32;
         let edges = [(s[1], s[2]), (s[2], s[0]), (s[0], s[1])];
         let inclusive = edges.map(|(a, b)| top_left(a, b));
+        let positions: &[(i64, i64)] = match self.framebuffer.sample_count() {
+            SampleCount::One => &[(SUBPIXEL / 2, SUBPIXEL / 2)],
+            SampleCount::Two => &SAMPLE_2X,
+            SampleCount::Four => &SAMPLE_4X,
+        };
+        let offsets: [[i64; 3]; 4] = std::array::from_fn(|sample| {
+            positions.get(sample).map_or([0; 3], |&(px, py)| {
+                edges.map(|(a, b)| {
+                    (b.x - a.x) * (py - SUBPIXEL / 2) - (b.y - a.y) * (px - SUBPIXEL / 2)
+                })
+            })
+        });
         let inv_area = 1. / area as f32;
         let dx = edges.map(|(a, b)| -(b.y - a.y) as f32 * SUBPIXEL as f32 * inv_area);
         let dy = edges.map(|(a, b)| (b.x - a.x) as f32 * SUBPIXEL as f32 * inv_area);
@@ -277,14 +304,34 @@ impl Renderer {
                     });
                     let step = edges.map(|(a, b)| -(b.y - a.y) * SUBPIXEL);
                     for x in (tx..end_x).step_by(4) {
-                        let mask = simd::coverage4(e, step, inclusive, self.backend);
+                        let mut coverage = [0u8; 4];
+                        for (sample, offset) in offsets.iter().enumerate().take(positions.len()) {
+                            let sample_edges = std::array::from_fn(|i| e[i] + offset[i]);
+                            let mask = simd::coverage4(sample_edges, step, inclusive, self.backend);
+                            for lane in 0..(end_x - x).min(4) {
+                                if mask & (1 << lane) != 0 {
+                                    coverage[lane as usize] |= 1 << sample;
+                                }
+                            }
+                        }
                         let mut prepared = [None; 4];
                         let mut inputs = [Fragment::default(); 4];
                         let mut active = 0u8;
                         for lane in 0..(end_x - x).min(4) {
-                            if mask & (1 << lane) != 0 {
-                                let bary = std::array::from_fn(|i| {
-                                    (e[i] + step[i] * lane as i64) as f32 * inv_area
+                            let coverage_samples = coverage[lane as usize];
+                            if coverage_samples != 0 {
+                                let sample = coverage_samples.trailing_zeros() as usize;
+                                let sample_barycentrics: [[f32; 3]; 4] =
+                                    std::array::from_fn(|sample| {
+                                        std::array::from_fn(|i| {
+                                            (e[i] + step[i] * lane as i64 + offsets[sample][i])
+                                                as f32
+                                                * inv_area
+                                        })
+                                    });
+                                let bary = sample_barycentrics[sample];
+                                let sample_depths = sample_barycentrics.map(|bary| {
+                                    (0..3).map(|i| bary[i] * s[i].z).sum::<f32>().clamp(0., 1.)
                                 });
                                 let p = self.prepare_fragment(
                                     x + lane,
@@ -295,10 +342,12 @@ impl Renderer {
                                     dy,
                                     s,
                                     state,
+                                    coverage_samples,
+                                    sample_depths,
                                 )?;
                                 if let Some(p) = p {
                                     inputs[lane as usize] = p.input;
-                                    if p.depth_pass && p.stencil_pass {
+                                    if p.passing_samples != 0 || p.debug {
                                         active |= 1 << lane;
                                     }
                                     prepared[lane as usize] = Some(p);
@@ -345,27 +394,55 @@ impl Renderer {
         dy: [f32; 3],
         s: [ScreenVertex; 3],
         state: Pipeline,
+        covered_samples: u8,
+        sample_depths: [f32; 4],
     ) -> Result<Option<PreparedFragment>> {
         self.stats.fragments += 1;
         let index = (y * self.framebuffer.width + x) as usize;
-        let z = (0..3).map(|i| bary[i] * s[i].z).sum::<f32>().clamp(0., 1.);
-        let old_depth = self.framebuffer.depth[index];
-        let stencil_pass = state.stencil.is_none_or(|st| {
-            st.compare.test(
-                st.reference & st.read_mask,
-                self.framebuffer.stencil[index] & st.read_mask,
-            )
-        });
-        let depth_pass = state.depth_compare.test(z, old_depth);
-        let debug = self.debug_pixel == Some((x, y + self.row_offset));
-        if !stencil_pass {
-            self.stats.stencil_rejected += 1;
-            self.stencil_op(index, state.stencil.map(|s| (s, s.fail)));
-        } else if !depth_pass {
-            self.stats.early_z_rejected += 1;
-            self.stencil_op(index, state.stencil.map(|s| (s, s.depth_fail)));
+        let z = sample_depths[covered_samples.trailing_zeros() as usize];
+        let mut previous_depth = None;
+        let mut stencil_samples = 0u8;
+        let mut depth_samples = 0u8;
+        let mut passing_samples = 0u8;
+        for (sample, &sample_depth) in sample_depths
+            .iter()
+            .enumerate()
+            .take(self.framebuffer.sample_count().get())
+        {
+            let bit = 1 << sample;
+            if covered_samples & bit == 0 {
+                continue;
+            }
+            let old_depth = self.framebuffer.sample_depth(index, sample);
+            previous_depth.get_or_insert(old_depth);
+            let stencil_pass = state.stencil.is_none_or(|st| {
+                st.compare.test(
+                    st.reference & st.read_mask,
+                    self.framebuffer.sample_stencil(index, sample) & st.read_mask,
+                )
+            });
+            let depth_pass = state.depth_compare.test(sample_depth, old_depth);
+            if stencil_pass {
+                stencil_samples |= bit;
+            }
+            if depth_pass {
+                depth_samples |= bit;
+            }
+            if !stencil_pass {
+                self.stats.stencil_rejected += 1;
+                self.stencil_op(index, sample, state.stencil.map(|s| (s, s.fail)));
+            } else if !depth_pass {
+                self.stats.early_z_rejected += 1;
+                self.stencil_op(index, sample, state.stencil.map(|s| (s, s.depth_fail)));
+            } else {
+                passing_samples |= bit;
+            }
         }
-        if !debug && (!stencil_pass || !depth_pass) {
+        let old_depth = previous_depth.unwrap_or(1.);
+        let stencil_pass = stencil_samples == covered_samples;
+        let depth_pass = depth_samples == covered_samples;
+        let debug = self.debug_pixel == Some((x, y + self.row_offset));
+        if !debug && passing_samples == 0 {
             return Ok(None);
         }
         let interpolate = |b: [f32; 3]| {
@@ -414,6 +491,8 @@ impl Renderer {
             previous_depth: old_depth,
             stencil_pass,
             depth_pass,
+            passing_samples,
+            sample_depths,
             debug,
         }))
     }
@@ -429,10 +508,11 @@ impl Renderer {
             previous_depth: old_depth,
             stencil_pass,
             depth_pass,
+            passing_samples,
+            sample_depths,
             debug,
         } = prepared;
-        let z = input.depth;
-        if stencil_pass && depth_pass && output.is_none() {
+        if passing_samples != 0 && output.is_none() {
             self.stats.discarded += 1;
         }
         if debug {
@@ -448,26 +528,46 @@ impl Renderer {
             if !color.0.is_finite() {
                 return Err("fragment shader produced a non-finite color".into());
             }
-            self.stencil_op(index, state.stencil.map(|s| (s, s.pass)));
-            if state.depth_write {
-                self.framebuffer.depth[index] = z;
-            }
-            let color = if state.blend == Blend::Replace {
-                color
-            } else {
-                state.blend.apply(color, self.framebuffer.read(index))
-            };
-            if state.color_write {
-                self.framebuffer.write(index, color);
+            for (sample, &sample_depth) in sample_depths
+                .iter()
+                .enumerate()
+                .take(self.framebuffer.sample_count().get())
+            {
+                if passing_samples & (1 << sample) == 0 {
+                    continue;
+                }
+                self.stencil_op(index, sample, state.stencil.map(|s| (s, s.pass)));
+                if state.depth_write {
+                    self.framebuffer
+                        .write_sample_depth(index, sample, sample_depth);
+                }
+                let color = if state.blend == Blend::Replace {
+                    color
+                } else {
+                    state
+                        .blend
+                        .apply(color, self.framebuffer.read_sample_color(index, sample))
+                };
+                if state.color_write {
+                    self.framebuffer.write_sample_color(index, sample, color);
+                }
             }
         }
         Ok(())
     }
-    fn stencil_op(&mut self, index: usize, state: Option<(StencilState, StencilOp)>) {
+    fn stencil_op(
+        &mut self,
+        index: usize,
+        sample: usize,
+        state: Option<(StencilState, StencilOp)>,
+    ) {
         if let Some((s, op)) = state {
-            let old = self.framebuffer.stencil[index];
-            self.framebuffer.stencil[index] =
-                (old & !s.write_mask) | (op.apply(old, s.reference) & s.write_mask);
+            let old = self.framebuffer.sample_stencil(index, sample);
+            self.framebuffer.write_sample_stencil(
+                index,
+                sample,
+                (old & !s.write_mask) | (op.apply(old, s.reference) & s.write_mask),
+            );
         }
     }
 }
@@ -543,21 +643,10 @@ impl Renderer {
         }
         let workers = threads.min(self.framebuffer.height as usize);
         let rows = self.framebuffer.height.div_ceil(workers as u32);
-        let width = self.framebuffer.width;
         let mut bands = Vec::new();
         for y in (0..self.framebuffer.height).step_by(rows as usize) {
             let height = rows.min(self.framebuffer.height - y);
-            let start = (y * width) as usize;
-            let end = ((y + height) * width) as usize;
-            let fb = Framebuffer {
-                width,
-                height,
-                stride: self.framebuffer.stride,
-                format: self.framebuffer.format,
-                pixels: self.framebuffer.pixels[start * 4..end * 4].to_vec(),
-                depth: self.framebuffer.depth[start..end].to_vec(),
-                stencil: self.framebuffer.stencil[start..end].to_vec(),
-            };
+            let fb = self.framebuffer.band(y, height)?;
             bands.push(Renderer {
                 framebuffer: fb,
                 backend: self.backend,
@@ -592,11 +681,8 @@ impl Renderer {
         self.stats = Statistics::default();
         self.traces.clear();
         for (i, band) in outputs.into_iter().enumerate() {
-            let start = (band.row_offset * width) as usize;
-            let end = start + (band.framebuffer.height * width) as usize;
-            self.framebuffer.pixels[start * 4..end * 4].copy_from_slice(&band.framebuffer.pixels);
-            self.framebuffer.depth[start..end].copy_from_slice(&band.framebuffer.depth);
-            self.framebuffer.stencil[start..end].copy_from_slice(&band.framebuffer.stencil);
+            self.framebuffer
+                .copy_band_from(band.row_offset, &band.framebuffer)?;
             if i == 0 {
                 self.stats.vertices = band.stats.vertices;
                 self.stats.triangles = band.stats.triangles;
