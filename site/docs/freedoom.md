@@ -31,13 +31,13 @@ as E1M2, for either rendering or interactive play. Each map uses its own
 player-1 start and the same SILICON pipeline. Special-11 exits load the next
 episode map when its marker exists. Special-51 secret exits load that episode's
 M9, whose ordinary exit returns to E1M4, E2M6, E3M7, or E4M3, respectively.
-Health, ammo, and keys carry forward while map-local counters reset. Episode-
+Health, ammo, keys, and armor carry forward while map-local counters reset. Episode-
 ending map exits stop at `EXITED` because the prototype has no finale. These
 routes follow id Software's
 [`G_DoCompleted`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/g_game.c)
 and [`P_UseSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c).
 The E1M2 capture below records the
-sector-clipped BSP-cell pass with its episode sky: 7,929 triangles across 299
+sector-clipped BSP-cell pass with its episode sky: 8,001 triangles across 335
 draws and 804 of 1,104 horizontal leaves. The sky texture fills the previously
 clear opening near the right edge. Visual completeness beyond E1M2 remains in
 progress. The first command writes
@@ -46,10 +46,17 @@ WASD to move and strafe, arrow keys to turn, Shift to run, Space to fire, `E`
 to open ordinary doors, operate manual lifts, or use the exit, and Escape to
 exit. Every frame submits the scene again through SILICON; movement stays inside
 a BSP-leaf floor, keeps a 16-unit margin from one-sided or explicitly blocking
-lines, limits steps to 24 units, and requires 56 units of ceiling clearance. Interactive WAD
-stim packs, medikits, clips, and ammo boxes render as cutout billboards and can
-be collected within 24 units when health or pistol ammo is below its cap of
-100 or 200. The player starts with
+lines, limits steps to 24 units, and requires 56 units of ceiling clearance.
+WAD stim packs, medikits, clips, ammo boxes, green/blue armor, armor bonuses,
+and keys render as cutout billboards. Pickups require clear sight and a 24-unit
+range. Health/ammo and armor upgrades stay on the map when they cannot improve
+the player's inventory; repeated keys and armor bonuses are consumed on contact.
+Health caps at 100,
+armor at 200, and pistol ammo at 200. Green armor absorbs one third of damage,
+blue armor one half, and armor bonuses add one point up to 200. These rules
+follow id Software's [`P_GiveArmor`, `P_TouchSpecialThing`, and
+`P_DamageMobj`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c).
+The player starts with
 50 pistol rounds. Press `E` within 64 units from the front of a special-1 door
 to raise its back sector at 70 units per second, wait 150 tics (about 4.3
 seconds), then close it. If the player or a living enemy is in the sector, the
@@ -129,8 +136,9 @@ pain chances: 200/256 for imps and former humans, 180/256 for demons, and
 170/256 for shotgunners. Successful rolls show the pain sprite for four tics
 on imps and demons or six tics on former humans and shotgunners. A deterministic
 local xorshift supplies rolls, so probabilities match but Doom's global random
-sequence does not. The window title
-reports health, ammo, pickups, kills, draw calls, and triangles. Imps launch a
+sequence does not. The window title reports health, armor points and class,
+ammo, pickups, kills, draw calls, and triangles. Melee, ranged, fireball, and
+nukage damage all use the same armor calculation. Imps launch a
 3D straight BAL1A0 fireball aimed at the player's body midpoint within 512
 units when they have clear sight. It travels at 180 units per second, lasts up
 to 3 seconds, and deals 8 damage on contact when the projectile height overlaps
@@ -167,8 +175,9 @@ bands reach the depth test first. This can reject hidden fragments before the
 fragment shader runs, while preserving the framebuffer; it does not implement
 Doom's BSP wall occlusion or per-column portal clipping. At the checked-in
 960×720 start view, 570 of 682 subsectors remain in the horizontal BSP view and
-SILICON submits 5,613 triangles across 210 draws: 5,509 map triangles, 64 sky
-triangles, 29 enemy billboards, ten pickup billboards, and one weapon billboard.
+SILICON submits 5,651 triangles across 229 draws. The WAD's 29 pickup things
+include nine health/ammo items, one blue card, one green armor, and 18 armor
+bonuses; none of the armor items appear in the checked-in capture.
 The sky draw follows opaque map batches with `LessEqual` depth testing and depth
 writes disabled, so the rasterizer rejects sky samples behind nearer map
 geometry before it runs the sky shader. The panorama sits 64 map units inside
@@ -178,15 +187,16 @@ the E1M1 output is byte-identical to the preceding capture. The earlier
 depth-band comparison measured 0.62 s against 0.69 s at its predecessor. These
 fixed-pose measurements are not engine-wide benchmarks. Earlier opaque-only counts were
 3,896 triangles and 164 draws for this view. The screenshot shows the player
-start, pistol, and a medikit; enemies are outside that camera view. A temporary
+start, pistol, and a medikit; enemies and the newly supported armor items are
+outside that camera view. A temporary
 WAD with only its player start moved was used to capture an enemy sprite in view;
 that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
-gib states, Doom's detailed actor navigation, other sound events, locked-door
-action variants, crossing specials other than 2 and 88, other use specials,
-episode finales, other weapons and their ammunition, and full weapon animation
+gib states, Doom's detailed actor navigation, other sound events, other
+power-ups, locked-door action variants, crossing specials other than 2 and 88,
+other use specials, episode finales, other weapons and their ammunition, and full weapon animation
 beyond the brief idle/fire pose remain unimplemented.
 `F_SKY1` ceilings use the map's episode sky texture, sampled by view angle. The
 checked-in [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was

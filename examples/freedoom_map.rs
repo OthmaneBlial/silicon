@@ -1572,7 +1572,15 @@ struct Pickup {
     health: i32,
     ammo: i32,
     keys: u8,
+    armor_points: i32,
+    armor_class: u8,
     active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Armor {
+    points: i32,
+    class: u8,
 }
 
 struct WallSection {
@@ -1717,18 +1725,21 @@ fn projectile_vertices(
     )
 }
 
-fn pickup_definition(kind: u16) -> Option<([u8; 4], i32, i32, u8)> {
+fn pickup_definition(kind: u16) -> Option<([u8; 4], i32, i32, u8, i32, u8)> {
     match kind {
-        5 => Some((*b"BKEY", 0, 0, KEY_BLUE)),
-        6 => Some((*b"YKEY", 0, 0, KEY_YELLOW)),
-        13 => Some((*b"RKEY", 0, 0, KEY_RED)),
-        40 => Some((*b"BSKU", 0, 0, KEY_BLUE)),
-        39 => Some((*b"YSKU", 0, 0, KEY_YELLOW)),
-        38 => Some((*b"RSKU", 0, 0, KEY_RED)),
-        2011 => Some((*b"STIM", 10, 0, 0)),
-        2012 => Some((*b"MEDI", 25, 0, 0)),
-        2007 => Some((*b"CLIP", 0, 10, 0)),
-        2048 => Some((*b"AMMO", 0, 50, 0)),
+        5 => Some((*b"BKEY", 0, 0, KEY_BLUE, 0, 0)),
+        6 => Some((*b"YKEY", 0, 0, KEY_YELLOW, 0, 0)),
+        13 => Some((*b"RKEY", 0, 0, KEY_RED, 0, 0)),
+        40 => Some((*b"BSKU", 0, 0, KEY_BLUE, 0, 0)),
+        39 => Some((*b"YSKU", 0, 0, KEY_YELLOW, 0, 0)),
+        38 => Some((*b"RSKU", 0, 0, KEY_RED, 0, 0)),
+        2011 => Some((*b"STIM", 10, 0, 0, 0, 0)),
+        2012 => Some((*b"MEDI", 25, 0, 0, 0, 0)),
+        2007 => Some((*b"CLIP", 0, 10, 0, 0, 0)),
+        2048 => Some((*b"AMMO", 0, 50, 0, 0, 0)),
+        2018 => Some((*b"ARM1", 0, 0, 0, 100, 1)),
+        2019 => Some((*b"ARM2", 0, 0, 0, 200, 2)),
+        2015 => Some((*b"BON2", 0, 0, 0, 1, 0)),
         _ => None,
     }
 }
@@ -1740,6 +1751,7 @@ fn collect_pickups(
     health: &mut i32,
     ammo: &mut i32,
     keys: &mut u8,
+    armor: &mut Armor,
 ) -> usize {
     let mut collected = 0;
     for pickup in pickups.iter_mut().filter(|pickup| pickup.active) {
@@ -1763,12 +1775,33 @@ fn collect_pickups(
         let next_health = (*health + pickup.health).min(100);
         let next_ammo = (*ammo + pickup.ammo).min(200);
         let next_keys = *keys | pickup.keys;
-        if next_health == *health && next_ammo == *ammo && next_keys == *keys && pickup.keys == 0 {
+        let mut next_armor = *armor;
+        if pickup.armor_class > 0 {
+            if next_armor.points < pickup.armor_points {
+                next_armor = Armor {
+                    points: pickup.armor_points,
+                    class: pickup.armor_class,
+                };
+            }
+        } else if pickup.armor_points > 0 && next_armor.points < 200 {
+            next_armor.points = (next_armor.points + pickup.armor_points).min(200);
+            if next_armor.class == 0 {
+                next_armor.class = 1;
+            }
+        }
+        if next_health == *health
+            && next_ammo == *ammo
+            && next_keys == *keys
+            && next_armor == *armor
+            && pickup.keys == 0
+            && !(pickup.armor_points > 0 && pickup.armor_class == 0)
+        {
             continue;
         }
         *health = next_health;
         *ammo = next_ammo;
         *keys = next_keys;
+        *armor = next_armor;
         pickup.active = false;
         collected += 1;
     }
@@ -2357,10 +2390,29 @@ fn discover_secret(map: &mut Map, player: Player) -> bool {
     })
 }
 
+fn damage_player(health: &mut i32, armor: &mut Armor, amount: i32) {
+    let mut damage = amount;
+    if armor.class > 0 {
+        let saved = (if armor.class == 1 {
+            damage / 3
+        } else {
+            damage / 2
+        })
+        .min(armor.points);
+        armor.points -= saved;
+        damage -= saved;
+        if armor.points == 0 {
+            armor.class = 0;
+        }
+    }
+    *health = (*health - damage).max(0);
+}
+
 fn update_floor_damage(
     map: &Map,
     player: Player,
     health: &mut i32,
+    armor: &mut Armor,
     elapsed_tics: &mut f32,
     delta: f32,
 ) {
@@ -2373,7 +2425,7 @@ fn update_floor_damage(
     *elapsed_tics += delta * DOOM_TICS_PER_SECOND;
     while *elapsed_tics >= NUKAGE_DAMAGE_TICS {
         *elapsed_tics -= NUKAGE_DAMAGE_TICS;
-        *health = (*health - NUKAGE_DAMAGE).max(0);
+        damage_player(health, armor, NUKAGE_DAMAGE);
     }
 }
 
@@ -3223,6 +3275,7 @@ fn update_actors(
     projectiles: &mut Vec<Projectile>,
     player: Player,
     health: &mut i32,
+    armor: &mut Armor,
     delta: f32,
 ) {
     let routes = sector_routes(map);
@@ -3273,7 +3326,7 @@ fn update_actors(
         }
         if distance < 48.0 && can_see_player {
             if actor.attack_cooldown == 0.0 {
-                *health -= 8;
+                damage_player(health, armor, 8);
                 actor.attack_cooldown = 0.85;
                 actor.attack_animation_remaining = actor_attack_duration(actor.sprite);
             }
@@ -3282,7 +3335,7 @@ fn update_actors(
             && can_see_player
         {
             if actor.attack_cooldown == 0.0 {
-                *health -= if actor.sprite == *b"SPOS" { 6 } else { 3 };
+                damage_player(health, armor, if actor.sprite == *b"SPOS" { 6 } else { 3 });
                 actor.attack_cooldown = 1.4;
                 actor.attack_animation_remaining = actor_attack_duration(actor.sprite);
             }
@@ -3354,6 +3407,7 @@ fn update_projectiles(
     projectiles: &mut Vec<Projectile>,
     player: Player,
     health: &mut i32,
+    armor: &mut Armor,
     delta: f32,
 ) {
     projectiles.retain_mut(|projectile| {
@@ -3404,7 +3458,7 @@ fn update_projectiles(
             && (player_floor..=player_floor + ACTOR_HEIGHT).contains(&projectile.z)
         {
             if *health > 0 {
-                *health -= 8;
+                damage_player(health, armor, 8);
             }
             projectile.explosion_time = Some(0.0);
         }
@@ -3510,7 +3564,9 @@ impl PreparedScene {
                     animation_time: 0.0,
                     angle: thing_angle as f32,
                 });
-            } else if let Some((prefix, health, ammo, keys)) = pickup_definition(kind) {
+            } else if let Some((prefix, health, ammo, keys, armor_points, armor_class)) =
+                pickup_definition(kind)
+            {
                 if let Entry::Vacant(entry) = pickup_sprites.entry(prefix) {
                     let mut name = [0; 8];
                     name[..4].copy_from_slice(&prefix);
@@ -3524,6 +3580,8 @@ impl PreparedScene {
                     health,
                     ammo,
                     keys,
+                    armor_points,
+                    armor_class,
                     active: true,
                 });
             }
@@ -3904,6 +3962,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     let mut health = 100;
     let mut ammo = 50;
     let mut keys = 0;
+    let mut armor = Armor::default();
     let mut light_rng = 0x4c49_4748u32;
     let mut sector_lights = spawn_sector_lights(&mut scene.map, &mut light_rng);
     let mut nukage_damage_tics = 0.0;
@@ -4046,6 +4105,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     &mut health,
                     &mut ammo,
                     &mut keys,
+                    &mut armor,
                 );
                 shot_cooldown = (shot_cooldown - delta).max(0.0);
                 weapon_flash = (weapon_flash - delta).max(0.0);
@@ -4066,6 +4126,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 &scene.map,
                 player,
                 &mut health,
+                &mut armor,
                 &mut nukage_damage_tics,
                 delta,
             );
@@ -4077,9 +4138,17 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 &mut projectiles,
                 player,
                 &mut health,
+                &mut armor,
                 delta,
             );
-            update_projectiles(&scene.map, &mut projectiles, player, &mut health, delta);
+            update_projectiles(
+                &scene.map,
+                &mut projectiles,
+                player,
+                &mut health,
+                &mut armor,
+                delta,
+            );
         }
         health = health.max(0);
         let (submission, static_draws) = scene.draw(
@@ -4104,8 +4173,10 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks).len();
         window.set_title(&format!(
-            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | ammo {ammo} | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | {} {state} | WASD move, arrows turn, Shift run, Space fire, E open/use | HP {health} | armor {}/{} | ammo {ammo} | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.map_name,
+            armor.points,
+            armor.class,
             keys & KEY_RED != 0,
             keys & KEY_YELLOW != 0,
             keys & KEY_BLUE != 0,
@@ -4119,11 +4190,13 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     }
     save_frame(&renderer, output)?;
     println!(
-        "{} session: {frames} SILICON-rendered frames, {} map(s), {kills} kills, {collected} pickups, {activated_sectors} sector actions, {} / {} secrets, health {health}, keys R{} Y{} B{}, exited {exited}; saved {}",
+        "{} session: {frames} SILICON-rendered frames, {} map(s), {kills} kills, {collected} pickups, {activated_sectors} sector actions, {} / {} secrets, health {health}, armor {}/{}, keys R{} Y{} B{}, exited {exited}; saved {}",
         scene.map_name,
         levels_completed + 1,
         session_secrets_found + secrets_found,
         session_secret_total + total_secrets,
+        armor.points,
+        armor.class,
         keys & KEY_RED != 0,
         keys & KEY_YELLOW != 0,
         keys & KEY_BLUE != 0,
@@ -4387,6 +4460,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             10.0 / 35.0,
         );
         assert_eq!(actors[0].x, 100.0);
@@ -4401,6 +4475,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.05,
         );
         assert_eq!(actors[0].target_time_remaining, ACTOR_TARGET_THRESHOLD);
@@ -4414,6 +4489,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.1,
         );
         assert!((actors[0].target_time_remaining - (ACTOR_TARGET_THRESHOLD - 0.1)).abs() < 0.0001);
@@ -4425,6 +4501,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             ACTOR_TARGET_THRESHOLD,
         );
         assert_eq!(actors[0].target_time_remaining, 0.0);
@@ -4437,6 +4514,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.05,
         );
         assert_eq!(health, 100);
@@ -4948,17 +5026,52 @@ mod tests {
         };
         let mut health = 100;
         let mut elapsed_tics = 0.0;
-        update_floor_damage(map, player, &mut health, &mut elapsed_tics, 0.5);
+        update_floor_damage(
+            map,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            &mut elapsed_tics,
+            0.5,
+        );
         assert_eq!(health, 100);
-        update_floor_damage(map, player, &mut health, &mut elapsed_tics, 0.4);
+        update_floor_damage(
+            map,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            &mut elapsed_tics,
+            0.4,
+        );
         assert_eq!(health, 100);
-        update_floor_damage(map, player, &mut health, &mut elapsed_tics, 0.03);
+        update_floor_damage(
+            map,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            &mut elapsed_tics,
+            0.03,
+        );
         assert_eq!(health, 95);
-        update_floor_damage(map, player, &mut health, &mut elapsed_tics, 0.9);
+        update_floor_damage(
+            map,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            &mut elapsed_tics,
+            0.9,
+        );
         assert_eq!(health, 90);
 
         map.sectors[0].special = 0;
-        update_floor_damage(map, player, &mut health, &mut elapsed_tics, 0.1);
+        update_floor_damage(
+            map,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            &mut elapsed_tics,
+            0.1,
+        );
         assert_eq!(elapsed_tics, 0.0);
         map.sectors[0].special = SECTOR_SECRET;
         assert!(discover_secret(map, player));
@@ -5768,6 +5881,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.5,
         );
         assert!(
@@ -6005,6 +6119,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.05,
         );
         assert!((wounded[0].pain_animation_remaining - (4.0 / 35.0 - 0.05)).abs() < 0.0001);
@@ -6033,6 +6148,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.1,
         );
         assert_eq!(actors[0].death_animation_time, Some(0.1));
@@ -6043,6 +6159,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.1,
         );
         assert_eq!(health, 0);
@@ -6056,6 +6173,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.05,
         );
         assert_eq!(health, 0);
@@ -6154,6 +6272,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             1.0,
         );
         assert_eq!(actors[0].x, 64.0);
@@ -6168,6 +6287,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.05,
         );
         assert_eq!(actors[0].animation_time, 0.0);
@@ -6185,6 +6305,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.05,
         );
         assert!(actors[0].attack_animation_remaining < actor_attack_duration(*b"SARG"));
@@ -6194,6 +6315,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.79,
         );
         assert_eq!(health, 92);
@@ -6203,6 +6325,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.02,
         );
         assert_eq!(health, 84);
@@ -6246,6 +6369,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.05,
         );
         assert_eq!(health, 100);
@@ -6257,6 +6381,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.05,
         );
         assert_eq!(health, 97);
@@ -6266,6 +6391,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.2,
         );
         assert_eq!(health, 97);
@@ -6278,6 +6404,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.05,
         );
         assert_eq!(health, 91);
@@ -6360,6 +6487,7 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.05,
         );
         assert!(projectiles.is_empty());
@@ -6371,25 +6499,54 @@ mod tests {
             &mut projectiles,
             player,
             &mut health,
+            &mut Armor::default(),
             0.05,
         );
         assert_eq!(projectiles.len(), 1);
         assert_eq!(projectiles[0].z, 60.0);
         assert!(projectiles[0].velocity_z < 0.0);
-        update_projectiles(&map, &mut projectiles, player, &mut health, 0.4);
+        update_projectiles(
+            &map,
+            &mut projectiles,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            0.4,
+        );
         assert_eq!(health, 100);
         assert!(projectiles[0].z < 60.0);
-        update_projectiles(&map, &mut projectiles, player, &mut health, 0.1);
+        update_projectiles(
+            &map,
+            &mut projectiles,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            0.1,
+        );
         assert_eq!(health, 92);
         assert_eq!(projectiles.len(), 1);
         assert_eq!(projectiles[0].explosion_time, Some(0.0));
-        update_projectiles(&map, &mut projectiles, player, &mut health, 0.2);
+        update_projectiles(
+            &map,
+            &mut projectiles,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            0.2,
+        );
         assert_eq!(health, 92);
         assert_eq!(
             projectile_explosion_frame(projectiles[0].explosion_time.unwrap()),
             Some(1)
         );
-        update_projectiles(&map, &mut projectiles, player, &mut health, 0.4);
+        update_projectiles(
+            &map,
+            &mut projectiles,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            0.4,
+        );
         assert!(projectiles.is_empty());
 
         projectiles.push(Projectile {
@@ -6403,14 +6560,28 @@ mod tests {
             explosion_time: None,
         });
         map.lines[2][2] = 1;
-        update_projectiles(&map, &mut projectiles, player, &mut health, 0.3);
+        update_projectiles(
+            &map,
+            &mut projectiles,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            0.3,
+        );
         assert_eq!(projectiles.len(), 1);
         assert_eq!(projectiles[0].explosion_time, Some(0.0));
         assert!((projectiles[0].x - 50.0).abs() < 0.01);
         assert!((projectiles[0].z - 44.722).abs() < 0.05);
         assert_eq!(health, 92);
         health = 0;
-        update_projectiles(&map, &mut projectiles, player, &mut health, 0.2);
+        update_projectiles(
+            &map,
+            &mut projectiles,
+            player,
+            &mut health,
+            &mut Armor::default(),
+            0.2,
+        );
         assert_eq!(health, 0);
         assert_eq!(projectiles[0].explosion_time, Some(0.2));
     }
@@ -6425,8 +6596,11 @@ mod tests {
             (39, *b"YSKU", KEY_YELLOW),
             (38, *b"RSKU", KEY_RED),
         ] {
-            assert_eq!(pickup_definition(kind), Some((sprite, 0, 0, key)));
+            assert_eq!(pickup_definition(kind), Some((sprite, 0, 0, key, 0, 0)));
         }
+        assert_eq!(pickup_definition(2018), Some((*b"ARM1", 0, 0, 0, 100, 1)));
+        assert_eq!(pickup_definition(2019), Some((*b"ARM2", 0, 0, 0, 200, 2)));
+        assert_eq!(pickup_definition(2015), Some((*b"BON2", 0, 0, 0, 1, 0)));
         let mut map = Map {
             vertices: vec![Vertex2 { x: 12.0, y: -32.0 }, Vertex2 { x: 12.0, y: 32.0 }],
             sectors: vec![],
@@ -6450,6 +6624,8 @@ mod tests {
                 health: 10,
                 ammo: 0,
                 keys: 0,
+                armor_points: 0,
+                armor_class: 0,
                 active: true,
             },
             Pickup {
@@ -6459,6 +6635,8 @@ mod tests {
                 health: 0,
                 ammo: 10,
                 keys: 0,
+                armor_points: 0,
+                armor_class: 0,
                 active: true,
             },
             Pickup {
@@ -6468,6 +6646,8 @@ mod tests {
                 health: 25,
                 ammo: 0,
                 keys: 0,
+                armor_points: 0,
+                armor_class: 0,
                 active: true,
             },
             Pickup {
@@ -6477,6 +6657,8 @@ mod tests {
                 health: 0,
                 ammo: 0,
                 keys: KEY_BLUE,
+                armor_points: 0,
+                armor_class: 0,
                 active: true,
             },
             Pickup {
@@ -6486,6 +6668,8 @@ mod tests {
                 health: 0,
                 ammo: 0,
                 keys: KEY_YELLOW,
+                armor_points: 0,
+                armor_class: 0,
                 active: true,
             },
             Pickup {
@@ -6495,12 +6679,15 @@ mod tests {
                 health: 0,
                 ammo: 0,
                 keys: KEY_RED,
+                armor_points: 0,
+                armor_class: 0,
                 active: true,
             },
         ];
         let mut health = 95;
         let mut ammo = 195;
         let mut keys = 0;
+        let mut armor = Armor::default();
         assert_eq!(
             collect_pickups(
                 &map,
@@ -6508,7 +6695,8 @@ mod tests {
                 player,
                 &mut health,
                 &mut ammo,
-                &mut keys
+                &mut keys,
+                &mut armor
             ),
             5
         );
@@ -6524,7 +6712,8 @@ mod tests {
                 player,
                 &mut health,
                 &mut ammo,
-                &mut keys
+                &mut keys,
+                &mut armor
             ),
             1
         );
@@ -6536,7 +6725,8 @@ mod tests {
                 player,
                 &mut health,
                 &mut ammo,
-                &mut keys
+                &mut keys,
+                &mut armor
             ),
             0
         );
@@ -6548,7 +6738,8 @@ mod tests {
                 player,
                 &mut health,
                 &mut ammo,
-                &mut keys
+                &mut keys,
+                &mut armor
             ),
             0
         );
@@ -6562,14 +6753,163 @@ mod tests {
             health: 10,
             ammo: 0,
             keys: 0,
+            armor_points: 0,
+            armor_class: 0,
             active: true,
         }];
         health = 80;
         assert_eq!(
-            collect_pickups(&map, &mut hidden, player, &mut health, &mut ammo, &mut keys),
+            collect_pickups(
+                &map,
+                &mut hidden,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor
+            ),
             0
         );
         assert_eq!(health, 80);
         assert!(hidden[0].active);
+    }
+
+    #[test]
+    fn armor_absorbs_doom_damage_fractions_and_breaks_at_zero() {
+        let mut health = 100;
+        let mut armor = Armor {
+            points: 100,
+            class: 1,
+        };
+        damage_player(&mut health, &mut armor, 8);
+        assert_eq!(
+            (health, armor),
+            (
+                94,
+                Armor {
+                    points: 98,
+                    class: 1
+                }
+            )
+        );
+
+        armor.class = 2;
+        damage_player(&mut health, &mut armor, 8);
+        assert_eq!(
+            (health, armor),
+            (
+                90,
+                Armor {
+                    points: 94,
+                    class: 2
+                }
+            )
+        );
+
+        armor.points = 2;
+        armor.class = 1;
+        damage_player(&mut health, &mut armor, 6);
+        assert_eq!((health, armor), (86, Armor::default()));
+
+        damage_player(&mut health, &mut armor, 8);
+        assert_eq!(health, 78);
+    }
+
+    #[test]
+    fn armor_pickups_upgrade_and_bonus_points_stop_at_two_hundred() {
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut health = 100;
+        let mut ammo = 50;
+        let mut keys = 0;
+        let mut armor = Armor::default();
+        let pickup = |sprite, armor_points, armor_class| Pickup {
+            sprite,
+            x: 0.0,
+            y: 0.0,
+            health: 0,
+            ammo: 0,
+            keys: 0,
+            armor_points,
+            armor_class,
+            active: true,
+        };
+        let mut pickups = [
+            pickup(*b"ARM1", 100, 1),
+            pickup(*b"BON2", 1, 0),
+            pickup(*b"ARM2", 200, 2),
+        ];
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+            ),
+            3
+        );
+        assert_eq!(
+            armor,
+            Armor {
+                points: 200,
+                class: 2
+            }
+        );
+
+        pickups.iter_mut().for_each(|pickup| pickup.active = true);
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+            ),
+            1
+        );
+        assert!(pickups[0].active && !pickups[1].active && pickups[2].active);
+
+        armor = Armor {
+            points: 50,
+            class: 2,
+        };
+        pickups[0].active = true;
+        assert_eq!(
+            collect_pickups(
+                &map,
+                &mut pickups[..1],
+                player,
+                &mut health,
+                &mut ammo,
+                &mut keys,
+                &mut armor,
+            ),
+            1
+        );
+        assert_eq!(
+            armor,
+            Armor {
+                points: 100,
+                class: 1
+            }
+        );
     }
 }

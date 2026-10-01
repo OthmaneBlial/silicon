@@ -6,6 +6,8 @@
   to the original episode path when the target map exists in the WAD.
 - Render and collect all six Doom keycard/skull map things; red, yellow, and blue
   keys now open their matching special-28, special-27, and special-26 doors.
+- Add Doom green/blue armor and armor bonuses, with damage absorption for
+  melee, hitscan, fireball, and nukage attacks.
 
 ## 0.7.0 — 2026-10-01
 
