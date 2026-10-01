@@ -105,15 +105,16 @@ subset. The original positions and RGB colors, adapted vertex shader, and
 unchanged upstream fragment shader run through SILICON. See the
 [source, license, and adaptation notes](docs/third-party-demo.md).
 
-Phase 70 now has a first real-WAD checkpoint: `examples/freedoom_map.rs` reads
-Freedoom E1M1 and submits 5,088 map-geometry triangles through SILICON's GLSL
-SPIR-V pipeline. This is a static, solid-color scene render, not playable Doom;
-the [WAD source, run command, screenshot, license, and current limits](docs/freedoom.md)
+Phase 70 now reads Freedoom E1M1, palette-decodes its real floor and ceiling
+flats, composes its opaque wall textures from WAD patches, and submits 4,812
+triangles across 141 SILICON draws through the textured SPIR-V pipeline. This
+static view is not playable Doom. The
+[WAD source, run command, screenshot, license, and remaining limits](docs/freedoom.md)
 are documented. The Freedoom WAD stays external.
 
 ![Freedoom E1M1 geometry rendered from its player start by SILICON](assets/screenshots/freedoom_e1m1.png)
 
-*Static E1M1 geometry rendered by SILICON; surface colors use sector light levels.*
+*Static E1M1 geometry rendered by SILICON; WAD flats and opaque walls use their palette and sector lighting.*
 
 ## Programmable, observable, reproducible
 

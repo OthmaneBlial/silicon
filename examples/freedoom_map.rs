@@ -1,7 +1,10 @@
 //! Render Freedoom's E1M1 geometry through SILICON's programmable pipeline.
-use silicon::api::{self, Color, Device, Pipeline, Renderer, Vec2, Vec3, Vec4, Vertex};
+use silicon::api::{
+    self, Address, Color, Device, Filter, MipFilter, Pipeline, Renderer, Sampler, Texture,
+    TextureFormat, Vec2, Vec3, Vec4, Vertex,
+};
 use silicon_math::Mat4;
-use std::{fs, io, path::Path};
+use std::{collections::BTreeMap, fs, io, path::Path, sync::Arc};
 
 const MAP_LUMPS: [&str; 11] = [
     "E1M1", "THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES", "SEGS", "SSECTORS", "NODES", "SECTORS",
@@ -35,14 +38,26 @@ struct Sector {
     floor: f32,
     ceiling: f32,
     light: u8,
+    floor_flat: [u8; 8],
+    ceiling_flat: [u8; 8],
+}
+
+#[derive(Clone, Copy)]
+struct SideDef {
+    x_offset: i16,
+    y_offset: i16,
+    upper: [u8; 8],
+    lower: [u8; 8],
+    middle: [u8; 8],
+    sector: u16,
 }
 
 struct Map {
     vertices: Vec<Vertex2>,
     sectors: Vec<Sector>,
-    sides: Vec<u16>,
-    lines: Vec<[u16; 4]>, // endpoints, side 0, side 1
-    segs: Vec<[u16; 4]>,  // endpoints, linedef, side
+    sides: Vec<SideDef>,
+    lines: Vec<[u16; 5]>, // endpoints, flags, side 0, side 1
+    segs: Vec<[u16; 5]>,  // endpoints, linedef, side, texture offset
     subsectors: Vec<[u16; 2]>,
     things: Vec<(i16, i16, u16, u16)>, // x, y, angle, type
 }
@@ -56,6 +71,13 @@ fn u16_at(data: &[u8], offset: usize) -> Result<u16, io::Error> {
         .get(offset..offset + 2)
         .ok_or_else(|| invalid("truncated 16-bit value"))?;
     Ok(u16::from_le_bytes(bytes.try_into().unwrap()))
+}
+
+fn u32_at(data: &[u8], offset: usize) -> Result<u32, io::Error> {
+    let bytes = data
+        .get(offset..offset + 4)
+        .ok_or_else(|| invalid("truncated 32-bit value"))?;
+    Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
 }
 
 fn i16_at(data: &[u8], offset: usize) -> Result<i16, io::Error> {
@@ -150,20 +172,47 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
                 floor: i16_at(r, 0)? as f32,
                 ceiling: i16_at(r, 2)? as f32,
                 light,
+                floor_flat: r[4..12].try_into().unwrap(),
+                ceiling_flat: r[12..20].try_into().unwrap(),
             })
         })
         .collect::<Result<_, io::Error>>()?;
-    let sides: Vec<u16> = records(3, 30)?
+    let sides: Vec<SideDef> = records(3, 30)?
         .into_iter()
-        .map(|r| u16_at(r, 28))
-        .collect::<Result<_, _>>()?;
-    let lines: Vec<[u16; 4]> = records(2, 14)?
-        .into_iter()
-        .map(|r| Ok([u16_at(r, 0)?, u16_at(r, 2)?, u16_at(r, 10)?, u16_at(r, 12)?]))
+        .map(|r| {
+            Ok(SideDef {
+                x_offset: i16_at(r, 0)?,
+                y_offset: i16_at(r, 2)?,
+                upper: r[4..12].try_into().unwrap(),
+                lower: r[12..20].try_into().unwrap(),
+                middle: r[20..28].try_into().unwrap(),
+                sector: u16_at(r, 28)?,
+            })
+        })
         .collect::<Result<_, io::Error>>()?;
-    let segs: Vec<[u16; 4]> = records(5, 12)?
+    let lines: Vec<[u16; 5]> = records(2, 14)?
         .into_iter()
-        .map(|r| Ok([u16_at(r, 0)?, u16_at(r, 2)?, u16_at(r, 6)?, u16_at(r, 8)?]))
+        .map(|r| {
+            Ok([
+                u16_at(r, 0)?,
+                u16_at(r, 2)?,
+                u16_at(r, 4)?,
+                u16_at(r, 10)?,
+                u16_at(r, 12)?,
+            ])
+        })
+        .collect::<Result<_, io::Error>>()?;
+    let segs: Vec<[u16; 5]> = records(5, 12)?
+        .into_iter()
+        .map(|r| {
+            Ok([
+                u16_at(r, 0)?,
+                u16_at(r, 2)?,
+                u16_at(r, 6)?,
+                u16_at(r, 8)?,
+                u16_at(r, 10)?,
+            ])
+        })
         .collect::<Result<_, io::Error>>()?;
     let subsectors: Vec<[u16; 2]> = records(6, 4)?
         .into_iter()
@@ -177,14 +226,14 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
     for line in &lines {
         if line[0] as usize >= vertices.len()
             || line[1] as usize >= vertices.len()
-            || (line[2] != u16::MAX && line[2] as usize >= sides.len())
             || (line[3] != u16::MAX && line[3] as usize >= sides.len())
+            || (line[4] != u16::MAX && line[4] as usize >= sides.len())
         {
             return Err(invalid("LINEDEFS references an invalid vertex or side"));
         }
     }
-    for &sector in &sides {
-        if sector as usize >= sectors.len() {
+    for side in &sides {
+        if side.sector as usize >= sectors.len() {
             return Err(invalid("SIDEDEFS references an invalid sector"));
         }
     }
@@ -196,7 +245,7 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
         {
             return Err(invalid("SEGS references an invalid vertex, line, or side"));
         }
-        let side = lines[seg[2] as usize][2 + seg[3] as usize];
+        let side = lines[seg[2] as usize][3 + seg[3] as usize];
         if side == u16::MAX || side as usize >= sides.len() {
             return Err(invalid("SEGS references a missing sidedef"));
         }
@@ -217,6 +266,310 @@ fn parse_map(data: &[u8]) -> Result<Map, io::Error> {
     })
 }
 
+fn lump_bytes<'a>(data: &'a [u8], lumps: &[Lump], name: [u8; 8]) -> Result<&'a [u8], io::Error> {
+    let lump = lumps
+        .iter()
+        .rev()
+        .find(|lump| lump.name == name)
+        .ok_or_else(|| {
+            invalid(format!(
+                "WAD lump {} not found",
+                String::from_utf8_lossy(&name)
+            ))
+        })?;
+    Ok(&data[lump.offset..lump.offset + lump.size])
+}
+
+fn named_lump(data: &[u8], name: [u8; 8]) -> Result<&[u8], io::Error> {
+    lump_bytes(data, &wad_lumps(data)?, name)
+}
+
+fn paletted_rgba(indices: &[u8], palette: &[u8]) -> Result<Vec<u8>, io::Error> {
+    if palette.len() < 256 * 3 {
+        return Err(invalid("PLAYPAL does not contain a complete palette"));
+    }
+    let mut rgba = Vec::with_capacity(indices.len() * 4);
+    for &index in indices {
+        let rgb = &palette[index as usize * 3..][..3];
+        rgba.extend_from_slice(rgb);
+        rgba.push(255);
+    }
+    Ok(rgba)
+}
+
+fn flat_textures(data: &[u8], map: &Map) -> api::Result<BTreeMap<[u8; 8], Arc<Texture>>> {
+    let palette = named_lump(data, *b"PLAYPAL\0")?;
+    let mut textures = BTreeMap::new();
+    for name in map
+        .sectors
+        .iter()
+        .flat_map(|sector| [sector.floor_flat, sector.ceiling_flat])
+        .filter(|&name| name != *b"F_SKY1\0\0")
+    {
+        if textures.contains_key(&name) {
+            continue;
+        }
+        let flat = named_lump(data, name)?;
+        let pixels = flat.get(..64 * 64).ok_or_else(|| {
+            invalid(format!(
+                "flat {} is shorter than 64x64",
+                String::from_utf8_lossy(&name)
+            ))
+        })?;
+        let rgba = paletted_rgba(pixels, palette)?;
+        textures.insert(
+            name,
+            Arc::new(Texture::new(64, 64, TextureFormat::Rgba8, &rgba)?),
+        );
+    }
+    Ok(textures)
+}
+
+#[derive(Clone, Copy)]
+struct PatchPlacement {
+    x: i16,
+    y: i16,
+    index: u16,
+}
+
+struct TextureDef {
+    width: u16,
+    height: u16,
+    patches: Vec<PatchPlacement>,
+}
+
+fn texture_definitions(
+    bytes: &[u8],
+    definitions: &mut BTreeMap<[u8; 8], TextureDef>,
+) -> Result<(), io::Error> {
+    let count = i32::from_le_bytes(
+        bytes
+            .get(..4)
+            .ok_or_else(|| invalid("truncated TEXTURE directory"))?
+            .try_into()
+            .unwrap(),
+    );
+    if !(0..=65_536).contains(&count) {
+        return Err(invalid("invalid TEXTURE definition count"));
+    }
+    let count = count as usize;
+    let directory_size = 4usize
+        .checked_add(
+            count
+                .checked_mul(4)
+                .ok_or_else(|| invalid("TEXTURE directory overflow"))?,
+        )
+        .filter(|&size| size <= bytes.len())
+        .ok_or_else(|| invalid("TEXTURE directory exceeds lump"))?;
+    for index in 0..count {
+        let offset = u32_at(bytes, 4 + index * 4)? as usize;
+        if offset < directory_size {
+            return Err(invalid("TEXTURE definition overlaps its directory"));
+        }
+        let name: [u8; 8] = bytes
+            .get(offset..offset + 8)
+            .ok_or_else(|| invalid("truncated TEXTURE definition name"))?
+            .try_into()
+            .unwrap();
+        let width = u16_at(bytes, offset + 12)?;
+        let height = u16_at(bytes, offset + 14)?;
+        let patch_count = u16_at(bytes, offset + 20)? as usize;
+        let end = offset
+            .checked_add(22)
+            .and_then(|start| start.checked_add(patch_count.checked_mul(10)?))
+            .filter(|&end| end <= bytes.len())
+            .ok_or_else(|| invalid("TEXTURE patches exceed lump"))?;
+        if width == 0
+            || height == 0
+            || width > 4096
+            || height > 4096
+            || width as usize * height as usize > 16_777_216
+        {
+            return Err(invalid("TEXTURE dimensions exceed sample limits"));
+        }
+        let mut patches = Vec::with_capacity(patch_count);
+        for patch in (offset + 22..end).step_by(10) {
+            patches.push(PatchPlacement {
+                x: i16_at(bytes, patch)?,
+                y: i16_at(bytes, patch + 2)?,
+                index: u16_at(bytes, patch + 4)?,
+            });
+        }
+        definitions.insert(
+            name,
+            TextureDef {
+                width,
+                height,
+                patches,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn composite_patch(
+    canvas: &mut [u8],
+    canvas_width: u16,
+    canvas_height: u16,
+    patch: &[u8],
+    origin_x: i16,
+    origin_y: i16,
+    palette: &[u8],
+) -> Result<(), io::Error> {
+    if patch.len() < 8 {
+        return Err(invalid("truncated Doom patch header"));
+    }
+    let width = u16_at(patch, 0)? as usize;
+    let height = u16_at(patch, 2)? as usize;
+    if width == 0 || height == 0 || width > 4096 || height > 4096 {
+        return Err(invalid("Doom patch dimensions exceed sample limits"));
+    }
+    let columns_end = 8usize
+        .checked_add(
+            width
+                .checked_mul(4)
+                .ok_or_else(|| invalid("patch column table overflow"))?,
+        )
+        .filter(|&end| end <= patch.len())
+        .ok_or_else(|| invalid("patch column table exceeds lump"))?;
+    let canvas_width = canvas_width as i32;
+    let canvas_height = canvas_height as i32;
+    for column in 0..width {
+        let mut cursor = u32_at(patch, 8 + column * 4)? as usize;
+        if cursor < columns_end || cursor >= patch.len() {
+            return Err(invalid("patch column offset exceeds lump"));
+        }
+        let mut previous_top: Option<i32> = None;
+        let mut terminated = false;
+        while cursor < patch.len() {
+            let top_delta = patch[cursor];
+            if top_delta == 255 {
+                terminated = true;
+                break;
+            }
+            let length = *patch
+                .get(cursor + 1)
+                .ok_or_else(|| invalid("truncated patch post"))? as usize;
+            let post_end = cursor
+                .checked_add(length + 4)
+                .filter(|&end| end <= patch.len())
+                .ok_or_else(|| invalid("patch post exceeds lump"))?;
+            let top_delta = top_delta as i32;
+            let top = previous_top
+                .filter(|&previous| top_delta <= previous)
+                .map_or(top_delta, |previous| previous + top_delta);
+            previous_top = Some(top);
+            for row in 0..length {
+                let dst_x = origin_x as i32 + column as i32;
+                let dst_y = origin_y as i32 + top + row as i32;
+                if (0..canvas_width).contains(&dst_x) && (0..canvas_height).contains(&dst_y) {
+                    let palette_index = patch[cursor + 3 + row] as usize;
+                    let source = &palette[palette_index * 3..][..3];
+                    let offset = (dst_y as usize * canvas_width as usize + dst_x as usize) * 4;
+                    canvas[offset..offset + 3].copy_from_slice(source);
+                    canvas[offset + 3] = 255;
+                }
+            }
+            cursor = post_end;
+        }
+        if !terminated {
+            return Err(invalid("unterminated Doom patch column"));
+        }
+    }
+    Ok(())
+}
+
+fn wall_textures(data: &[u8], map: &Map) -> api::Result<BTreeMap<[u8; 8], Arc<Texture>>> {
+    let lumps = wad_lumps(data)?;
+    let palette = lump_bytes(data, &lumps, *b"PLAYPAL\0")?;
+    if palette.len() < 256 * 3 {
+        return Err(invalid("PLAYPAL does not contain a complete palette").into());
+    }
+    let pnames = lump_bytes(data, &lumps, *b"PNAMES\0\0")?;
+    let patch_count = i32::from_le_bytes(
+        pnames
+            .get(..4)
+            .ok_or_else(|| invalid("truncated PNAMES"))?
+            .try_into()
+            .unwrap(),
+    );
+    if !(0..=65_536).contains(&patch_count) {
+        return Err(invalid("invalid PNAMES entry count").into());
+    }
+    let patch_count = patch_count as usize;
+    let pnames_end = 4usize
+        .checked_add(
+            patch_count
+                .checked_mul(8)
+                .ok_or_else(|| invalid("PNAMES overflow"))?,
+        )
+        .filter(|&end| end <= pnames.len())
+        .ok_or_else(|| invalid("PNAMES table exceeds lump"))?;
+    let patch_names = pnames[4..pnames_end]
+        .chunks_exact(8)
+        .map(|name| <[u8; 8]>::try_from(name).unwrap())
+        .collect::<Vec<_>>();
+    let mut definitions = BTreeMap::new();
+    texture_definitions(lump_bytes(data, &lumps, *b"TEXTURE1")?, &mut definitions)?;
+    if let Ok(texture2) = lump_bytes(data, &lumps, *b"TEXTURE2") {
+        texture_definitions(texture2, &mut definitions)?;
+    }
+
+    let names = map
+        .sides
+        .iter()
+        .flat_map(|side| [side.upper, side.lower, side.middle])
+        .filter(|name| name[0] != b'-' && name.iter().any(|&byte| byte != 0))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut textures = BTreeMap::new();
+    let mut total_pixels = 0usize;
+    let first_color = &palette[..3];
+    for name in names {
+        let Some(definition) = definitions.get(&name) else {
+            return Err(invalid(format!(
+                "wall texture {} has no definition",
+                String::from_utf8_lossy(&name)
+            ))
+            .into());
+        };
+        total_pixels = total_pixels
+            .checked_add(definition.width as usize * definition.height as usize)
+            .filter(|&total| total <= 16_777_216)
+            .ok_or_else(|| invalid("decoded wall textures exceed the 16M-pixel sample limit"))?;
+        let mut rgba =
+            Vec::with_capacity(definition.width as usize * definition.height as usize * 4);
+        for _ in 0..definition.width as usize * definition.height as usize {
+            rgba.extend_from_slice(first_color);
+            rgba.push(255);
+        }
+        for placement in &definition.patches {
+            let patch_name = patch_names
+                .get(placement.index as usize)
+                .ok_or_else(|| invalid("TEXTURE references an invalid PNAMES index"))?;
+            let patch = lump_bytes(data, &lumps, *patch_name)?;
+            composite_patch(
+                &mut rgba,
+                definition.width,
+                definition.height,
+                patch,
+                placement.x,
+                placement.y,
+                palette,
+            )?;
+        }
+        textures.insert(
+            name,
+            Arc::new(Texture::new(
+                definition.width as u32,
+                definition.height as u32,
+                TextureFormat::Rgba8,
+                &rgba,
+            )?),
+        );
+    }
+    Ok(textures)
+}
+
 fn world(point: Vertex2, height: f32) -> Vec3 {
     Vec3::new(point.x, height, -point.y)
 }
@@ -226,26 +579,21 @@ fn shaded(rgb: [f32; 3], sector: Sector) -> Vec4 {
     Vec4::new(rgb[0] * light, rgb[1] * light, rgb[2] * light, 1.0)
 }
 
-fn push_triangle(out: &mut Vec<Vertex>, a: Vec3, b: Vec3, c: Vec3, color: Vec4) {
-    if (b - a).cross(c - a).length() > 0.01 {
-        for position in [a, b, c] {
+fn push_triangle_uv(out: &mut Vec<Vertex>, points: [(Vec3, Vec2); 3], color: Vec4) {
+    if (points[1].0 - points[0].0)
+        .cross(points[2].0 - points[0].0)
+        .length()
+        > 0.01
+    {
+        for (position, uv) in points {
             out.push(Vertex {
                 position,
                 normal: Vec3::new(0.0, 1.0, 0.0),
-                uv: Vec2::ZERO,
+                uv,
                 color,
             });
         }
     }
-}
-
-fn push_quad(out: &mut Vec<Vertex>, a: Vertex2, b: Vertex2, low: f32, high: f32, color: Vec4) {
-    let a0 = world(a, low);
-    let b0 = world(b, low);
-    let b1 = world(b, high);
-    let a1 = world(a, high);
-    push_triangle(out, a0, b0, b1, color);
-    push_triangle(out, a0, b1, a1, color);
 }
 
 fn convex_hull(mut points: Vec<Vertex2>) -> Vec<Vertex2> {
@@ -276,12 +624,72 @@ fn convex_hull(mut points: Vec<Vertex2>) -> Vec<Vertex2> {
     hull
 }
 
-fn geometry(map: &Map) -> Result<Vec<Vertex>, io::Error> {
-    let mut out = Vec::new();
+#[derive(Default)]
+struct Geometry {
+    flats: BTreeMap<[u8; 8], Vec<Vertex>>,
+    walls: BTreeMap<[u8; 8], Vec<Vertex>>,
+}
+
+struct WallSection {
+    name: [u8; 8],
+    side: SideDef,
+    seg: [u16; 5],
+    endpoints: [Vertex2; 2],
+    heights: [f32; 3], // low, high, texture top anchor
+    sector: Sector,
+}
+
+fn push_wall_quad(out: &mut BTreeMap<[u8; 8], Vec<Vertex>>, texture: &Texture, wall: WallSection) {
+    let WallSection {
+        name,
+        side,
+        seg,
+        endpoints: [a, b],
+        heights: [low, high, top_anchor],
+        sector,
+    } = wall;
+    if name[0] == b'-' || high <= low {
+        return;
+    }
+    let width = texture.levels[0].width as f32;
+    let height = texture.levels[0].height as f32;
+    let u0 = (seg[4] as f32 + side.x_offset as f32) / width;
+    let u1 = u0 + ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt() / width;
+    let v_low = (top_anchor - low + side.y_offset as f32) / height;
+    let v_high = (top_anchor - high + side.y_offset as f32) / height;
+    let a0 = world(a, low);
+    let b0 = world(b, low);
+    let b1 = world(b, high);
+    let a1 = world(a, high);
+    let color = shaded([1.0; 3], sector);
+    let mesh = out.entry(name).or_default();
+    push_triangle_uv(
+        mesh,
+        [
+            (a0, Vec2::new(u0, v_low)),
+            (b0, Vec2::new(u1, v_low)),
+            (b1, Vec2::new(u1, v_high)),
+        ],
+        color,
+    );
+    push_triangle_uv(
+        mesh,
+        [
+            (a0, Vec2::new(u0, v_low)),
+            (b1, Vec2::new(u1, v_high)),
+            (a1, Vec2::new(u0, v_high)),
+        ],
+        color,
+    );
+}
+
+fn geometry(map: &Map, textures: &BTreeMap<[u8; 8], Arc<Texture>>) -> Result<Geometry, io::Error> {
+    let mut out = Geometry::default();
     for leaf in &map.subsectors {
         let segs = &map.segs[leaf[1] as usize..leaf[1] as usize + leaf[0] as usize];
         let Some(first) = segs.first() else { continue };
-        let sector_index = map.sides[map.lines[first[2] as usize][2 + first[3] as usize] as usize];
+        let front_side = map.lines[first[2] as usize][3 + first[3] as usize];
+        let sector_index = map.sides[front_side as usize].sector;
         let sector = map.sectors[sector_index as usize];
         let polygon = convex_hull(
             segs.iter()
@@ -292,82 +700,147 @@ fn geometry(map: &Map) -> Result<Vec<Vertex>, io::Error> {
             continue;
         }
         let root = world(polygon[0], sector.floor);
-        let floor = shaded([0.27, 0.22, 0.14], sector);
-        let ceiling = shaded([0.16, 0.19, 0.22], sector);
+        let light = 0.38 + sector.light as f32 / 255.0 * 0.62;
+        let floor = Vec4::new(light, light, light, 1.0);
+        let ceiling = floor;
         for i in 1..polygon.len() - 1 {
-            push_triangle(
-                &mut out,
-                root,
-                world(polygon[i], sector.floor),
-                world(polygon[i + 1], sector.floor),
-                floor,
-            );
-            push_triangle(
-                &mut out,
-                world(polygon[i + 1], sector.ceiling),
-                world(polygon[i], sector.ceiling),
-                world(polygon[0], sector.ceiling),
-                ceiling,
-            );
+            if sector.floor_flat != *b"F_SKY1\0\0" {
+                let mesh = out.flats.entry(sector.floor_flat).or_default();
+                push_triangle_uv(
+                    mesh,
+                    [
+                        (root, flat_uv(polygon[0])),
+                        (world(polygon[i], sector.floor), flat_uv(polygon[i])),
+                        (world(polygon[i + 1], sector.floor), flat_uv(polygon[i + 1])),
+                    ],
+                    floor,
+                );
+            }
+            if sector.ceiling_flat != *b"F_SKY1\0\0" {
+                let mesh = out.flats.entry(sector.ceiling_flat).or_default();
+                push_triangle_uv(
+                    mesh,
+                    [
+                        (
+                            world(polygon[i + 1], sector.ceiling),
+                            flat_uv(polygon[i + 1]),
+                        ),
+                        (world(polygon[i], sector.ceiling), flat_uv(polygon[i])),
+                        (world(polygon[0], sector.ceiling), flat_uv(polygon[0])),
+                    ],
+                    ceiling,
+                );
+            }
         }
     }
 
     for seg in &map.segs {
         let line = map.lines[seg[2] as usize];
-        let front_side = line[2 + seg[3] as usize];
+        let front_side = line[3 + seg[3] as usize];
         if front_side == u16::MAX {
             return Err(invalid("SEGS selected a missing sidedef"));
         }
-        let front = map.sectors[map.sides[front_side as usize] as usize];
+        let front_sidedef = map.sides[front_side as usize];
+        let front = map.sectors[front_sidedef.sector as usize];
         let a = map.vertices[seg[0] as usize];
         let b = map.vertices[seg[1] as usize];
-        let back_side = line[2 + (1 - seg[3]) as usize];
+        let back_side = line[3 + (1 - seg[3]) as usize];
         if back_side == u16::MAX {
-            push_quad(
-                &mut out,
-                a,
-                b,
-                front.floor,
-                front.ceiling,
-                shaded([0.61, 0.20, 0.12], front),
-            );
+            if let Some(texture) = textures.get(&front_sidedef.middle) {
+                let bottom_peg = line[2] & 16 != 0;
+                let anchor = if bottom_peg {
+                    front.floor + texture.levels[0].height as f32
+                } else {
+                    front.ceiling
+                };
+                push_wall_quad(
+                    &mut out.walls,
+                    texture,
+                    WallSection {
+                        name: front_sidedef.middle,
+                        side: front_sidedef,
+                        seg: *seg,
+                        endpoints: [a, b],
+                        heights: [front.floor, front.ceiling, anchor],
+                        sector: front,
+                    },
+                );
+            }
             continue;
         }
-        let back = map.sectors[map.sides[back_side as usize] as usize];
+        let back_sidedef = map.sides[back_side as usize];
+        let back = map.sectors[back_sidedef.sector as usize];
         if back.ceiling <= front.floor || back.floor >= front.ceiling {
-            push_quad(
-                &mut out,
-                a,
-                b,
-                front.floor,
-                front.ceiling,
-                shaded([0.53, 0.22, 0.14], front),
-            );
+            if let Some(texture) = textures.get(&front_sidedef.middle) {
+                let anchor = if line[2] & 16 != 0 {
+                    front.floor + texture.levels[0].height as f32
+                } else {
+                    front.ceiling
+                };
+                push_wall_quad(
+                    &mut out.walls,
+                    texture,
+                    WallSection {
+                        name: front_sidedef.middle,
+                        side: front_sidedef,
+                        seg: *seg,
+                        endpoints: [a, b],
+                        heights: [front.floor, front.ceiling, anchor],
+                        sector: front,
+                    },
+                );
+            }
             continue;
         }
-        if front.ceiling > back.ceiling {
-            push_quad(
-                &mut out,
-                a,
-                b,
-                back.ceiling,
-                front.ceiling,
-                shaded([0.69, 0.34, 0.16], front),
+        if front.ceiling > back.ceiling
+            && let Some(texture) = textures.get(&front_sidedef.upper)
+        {
+            let anchor = if line[2] & 8 != 0 {
+                front.ceiling
+            } else {
+                back.ceiling + texture.levels[0].height as f32
+            };
+            push_wall_quad(
+                &mut out.walls,
+                texture,
+                WallSection {
+                    name: front_sidedef.upper,
+                    side: front_sidedef,
+                    seg: *seg,
+                    endpoints: [a, b],
+                    heights: [back.ceiling.max(front.floor), front.ceiling, anchor],
+                    sector: front,
+                },
             );
         }
-        if back.floor > front.floor {
-            push_quad(
-                &mut out,
-                a,
-                b,
-                front.floor,
-                back.floor,
-                shaded([0.36, 0.16, 0.11], front),
+        if back.floor > front.floor
+            && let Some(texture) = textures.get(&front_sidedef.lower)
+        {
+            let anchor = if line[2] & 16 != 0 {
+                front.ceiling
+            } else {
+                back.floor
+            };
+            push_wall_quad(
+                &mut out.walls,
+                texture,
+                WallSection {
+                    name: front_sidedef.lower,
+                    side: front_sidedef,
+                    seg: *seg,
+                    endpoints: [a, b],
+                    heights: [front.floor, back.floor.min(front.ceiling), anchor],
+                    sector: front,
+                },
             );
         }
         // Masked middle textures and their transparency are not implemented in this pass.
     }
     Ok(out)
+}
+
+fn flat_uv(point: Vertex2) -> Vec2 {
+    Vec2::new(point.x / 64.0, point.y / 64.0)
 }
 
 fn player_sector(map: &Map, x: i16, y: i16) -> Result<Sector, io::Error> {
@@ -402,8 +875,8 @@ fn player_sector(map: &Map, x: i16, y: i16) -> Result<Sector, io::Error> {
         let distance = (center.x - point.x).powi(2) + (center.y - point.y).powi(2);
         let seg = segs[0];
         let line = map.lines[seg[2] as usize];
-        let side = line[2 + seg[3] as usize];
-        let sector = map.sectors[map.sides[side as usize] as usize];
+        let side = line[3 + seg[3] as usize];
+        let sector = map.sectors[map.sides[side as usize].sector as usize];
         // ponytail: nearest leaf centroid can select a neighbor at borders; use NODES traversal if needed.
         if nearest.is_none_or(|(best, _)| distance < best) {
             nearest = Some((distance, sector));
@@ -426,10 +899,15 @@ fn render(path: &Path, output: &Path) -> api::Result<()> {
         .copied()
         .find(|thing| thing.3 == 1)
         .ok_or_else(|| invalid("E1M1 has no player-1 start"))?;
-    let vertices = geometry(&map)?;
-    if vertices.is_empty() {
+    let wall_textures = wall_textures(&data, &map)?;
+    let geometry = geometry(&map, &wall_textures)?;
+    if geometry.walls.is_empty() && geometry.flats.is_empty() {
         return Err(invalid("E1M1 produced no renderable geometry").into());
     }
+    let flat_textures = flat_textures(&data, &map)?;
+    let triangle_count = (geometry.walls.values().map(Vec::len).sum::<usize>()
+        + geometry.flats.values().map(Vec::len).sum::<usize>())
+        / 3;
     let sector = player_sector(&map, x, y)?;
     let radians = (angle as f32).to_radians();
     let eye = Vec3::new(x as f32, sector.floor + 41.0, -(y as f32));
@@ -440,22 +918,53 @@ fn render(path: &Path, output: &Path) -> api::Result<()> {
 
     let device = Device::new();
     let vertex_shader =
-        device.create_shader(include_bytes!("../assets/shaders/freedoom_map.vert.spv"))?;
+        device.create_shader(include_bytes!("../assets/shaders/textured.vert.spv"))?;
     let fragment_shader =
-        device.create_shader(include_bytes!("../assets/shaders/freedoom_map.frag.spv"))?;
+        device.create_shader(include_bytes!("../assets/shaders/textured.frag.spv"))?;
     let pipeline = device.create_pipeline(&vertex_shader, &fragment_shader, Pipeline::default())?;
-    let vertex_count = u32::try_from(vertices.len())
-        .map_err(|_| invalid("E1M1 vertex count exceeds SILICON draw range"))?;
-    let triangle_count = vertices.len() / 3;
-    let vertex_buffer = device.create_vertex_buffer(vertices)?;
     let uniforms = transform.0.into_iter().map(Vec4::from_array).collect();
     let uniform_buffer = device.create_uniform_buffer(uniforms)?;
+    let sampler = Sampler {
+        filter: Filter::Nearest,
+        address: Address::Repeat,
+        mip: MipFilter::None,
+    };
     let mut commands = device.commands();
-    commands.begin_render_pass(Color::new(0.018, 0.024, 0.032, 1.0));
-    commands.bind_pipeline(pipeline);
-    commands.bind_vertex_buffer(vertex_buffer);
+    commands.begin_render_pass(Color::new(0.12, 0.22, 0.36, 1.0));
+    commands.bind_pipeline(pipeline.clone());
     commands.bind_uniform_buffer(uniform_buffer);
-    commands.draw(0, vertex_count);
+    for (name, vertices) in geometry.flats {
+        let texture = flat_textures
+            .get(&name)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "flat {} was not decoded",
+                    String::from_utf8_lossy(&name)
+                ))
+            })?
+            .clone();
+        let count = u32::try_from(vertices.len())
+            .map_err(|_| invalid("E1M1 flat vertex count exceeds SILICON draw range"))?;
+        commands.bind_texture(0, texture, sampler);
+        commands.bind_vertex_buffer(device.create_vertex_buffer(vertices)?);
+        commands.draw(0, count);
+    }
+    for (name, vertices) in geometry.walls {
+        let texture = wall_textures
+            .get(&name)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "wall texture {} was not decoded",
+                    String::from_utf8_lossy(&name)
+                ))
+            })?
+            .clone();
+        let count = u32::try_from(vertices.len())
+            .map_err(|_| invalid("E1M1 wall vertex count exceeds SILICON draw range"))?;
+        commands.bind_texture(0, texture, sampler);
+        commands.bind_vertex_buffer(device.create_vertex_buffer(vertices)?);
+        commands.draw(0, count);
+    }
     commands.end_render_pass();
     let mut renderer = Renderer::new(960, 720)?;
     let submission = device.submit(&commands, &mut renderer)?;
@@ -515,5 +1024,49 @@ mod tests {
             Vertex2 { x: 1.0, y: 1.0 },
         ]);
         assert_eq!(hull.len(), 4);
+    }
+
+    #[test]
+    fn flat_pixels_use_the_wad_palette() {
+        let mut palette = vec![0; 256 * 3];
+        palette[3..6].copy_from_slice(&[19, 87, 203]);
+        assert_eq!(paletted_rgba(&[1], &palette).unwrap(), [19, 87, 203, 255]);
+    }
+
+    #[test]
+    fn composes_a_classic_patch_column() {
+        let mut palette = vec![0; 256 * 3];
+        palette[3..6].copy_from_slice(&[19, 87, 203]);
+        let patch = [
+            1, 0, 1, 0, 0, 0, 0, 0, // 1x1 patch header
+            12, 0, 0, 0, // first column offset
+            0, 1, 0, 1, 0, 255, // one post and column terminator
+        ];
+        let mut canvas = vec![0; 4];
+        composite_patch(&mut canvas, 1, 1, &patch, 0, 0, &palette).unwrap();
+        assert_eq!(canvas, [19, 87, 203, 255]);
+    }
+
+    #[test]
+    fn reads_patch_placements_from_a_texture_definition() {
+        let mut bytes = vec![0; 40];
+        bytes[0..4].copy_from_slice(&1i32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&8u32.to_le_bytes());
+        bytes[8..16].copy_from_slice(b"TEST\0\0\0\0");
+        bytes[20..22].copy_from_slice(&2u16.to_le_bytes());
+        bytes[22..24].copy_from_slice(&3u16.to_le_bytes());
+        bytes[28..30].copy_from_slice(&1u16.to_le_bytes());
+        bytes[30..32].copy_from_slice(&4i16.to_le_bytes());
+        bytes[32..34].copy_from_slice(&(-2i16).to_le_bytes());
+        bytes[34..36].copy_from_slice(&7u16.to_le_bytes());
+
+        let mut definitions = BTreeMap::new();
+        texture_definitions(&bytes, &mut definitions).unwrap();
+        let texture = &definitions[b"TEST\0\0\0\0"];
+        assert_eq!((texture.width, texture.height), (2, 3));
+        assert_eq!(texture.patches.len(), 1);
+        assert_eq!(texture.patches[0].x, 4);
+        assert_eq!(texture.patches[0].y, -2);
+        assert_eq!(texture.patches[0].index, 7);
     }
 }
