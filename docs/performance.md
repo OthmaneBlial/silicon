@@ -354,12 +354,30 @@ does not establish a general speedup. Worker bands still repeat vertex and
 primitive setup; the record should not be read as measuring shared setup or a
 persistent tile-worker pool.
 
+## 0.7 shared vertex outputs
+
+The [alternating raw record](../benchmarks/apple-m2-shared-vertex-bands-2026-10-01.json)
+compares release `d567d89` with the opt-in shared-vertex path at `c8d96fc` on an
+Apple M2 / macOS 26.6. Each run used three warmups, 10 timed frames, 960×640
+`spirv_showcase`, SIMD, and four workers; the configuration order was reversed
+for round two. Median and p95 frame times were:
+
+| Build | Round 1 median / p95 ms | Round 2 median / p95 ms |
+| --- | ---: | ---: |
+| Per-band vertex processing | 322.73 / 400.79 | 291.33 / 304.57 |
+| Shared vertex outputs | 288.32 / 303.21 | 296.31 / 371.13 |
+
+The candidate median was lower in round one and 1.7% higher in round two; p95
+also changed direction. This shared-host sample is inconclusive and does not
+establish a general speedup. The raw record identifies the clean candidate tree
+and both binary hashes.
+
 ## Next measurements
 
-Repeat tile-heavy and overdraw scenes on an otherwise idle host before changing
-batch limits or sharing setup across worker bands. Persistent workers and a
-native x86 AVX2 run remain open; cross-platform correctness in CI alone does not
-establish their performance.
+Repeat tile-heavy and overdraw scenes on an otherwise idle host before extending
+shared setup beyond vertex outputs. Persistent workers and a native x86 AVX2 run
+remain open; cross-platform correctness in CI alone does not establish their
+performance.
 
 ## Animation provenance
 
