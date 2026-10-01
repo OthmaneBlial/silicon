@@ -6,6 +6,8 @@
   sectors through the existing door animation and collision path.
 - Add use-triggered Doom special-103 doors that open tagged sectors and remain
   open.
+- Add blue, red, and yellow key-gated blazing open actions for Doom specials
+  133, 135, and 137.
 - Route Doom special-51 exits to the episode's M9 map and ordinary M9 exits back
   to the original episode path when the target map exists in the WAD.
 - Render and collect all six Doom keycard/skull map things; red, yellow, and blue

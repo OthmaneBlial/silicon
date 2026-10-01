@@ -36,6 +36,9 @@ const LINE_RED_LOCKED_DOOR_OPEN: u16 = 33;
 const LINE_YELLOW_LOCKED_DOOR: u16 = 27;
 const LINE_YELLOW_LOCKED_DOOR_OPEN: u16 = 34;
 const LINE_RED_LOCKED_DOOR: u16 = 28;
+const LINE_BLUE_BLAZING_OPEN: u16 = 133;
+const LINE_RED_BLAZING_OPEN: u16 = 135;
+const LINE_YELLOW_BLAZING_OPEN: u16 = 137;
 const LINE_BLAZING_DOOR_RAISE: u16 = 117;
 const LINE_WALK_OPEN_DOOR: u16 = 2;
 const LINE_WALK_RAISE_DOOR: u16 = 4;
@@ -3140,9 +3143,9 @@ fn sector_door(map: &Map, door_sector: u16, auto_close: bool) -> Option<Door> {
         })
         .min_by(f32::total_cmp)?
         - 4.0;
-    (top >= sector.floor + ACTOR_HEIGHT && sector.ceiling < top).then_some(Door {
+    (top >= sector.floor + ACTOR_HEIGHT).then_some(Door {
         sector: door_sector,
-        top,
+        top: top.max(sector.ceiling),
         speed: DOOR_SPEED,
         wait: DOOR_WAIT,
         direction: 1,
@@ -3150,18 +3153,49 @@ fn sector_door(map: &Map, door_sector: u16, auto_close: bool) -> Option<Door> {
     })
 }
 
-fn activate_tagged_doors(map: &mut Map, line_index: usize, active: &[Door]) -> Vec<Door> {
+fn activate_tagged_doors(map: &mut Map, line_index: usize, active: &[Door], keys: u8) -> Vec<Door> {
     let Some(line) = map.lines.get(line_index).copied() else {
         return Vec::new();
     };
     if !matches!(
         line[5],
-        LINE_WALK_OPEN_DOOR | LINE_WALK_RAISE_DOOR | LINE_DOOR_RAISE_ONCE | LINE_USE_OPEN_DOOR_ONCE
+        LINE_WALK_OPEN_DOOR
+            | LINE_WALK_RAISE_DOOR
+            | LINE_DOOR_RAISE_ONCE
+            | LINE_USE_OPEN_DOOR_ONCE
+            | LINE_BLUE_BLAZING_OPEN
+            | LINE_RED_BLAZING_OPEN
+            | LINE_YELLOW_BLAZING_OPEN
     ) {
         return Vec::new();
     }
+    let required_key = match line[5] {
+        LINE_BLUE_BLAZING_OPEN => KEY_BLUE,
+        LINE_RED_BLAZING_OPEN => KEY_RED,
+        LINE_YELLOW_BLAZING_OPEN => KEY_YELLOW,
+        _ => 0,
+    };
+    if keys & required_key != required_key {
+        return Vec::new();
+    }
     let auto_close = matches!(line[5], LINE_WALK_RAISE_DOOR | LINE_DOOR_RAISE_ONCE);
+    let speed = if required_key == 0 {
+        DOOR_SPEED
+    } else {
+        BLAZING_DOOR_SPEED
+    };
+    let clear_only_on_success = matches!(
+        line[5],
+        LINE_DOOR_RAISE_ONCE
+            | LINE_USE_OPEN_DOOR_ONCE
+            | LINE_BLUE_BLAZING_OPEN
+            | LINE_RED_BLAZING_OPEN
+            | LINE_YELLOW_BLAZING_OPEN
+    );
     if line[6] == 0 {
+        if !clear_only_on_success {
+            map.lines[line_index][5] = 0;
+        }
         return Vec::new();
     }
     let started: Vec<_> = map
@@ -3174,11 +3208,13 @@ fn activate_tagged_doors(map: &mut Map, line_index: usize, active: &[Door]) -> V
             if active.iter().any(|door| door.sector == sector) {
                 None
             } else {
-                sector_door(map, sector, auto_close)
+                let mut door = sector_door(map, sector, auto_close)?;
+                door.speed = speed;
+                Some(door)
             }
         })
         .collect();
-    if !matches!(line[5], LINE_DOOR_RAISE_ONCE | LINE_USE_OPEN_DOOR_ONCE) || !started.is_empty() {
+    if !clear_only_on_success || !started.is_empty() {
         map.lines[line_index][5] = 0;
     }
     started
@@ -4534,7 +4570,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             for line in crossed {
                 match scene.map.lines[line][5] {
                     LINE_WALK_OPEN_DOOR | LINE_WALK_RAISE_DOOR => {
-                        let started = activate_tagged_doors(&mut scene.map, line, &doors);
+                        let started = activate_tagged_doors(&mut scene.map, line, &doors, 0);
                         activated_sectors += started.len();
                         doors.extend(started);
                     }
@@ -4558,8 +4594,15 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 if matches!(special, LINE_EXIT_USE | LINE_SECRET_EXIT_USE) {
                     secret_exit = special == LINE_SECRET_EXIT_USE;
                     exited = true;
-                } else if matches!(special, LINE_DOOR_RAISE_ONCE | LINE_USE_OPEN_DOOR_ONCE) {
-                    let started = activate_tagged_doors(&mut scene.map, line, &doors);
+                } else if matches!(
+                    special,
+                    LINE_DOOR_RAISE_ONCE
+                        | LINE_USE_OPEN_DOOR_ONCE
+                        | LINE_BLUE_BLAZING_OPEN
+                        | LINE_RED_BLAZING_OPEN
+                        | LINE_YELLOW_BLAZING_OPEN
+                ) {
+                    let started = activate_tagged_doors(&mut scene.map, line, &doors, keys);
                     activated_sectors += started.len();
                     doors.extend(started);
                 } else if matches!(
@@ -5832,6 +5875,14 @@ mod tests {
         assert_eq!(use_line(&map, player), Some((1, LINE_USE_OPEN_DOOR_ONCE)));
         map.lines[1][5] = LINE_DOOR_RAISE_ONCE;
         assert_eq!(use_line(&map, player), Some((1, LINE_DOOR_RAISE_ONCE)));
+        for special in [
+            LINE_BLUE_BLAZING_OPEN,
+            LINE_RED_BLAZING_OPEN,
+            LINE_YELLOW_BLAZING_OPEN,
+        ] {
+            map.lines[1][5] = special;
+            assert_eq!(use_line(&map, player), Some((1, special)));
+        }
         map.lines[1][5] = LINE_EXIT_USE;
         assert_eq!(use_line(&map, player), Some((1, LINE_EXIT_USE)));
         map.lines[1][5] = LINE_SECRET_EXIT_USE;
@@ -6145,7 +6196,7 @@ mod tests {
             nodes: vec![],
             things: vec![],
         };
-        let mut doors = activate_tagged_doors(&mut map, 0, &[]);
+        let mut doors = activate_tagged_doors(&mut map, 0, &[], 0);
         assert_eq!(map.lines[0][5], 0);
         assert_eq!(doors.len(), 1);
         assert!(!doors[0].auto_close);
@@ -6167,7 +6218,7 @@ mod tests {
 
         map.sectors[1].ceiling = 0.0;
         map.lines[0][5] = LINE_WALK_RAISE_DOOR;
-        doors = activate_tagged_doors(&mut map, 0, &[]);
+        doors = activate_tagged_doors(&mut map, 0, &[], 0);
         assert_eq!(map.lines[0][5], 0);
         assert_eq!(doors.len(), 1);
         assert!(doors[0].auto_close);
@@ -6198,7 +6249,7 @@ mod tests {
         assert!(doors.is_empty());
 
         map.lines[0][5] = LINE_DOOR_RAISE_ONCE;
-        doors = activate_tagged_doors(&mut map, 0, &[]);
+        doors = activate_tagged_doors(&mut map, 0, &[], 0);
         assert_eq!(map.lines[0][5], 0);
         assert_eq!(doors.len(), 1);
         assert!(doors[0].auto_close);
@@ -6229,7 +6280,7 @@ mod tests {
         assert!(doors.is_empty());
 
         map.lines[0][5] = LINE_USE_OPEN_DOOR_ONCE;
-        doors = activate_tagged_doors(&mut map, 0, &[]);
+        doors = activate_tagged_doors(&mut map, 0, &[], 0);
         assert_eq!(map.lines[0][5], 0);
         assert_eq!(doors.len(), 1);
         assert!(!doors[0].auto_close);
@@ -6258,6 +6309,92 @@ mod tests {
             DOOR_WAIT + 2.0,
         ));
         assert_eq!(map.sectors[1].ceiling, 124.0);
+    }
+
+    #[test]
+    fn blazing_tagged_doors_require_matching_keys_and_stay_open() {
+        let open = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            special: 0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+            tag: 0,
+        };
+        let side = |sector| SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper: [0; 8],
+            lower: [0; 8],
+            middle: [0; 8],
+            sector,
+        };
+        let mut map = Map {
+            vertices: vec![Vertex2 { x: 0.0, y: 0.0 }, Vertex2 { x: 0.0, y: 1.0 }],
+            sectors: vec![
+                open,
+                Sector {
+                    ceiling: 0.0,
+                    tag: 5,
+                    ..open
+                },
+            ],
+            sides: vec![side(0), side(1)],
+            lines: vec![[0, 1, LINE_TWO_SIDED, 0, 1, LINE_BLUE_BLAZING_OPEN, 5]],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+
+        for (special, key, wrong_key) in [
+            (LINE_BLUE_BLAZING_OPEN, KEY_BLUE, KEY_RED),
+            (LINE_RED_BLAZING_OPEN, KEY_RED, KEY_YELLOW),
+            (LINE_YELLOW_BLAZING_OPEN, KEY_YELLOW, KEY_BLUE),
+        ] {
+            map.lines[0][5] = special;
+            map.sectors[1].ceiling = 0.0;
+            assert!(activate_tagged_doors(&mut map, 0, &[], wrong_key).is_empty());
+            assert_eq!(map.lines[0][5], special);
+
+            let mut doors = activate_tagged_doors(&mut map, 0, &[], key);
+            assert_eq!(map.lines[0][5], 0);
+            assert_eq!(doors.len(), 1);
+            assert_eq!(doors[0].speed, BLAZING_DOOR_SPEED);
+            assert!(!doors[0].auto_close);
+            assert!(update_doors(
+                &mut map,
+                &mut doors,
+                Player {
+                    x: 200.0,
+                    y: 0.0,
+                    angle: 0.0,
+                },
+                &[],
+                0.5,
+            ));
+            assert_eq!(map.sectors[1].ceiling, 124.0);
+            assert!(doors.is_empty());
+
+            map.lines[0][5] = special;
+            doors = activate_tagged_doors(&mut map, 0, &[], key);
+            assert_eq!(map.lines[0][5], 0);
+            assert_eq!(doors.len(), 1);
+            assert!(!update_doors(
+                &mut map,
+                &mut doors,
+                Player {
+                    x: 200.0,
+                    y: 0.0,
+                    angle: 0.0,
+                },
+                &[],
+                0.5,
+            ));
+            assert!(doors.is_empty());
+            assert_eq!(map.sectors[1].ceiling, 124.0);
+        }
     }
 
     #[test]

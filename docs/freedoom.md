@@ -150,6 +150,11 @@ Special 103 instead opens each tagged sector and leaves the doors open; its
 one-shot line clears only after a tagged door starts, as in the original
 [`P_UseSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c)
 and [`EV_DoDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c).
+Specials 133, 135, and 137 open every tagged door at four times normal speed
+and leave it open; they require the matching blue, red, or yellow card/skull.
+The one-shot line clears only after a door starts, following the original
+[`EV_DoLockedDoor`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_doors.c)
+and [`P_UseSpecialLine`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_switch.c).
 Other locked-door action variants, enemy-triggered platform actions besides
 specials 10 and 88, and other line specials remain unsupported.
 
