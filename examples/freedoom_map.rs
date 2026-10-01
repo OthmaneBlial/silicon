@@ -27,8 +27,12 @@ const ACTOR_IDLE_CYCLE: f32 = 20.0 / 35.0;
 const LINE_TWO_SIDED: u16 = 4;
 const LINE_SOUND_BLOCK: u16 = 64;
 const LINE_DOOR_RAISE: u16 = 1;
+const LINE_DOOR_OPEN: u16 = 31;
 const LINE_BLUE_LOCKED_DOOR: u16 = 26;
+const LINE_BLUE_LOCKED_DOOR_OPEN: u16 = 32;
+const LINE_RED_LOCKED_DOOR_OPEN: u16 = 33;
 const LINE_YELLOW_LOCKED_DOOR: u16 = 27;
+const LINE_YELLOW_LOCKED_DOOR_OPEN: u16 = 34;
 const LINE_RED_LOCKED_DOOR: u16 = 28;
 const LINE_BLAZING_DOOR_RAISE: u16 = 117;
 const LINE_WALK_OPEN_DOOR: u16 = 2;
@@ -2905,9 +2909,9 @@ fn use_line(map: &Map, player: Player) -> Option<(usize, u16)> {
 fn manual_door(map: &Map, line_index: usize, keys: u8) -> Option<Door> {
     let line = *map.lines.get(line_index)?;
     let required_key = match line[5] {
-        LINE_BLUE_LOCKED_DOOR => KEY_BLUE,
-        LINE_YELLOW_LOCKED_DOOR => KEY_YELLOW,
-        LINE_RED_LOCKED_DOOR => KEY_RED,
+        LINE_BLUE_LOCKED_DOOR | LINE_BLUE_LOCKED_DOOR_OPEN => KEY_BLUE,
+        LINE_YELLOW_LOCKED_DOOR | LINE_YELLOW_LOCKED_DOOR_OPEN => KEY_YELLOW,
+        LINE_RED_LOCKED_DOOR | LINE_RED_LOCKED_DOOR_OPEN => KEY_RED,
         _ => 0,
     };
     if !matches!(
@@ -2916,17 +2920,42 @@ fn manual_door(map: &Map, line_index: usize, keys: u8) -> Option<Door> {
             | LINE_BLUE_LOCKED_DOOR
             | LINE_YELLOW_LOCKED_DOOR
             | LINE_RED_LOCKED_DOOR
+            | LINE_DOOR_OPEN
+            | LINE_BLUE_LOCKED_DOOR_OPEN
+            | LINE_RED_LOCKED_DOOR_OPEN
+            | LINE_YELLOW_LOCKED_DOOR_OPEN
             | LINE_BLAZING_DOOR_RAISE
     ) || (required_key != 0 && keys & required_key == 0)
         || line[4] == u16::MAX
     {
         return None;
     }
-    let mut door = sector_door(map, map.sides.get(line[4] as usize)?.sector, true)?;
+    let stays_open = matches!(
+        line[5],
+        LINE_DOOR_OPEN
+            | LINE_BLUE_LOCKED_DOOR_OPEN
+            | LINE_RED_LOCKED_DOOR_OPEN
+            | LINE_YELLOW_LOCKED_DOOR_OPEN
+    );
+    let mut door = sector_door(map, map.sides.get(line[4] as usize)?.sector, !stays_open)?;
     if line[5] == LINE_BLAZING_DOOR_RAISE {
         door.speed = BLAZING_DOOR_SPEED;
     }
     Some(door)
+}
+
+fn activate_manual_door(map: &mut Map, line_index: usize, keys: u8, doors: &mut Vec<Door>) -> bool {
+    let Some(door) = manual_door(map, line_index, keys) else {
+        return false;
+    };
+    if doors.iter().any(|active| active.sector == door.sector) {
+        return false;
+    }
+    if !door.auto_close {
+        map.lines[line_index][5] = 0;
+    }
+    doors.push(door);
+    true
 }
 
 fn sector_door(map: &Map, door_sector: u16, auto_close: bool) -> Option<Door> {
@@ -4156,17 +4185,16 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 } else if matches!(
                     special,
                     LINE_DOOR_RAISE
+                        | LINE_DOOR_OPEN
                         | LINE_BLUE_LOCKED_DOOR
+                        | LINE_BLUE_LOCKED_DOOR_OPEN
                         | LINE_YELLOW_LOCKED_DOOR
+                        | LINE_YELLOW_LOCKED_DOOR_OPEN
                         | LINE_RED_LOCKED_DOOR
+                        | LINE_RED_LOCKED_DOOR_OPEN
                         | LINE_BLAZING_DOOR_RAISE
                 ) {
-                    if let Some(door) = manual_door(&scene.map, line, keys)
-                        && !doors
-                            .iter()
-                            .any(|active: &Door| active.sector == door.sector)
-                    {
-                        doors.push(door);
+                    if activate_manual_door(&mut scene.map, line, keys, &mut doors) {
                         activated_sectors += 1;
                     }
                 } else if special == LINE_USE_LOWER_FLOOR_TO_LOWEST {
@@ -5356,7 +5384,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_doors_raise_reopen_the_portal_and_color_locks_require_matching_keys() {
+    fn manual_doors_raise_or_stay_open_with_matching_color_keys() {
         let sector = Sector {
             floor: 0.0,
             ceiling: 128.0,
@@ -5455,6 +5483,49 @@ mod tests {
             );
         }
 
+        let player = Player {
+            x: 32.0,
+            y: 0.0,
+            angle: 180.0,
+        };
+        for (special, matching_key, wrong_key) in [
+            (LINE_DOOR_OPEN, 0, KEY_BLUE),
+            (LINE_BLUE_LOCKED_DOOR_OPEN, KEY_BLUE, KEY_RED),
+            (LINE_RED_LOCKED_DOOR_OPEN, KEY_RED, KEY_YELLOW),
+            (LINE_YELLOW_LOCKED_DOOR_OPEN, KEY_YELLOW, KEY_BLUE),
+        ] {
+            map.sectors[1].ceiling = 0.0;
+            map.lines[0][5] = special;
+            let mut doors = Vec::new();
+            if matching_key != 0 {
+                assert!(!activate_manual_door(&mut map, 0, 0, &mut doors));
+                assert!(!activate_manual_door(&mut map, 0, wrong_key, &mut doors));
+                assert_eq!(map.lines[0][5], special);
+            }
+            assert_eq!(use_line(&map, player), Some((0, special)));
+            assert!(activate_manual_door(&mut map, 0, matching_key, &mut doors));
+            assert_eq!(map.lines[0][5], 0);
+            assert!(!doors[0].auto_close);
+            assert!(update_doors(
+                &mut map,
+                &mut doors,
+                Player { x: 200.0, ..player },
+                &[],
+                2.0,
+            ));
+            assert_eq!(map.sectors[1].ceiling, 124.0);
+            assert!(doors.is_empty());
+            assert!(!update_doors(
+                &mut map,
+                &mut doors,
+                Player { x: 200.0, ..player },
+                &[],
+                10.0,
+            ));
+            assert_eq!(map.sectors[1].ceiling, 124.0);
+        }
+
+        map.sectors[1].ceiling = 0.0;
         map.lines[0][5] = LINE_BLAZING_DOOR_RAISE;
         let player = Player {
             x: 32.0,
