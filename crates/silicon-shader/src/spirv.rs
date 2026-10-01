@@ -922,7 +922,10 @@ impl<'a> Compiler<'a> {
                         };
                         Value::Reg(
                             r,
-                            path.is_empty() && self.stage == Stage::Fragment && slot == 1 && n == 2,
+                            path.is_empty()
+                                && self.stage == Stage::Fragment
+                                && slot == 1
+                                && matches!(n, 2 | 3),
                         )
                     }
                     2 if path.first() == Some(&0) => {
@@ -1373,18 +1376,31 @@ impl<'a> Compiler<'a> {
                 let Ty::Sampled(dimension) = self.ty(s.ty)? else {
                     return Err("sampled image has an unsupported type".into());
                 };
-                let (uv, t, direct_uv) = self.reg(a[3])?;
-                if dimension != 1 {
-                    return Err("implicit cube-map sampling is unsupported; use textureLod until cube direction derivatives are available".into());
-                }
+                let (coordinate, t, direct_coordinate) = self.reg(a[3])?;
+                let coordinate_components = if dimension == 3 { 3 } else { 2 };
                 if self.stage != Stage::Fragment
                     || self.ty(a[0])? != Ty::Vector(4)
-                    || self.ty(t)? != Ty::Vector(2)
-                    || !direct_uv
+                    || self.ty(t)? != Ty::Vector(coordinate_components)
+                    || !direct_coordinate
                 {
-                    return Err("implicit sampling currently requires the unmodified vec2 fragment input at location 1".into());
+                    return Err(format!(
+                        "implicit sampling requires the unmodified vec{coordinate_components} fragment input at location 1"
+                    ));
                 }
-                let r = self.emit(|dst| Sir::SampleImplicit { dst, uv, texture })?;
+                // ponytail: track one source varying; propagate SIR gradients when transformed samples are needed.
+                let r = if dimension == 3 {
+                    self.emit(|dst| Sir::SampleCubeImplicit {
+                        dst,
+                        direction: coordinate,
+                        texture,
+                    })?
+                } else {
+                    self.emit(|dst| Sir::SampleImplicit {
+                        dst,
+                        uv: coordinate,
+                        texture,
+                    })?
+                };
                 self.values.insert(
                     a[1],
                     Typed {

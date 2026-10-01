@@ -319,6 +319,12 @@ impl Device {
                     let debug = r.debug_pixel;
                     let shader_traces = std::cell::RefCell::new(Vec::new());
                     let simd = r.backend == Backend::Simd;
+                    let mut implicit_cube_slots = [false; 16];
+                    for instruction in p.fragment.instructions() {
+                        if let Instruction::SampleCubeImplicit { texture, .. } = instruction {
+                            implicit_cube_slots[*texture as usize] = true;
+                        }
+                    }
                     let packets = std::cell::Cell::new(0u64);
                     let instructions = std::cell::Cell::new(0u64);
                     let samples = std::cell::Cell::new(0u64);
@@ -362,22 +368,29 @@ impl Device {
                                     continue;
                                 }
                                 inputs[i] = fragments[i].varyings;
-                                lods[i] = textures.map(|t| {
-                                    t.map_or(0., |image| match image {
-                                        BoundImage::CubeMap(..) => 0.,
-                                        BoundImage::Texture2D(texture, sampler) => {
-                                            if matches!(sampler.mip, MipFilter::None) {
-                                                0.
-                                            } else {
-                                                texture.lod(
-                                                    fragments[i].uv_dx,
-                                                    fragments[i].uv_dy,
-                                                )
-                                            }
+                                for (slot, image) in textures.iter().copied().enumerate() {
+                                    lods[i][slot] = match image {
+                                        Some(BoundImage::CubeMap(cube_map, sampler))
+                                            if implicit_cube_slots[slot]
+                                                && !matches!(sampler.mip, MipFilter::None) =>
+                                        {
+                                            cube_map.lod(
+                                                fragments[i].varyings[1].xyz(),
+                                                fragments[i].direction_dx,
+                                                fragments[i].direction_dy,
+                                            )
                                         }
-                                    })
-                                });
-                                inputs[i][1].z = lods[i][0];
+                                        Some(BoundImage::Texture2D(texture, sampler))
+                                            if !matches!(sampler.mip, MipFilter::None) =>
+                                        {
+                                            texture.lod(
+                                                fragments[i].uv_dx,
+                                                fragments[i].uv_dy,
+                                            )
+                                        }
+                                        _ => 0.,
+                                    };
+                                }
                             }
                             let mut colors = [None; 4];
                             if simd {
@@ -605,7 +618,8 @@ impl CommandBuffer {
                             | Instruction::SampleImplicit { texture, .. } => {
                                 (*texture, ImageKind::Texture2D)
                             }
-                            Instruction::SampleCube { texture, .. } => {
+                            Instruction::SampleCube { texture, .. }
+                            | Instruction::SampleCubeImplicit { texture, .. } => {
                                 (*texture, ImageKind::CubeMap)
                             }
                             _ => continue,

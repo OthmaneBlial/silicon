@@ -35,6 +35,7 @@ impl VertexOutput {
     }
 }
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
+#[serde(default)]
 pub struct Fragment {
     pub x: u32,
     pub y: u32,
@@ -44,6 +45,9 @@ pub struct Fragment {
     pub varyings: [Vec4; 4],
     pub uv_dx: Vec2,
     pub uv_dy: Vec2,
+    /// Neighbor-center derivatives of the vec3 direction at varying location 1.
+    pub direction_dx: Vec3,
+    pub direction_dy: Vec3,
 }
 impl Fragment {
     pub fn color(&self) -> Color {

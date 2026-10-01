@@ -147,7 +147,8 @@ The environment term is a compact mip approximation, not split-sum IBL.
 The `cubemap_showcase` samples a six-face `CubeMap` for a skybox and reflected
 environment color in a native Rust shader. Material roughness selects a
 box-filtered mip level as a compact reflection-blur approximation. The GLSL
-path uses explicit `textureLod`; implicit cube-map derivatives remain unsupported.
+path supports explicit `textureLod` and isotropic implicit sampling of an
+unmodified vec3 direction varying at fragment location 1.
 The `stencil` scene uses a circular portal mask for both a textured cube and a
 translucent overlay.
 The renderer also supports deterministic 2× and 4× multisampling with

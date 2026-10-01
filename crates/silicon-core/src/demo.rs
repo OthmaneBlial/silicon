@@ -611,7 +611,7 @@ pub fn shader_cube(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
     ])?;
     let fragment = Program::new(vec![
         Input { dst: 0, slot: 1 },
-        Sample {
+        SampleImplicit {
             dst: 1,
             uv: 0,
             texture: 0,

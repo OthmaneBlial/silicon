@@ -310,14 +310,29 @@ impl Program {
                     dst,
                     direction,
                     texture,
+                }
+                | SampleCubeImplicit {
+                    dst,
+                    direction,
+                    texture,
                 } => {
                     let mut values = [Vec4::ZERO; 4];
                     for i in 0..4 {
                         if enabled(i) {
+                            let mut coordinate = lane(regs[direction as usize], i);
+                            if matches!(op, SampleCubeImplicit { .. }) {
+                                coordinate.w = *implicit_lods[i].get(texture as usize).ok_or_else(|| {
+                                    format!("SIR instruction {pc}, lane {i}: missing implicit LOD for cube texture {texture}")
+                                })?;
+                                if !coordinate.w.is_finite() {
+                                    return Err(format!(
+                                        "SIR instruction {pc}, lane {i}: non-finite implicit LOD for cube texture {texture}"
+                                    ));
+                                }
+                            }
                             results[i].samples += 1;
-                            values[i] =
-                                sample(i, texture as usize, lane(regs[direction as usize], i))
-                                    .map_err(|e| format!("SIR instruction {pc}, lane {i}: {e}"))?;
+                            values[i] = sample(i, texture as usize, coordinate)
+                                .map_err(|e| format!("SIR instruction {pc}, lane {i}: {e}"))?;
                         }
                     }
                     (

@@ -508,6 +508,8 @@ impl Renderer {
             varyings,
             uv_dx: Vec2::new(uv_x.x - varyings[1].x, uv_x.y - varyings[1].y),
             uv_dy: Vec2::new(uv_y.x - varyings[1].x, uv_y.y - varyings[1].y),
+            direction_dx: uv_x.xyz() - varyings[1].xyz(),
+            direction_dy: uv_y.xyz() - varyings[1].xyz(),
         };
         Ok(Some(PreparedFragment {
             input,

@@ -195,6 +195,11 @@ pub enum Instruction {
         direction: u8,
         texture: u8,
     },
+    SampleCubeImplicit {
+        dst: u8,
+        direction: u8,
+        texture: u8,
+    },
     Output {
         slot: u8,
         src: u8,
@@ -269,7 +274,7 @@ impl Instruction {
                 *uv = f(*uv, false)?;
                 dst
             }
-            SampleCube { dst, direction, .. } => {
+            SampleCube { dst, direction, .. } | SampleCubeImplicit { dst, direction, .. } => {
                 *direction = f(*direction, false)?;
                 dst
             }
@@ -518,6 +523,11 @@ impl Program {
                     Some(dst)
                 }
                 Instruction::SampleCube {
+                    dst,
+                    direction,
+                    texture,
+                }
+                | Instruction::SampleCubeImplicit {
                     dst,
                     direction,
                     texture,
@@ -835,11 +845,27 @@ impl Program {
                     dst,
                     direction,
                     texture,
+                }
+                | Instruction::SampleCubeImplicit {
+                    dst,
+                    direction,
+                    texture,
                 } => {
                     result.samples += 1;
+                    let mut coordinate = regs[direction as usize];
+                    if matches!(op, Instruction::SampleCubeImplicit { .. }) {
+                        coordinate.w = *implicit_lods.get(texture as usize).ok_or_else(|| {
+                            format!("SIR instruction {pc}: missing implicit LOD for cube texture {texture}")
+                        })?;
+                        if !coordinate.w.is_finite() {
+                            return Err(format!(
+                                "SIR instruction {pc}: non-finite implicit LOD for cube texture {texture}"
+                            ));
+                        }
+                    }
                     (
                         Some(dst),
-                        sample(texture as usize, regs[direction as usize])
+                        sample(texture as usize, coordinate)
                             .map_err(|e| format!("SIR instruction {pc}: {e}"))?,
                     )
                 }

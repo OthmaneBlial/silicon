@@ -42,7 +42,7 @@ fn selected_pixel_traces_executed_sir() {
         s.shader_traces[0]
             .1
             .iter()
-            .any(|t| matches!(t.operation, shader::Instruction::Sample { .. }))
+            .any(|t| matches!(t.operation, shader::Instruction::SampleImplicit { .. }))
     );
 }
 

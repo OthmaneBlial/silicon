@@ -35,10 +35,11 @@ structural Else/EndIf count for lanes still live in their parent region.
 Vertex inputs: 0 = position with w=1; 1 = color; 2 = UV; 3 = normal with w=0.
 Vertex outputs: 0 = homogeneous position; 1 = color; 2 = UV; 3 = normal;
 4 = world position. Fragment inputs 0..3 are these four interpolated varyings.
-For the recorded demo, input 1.z is the computed texture-0 LOD; input 1.xy is UV.
-`Sample` uses its source register's xy as UV and z as LOD. Fragment output 0 is
-RGBA. `SampleImplicit` gets LOD from a separate per-texture invocation array,
-so derivative metadata does not contaminate SPIR-V vector arithmetic.
+Fragment output 0 is RGBA. `Sample` uses its source register's xy as UV and z as
+explicit LOD; `SampleImplicit` gets LOD from a separate per-texture invocation
+array, so derivative metadata does not contaminate SPIR-V vector arithmetic.
+`SampleCube` uses xyz direction and w explicit LOD; `SampleCubeImplicit` gets its
+LOD from the same per-texture array.
 `Discard` ends the fragment invocation without color, depth or stencil-pass writes.
 Vertex pipelines reject it before submission changes the framebuffer. Native Rust
 shaders may also return `None` to discard.

@@ -14,7 +14,7 @@ The committed original GLSL sources and their `.spv` fixtures are in
 recompile fixtures, not to build, test or run SILICON:
 
 ```sh
-for shader in textured.vert textured.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag locals.frag control.frag; do
+for shader in textured.vert textured.frag arithmetic.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag; do
   glslangValidator -V --target-env vulkan1.0 -o "assets/shaders/$shader.spv" "assets/shaders/$shader"
   spirv-val --target-env vulkan1.0 "assets/shaders/$shader.spv"
 done
@@ -133,10 +133,15 @@ hardware quad derivative/conformance claim. Vector padding is zeroed; vec2/3
 division uses safe unused lanes and preserves the actual components. Scalar
 results are splatted into SIR registers.
 
+Implicit cube sampling accepts the **unmodified vec3 fragment input at location
+1**. Neighbor-center directions are projected through the center direction's
+selected face to estimate an isotropic texel footprint without a face-selection
+jump. Transformed directions and hardware quad derivatives are unsupported.
+`cubemap_implicit.vert` and `.frag` exercise this path in scalar and SIMD tests.
+
 Explicit-LOD 2D sampling accepts vec2 coordinates; cube sampling accepts vec3
 directions. Both accept transformed coordinates and one scalar LOD. Cube sampling
-uses the bound `CubeMap` face selection, mip chain and sampler. Implicit cube-map
-sampling is rejected until direction derivatives are available. Offsets, explicit
+uses the bound `CubeMap` face selection, mip chain and sampler. Offsets, explicit
 gradients, and other image operands remain unsupported.
 
 ## Limits and evidence
@@ -145,9 +150,8 @@ At most 1 MiB per module, ID bound 65536, 256 virtual SSA temporaries, 64
 simultaneously live runtime registers and 4096 SIR instructions. Dead temporaries
 are recycled after their last use, without increasing VM storage. Selection nesting is bounded to 64 and main to 4096 SPIR-V instructions. There are no
 loops, switches, function calls, integer arithmetic, specialization constants,
-SSBOs, storage images, implicit samples from transformed coordinates or cube
-directions,
-explicit sample offsets/gradients, compute,
+SSBOs, storage images, implicit samples from transformed coordinates, explicit
+sample offsets/gradients, compute,
 WGSL or GLSL compiler. Unreachable blocks are accepted only as isolated `OpUnreachable` merge blocks.
 Conditional targets must be distinct; overlapping regions, back edges and branches
 outside their structured region fail. Phi pairs must match all predecessors,

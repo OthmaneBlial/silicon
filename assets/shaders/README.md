@@ -14,8 +14,10 @@ negation, including signed zero. `lit.vert` +
 powers the depth-textured `shadow_showcase`. `locals.frag` checks
 local SSA snapshots, vector component stores and float/vector uniform padding.
 `pbr.vert` and `pbr.frag` power `pbr_showcase`, including a procedural
-tangent-space normal map on the sculpture. Image-based lighting is not yet
+tangent-space normal map on the sculpture. Split-sum image-based lighting is not
 implemented.
+`cubemap_implicit.vert` and `.frag` exercise GLSL `texture()` on a direct vec3
+cube direction through the scalar and SIMD command paths.
 
 `khronos_hello_triangle.vert` is a documented Apache-2.0 adaptation of the
 Khronos Vulkan-Samples `hello_triangle` vertex shader; its fragment shader is

@@ -127,38 +127,96 @@ impl CubeMap {
         .normalize()
     }
 
+    fn face_for(direction: Vec3) -> Option<CubeFace> {
+        let (x, y, z) = (direction.x, direction.y, direction.z);
+        let (ax, ay, az) = (x.abs(), y.abs(), z.abs());
+        if !direction.is_finite() || ax.max(ay).max(az) == 0. {
+            return None;
+        }
+        Some(if ax >= ay && ax >= az {
+            if x >= 0. {
+                CubeFace::PositiveX
+            } else {
+                CubeFace::NegativeX
+            }
+        } else if ay >= az {
+            if y >= 0. {
+                CubeFace::PositiveY
+            } else {
+                CubeFace::NegativeY
+            }
+        } else if z >= 0. {
+            CubeFace::PositiveZ
+        } else {
+            CubeFace::NegativeZ
+        })
+    }
+
+    fn face_index(face: CubeFace) -> usize {
+        match face {
+            CubeFace::PositiveX => 0,
+            CubeFace::NegativeX => 1,
+            CubeFace::PositiveY => 2,
+            CubeFace::NegativeY => 3,
+            CubeFace::PositiveZ => 4,
+            CubeFace::NegativeZ => 5,
+        }
+    }
+
+    fn project_to_face(face: CubeFace, direction: Vec3) -> Option<Vec2> {
+        let (s, t, major) = match face {
+            CubeFace::PositiveX => (-direction.z, -direction.y, direction.x),
+            CubeFace::NegativeX => (direction.z, -direction.y, -direction.x),
+            CubeFace::PositiveY => (direction.x, direction.z, direction.y),
+            CubeFace::NegativeY => (direction.x, -direction.z, -direction.y),
+            CubeFace::PositiveZ => (direction.x, -direction.y, direction.z),
+            CubeFace::NegativeZ => (-direction.x, -direction.y, -direction.z),
+        };
+        if !direction.is_finite() || major == 0. || !major.is_finite() {
+            return None;
+        }
+        let uv = Vec2::new((s / major + 1.) * 0.5, (t / major + 1.) * 0.5);
+        uv.is_finite().then_some(uv)
+    }
+
     pub fn mip_levels(&self) -> usize {
         self.faces[0].levels.len()
+    }
+
+    /// Neighbor-center isotropic LOD, projected through the center direction's face.
+    pub fn lod(&self, direction: Vec3, dx: Vec3, dy: Vec3) -> f32 {
+        let max_lod = (self.mip_levels() - 1) as f32;
+        let Some(face) = Self::face_for(direction) else {
+            return max_lod;
+        };
+        let Some(center) = Self::project_to_face(face, direction) else {
+            return max_lod;
+        };
+        let (Some(uv_x), Some(uv_y)) = (
+            Self::project_to_face(face, direction + dx),
+            Self::project_to_face(face, direction + dy),
+        ) else {
+            return max_lod;
+        };
+        let width = self.faces[0].levels[0].width as f32;
+        let height = self.faces[0].levels[0].height as f32;
+        let rho = Vec2::new((uv_x.x - center.x) * width, (uv_x.y - center.y) * height)
+            .length()
+            .max(Vec2::new((uv_y.x - center.x) * width, (uv_y.y - center.y) * height).length());
+        if rho.is_finite() {
+            rho.max(1.).log2()
+        } else {
+            max_lod
+        }
     }
 
     pub fn sample(&self, direction: Vec3, lod: f32, sampler: Sampler) -> Result<Color> {
         if !direction.is_finite() || !lod.is_finite() {
             return Err("cube direction and LOD must be finite".into());
         }
-        let (x, y, z) = (direction.x, direction.y, direction.z);
-        let (ax, ay, az) = (x.abs(), y.abs(), z.abs());
-        let (face, s, t, major) = if ax >= ay && ax >= az {
-            if x >= 0. {
-                (0, -z, -y, ax)
-            } else {
-                (1, z, -y, ax)
-            }
-        } else if ay >= az {
-            if y >= 0. {
-                (2, x, z, ay)
-            } else {
-                (3, x, -z, ay)
-            }
-        } else if z >= 0. {
-            (4, x, -y, az)
-        } else {
-            (5, -x, -y, az)
-        };
-        if major == 0. {
-            return Err("cube direction must be nonzero".into());
-        }
-        let uv = Vec2::new((s / major + 1.) * 0.5, (t / major + 1.) * 0.5);
-        self.faces[face].sample(
+        let face = Self::face_for(direction).ok_or("cube direction must be nonzero")?;
+        let uv = Self::project_to_face(face, direction).ok_or("invalid cube direction")?;
+        self.faces[Self::face_index(face)].sample(
             uv,
             lod,
             Sampler {
@@ -661,6 +719,20 @@ mod tests {
             cube.sample(Vec3::new(0., 0., 1.), f32::INFINITY, sampler)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn cube_lod_projects_neighbors_through_the_center_face() {
+        let face = || {
+            let mut texture =
+                Texture::new(16, 16, TextureFormat::Rgba8, &vec![255; 16 * 16 * 4]).unwrap();
+            texture.generate_mips();
+            texture
+        };
+        let cube = CubeMap::new(std::array::from_fn(|_| face())).unwrap();
+        let lod = cube.lod(Vec3::new(1., 0.9, 0.), Vec3::new(0., 0.2, 0.), Vec3::ZERO);
+        assert!((lod - 1.6f32.log2()).abs() < 1e-6);
+        assert_eq!(cube.lod(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO), 4.);
     }
 
     #[test]
