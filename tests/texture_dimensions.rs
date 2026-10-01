@@ -17,12 +17,11 @@ fn shader_pipeline(fragment: Program) -> Arc<ShaderPipeline> {
     })
 }
 
-fn render<F: Fn(&mut CommandBuffer)>(
+fn record_commands<F: Fn(&mut CommandBuffer)>(
     pipeline: Arc<ShaderPipeline>,
     vertices: Buffer<Vertex>,
     bind_image: &F,
-    backend: Backend,
-) -> Vec<u8> {
+) -> CommandBuffer {
     let mut commands = Device.commands();
     commands.begin_render_pass(Color::BLACK);
     commands.bind_pipeline(pipeline);
@@ -30,11 +29,42 @@ fn render<F: Fn(&mut CommandBuffer)>(
     bind_image(&mut commands);
     commands.draw(0, 3);
     commands.end_render_pass();
+    commands
+}
 
+fn render<F: Fn(&mut CommandBuffer)>(
+    pipeline: Arc<ShaderPipeline>,
+    vertices: Buffer<Vertex>,
+    bind_image: &F,
+    backend: Backend,
+) -> Vec<u8> {
+    let commands = record_commands(pipeline, vertices, bind_image);
     let mut renderer = Renderer::new(32, 32).unwrap();
     renderer.backend = backend;
     Device.submit(&commands, &mut renderer).unwrap();
     renderer.framebuffer.bytes().to_vec()
+}
+
+fn render_capture<F: Fn(&mut CommandBuffer)>(
+    pipeline: Arc<ShaderPipeline>,
+    vertices: Buffer<Vertex>,
+    bind_image: &F,
+    name: &str,
+) -> Vec<u8> {
+    let capture = FrameCapture {
+        version: 1,
+        width: 32,
+        height: 32,
+        commands: record_commands(pipeline, vertices, bind_image),
+    };
+    let path = std::env::temp_dir().join(format!(
+        "silicon-texture-dimensions-{name}-{}.silicon",
+        std::process::id()
+    ));
+    capture.save(&path).unwrap();
+    let loaded = FrameCapture::load(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    loaded.replay().unwrap().framebuffer.bytes().to_vec()
 }
 
 fn triangle() -> Buffer<Vertex> {
@@ -80,9 +110,13 @@ fn array_sampling_runs_through_scalar_and_simd_shader_paths() {
         );
     };
     let scalar = render(Arc::clone(&pipeline), triangle(), &bind, Backend::Scalar);
-    let simd = render(pipeline, triangle(), &bind, Backend::Simd);
+    let simd = render(Arc::clone(&pipeline), triangle(), &bind, Backend::Simd);
     assert_eq!(scalar, simd);
     assert_eq!(&scalar[(16 * 32 + 16) * 4..][..4], &[0, 0, 255, 255]);
+    assert_eq!(
+        scalar,
+        render_capture(Arc::clone(&pipeline), triangle(), &bind, "array")
+    );
 
     let explicit = shader_pipeline(
         Program::new(vec![
@@ -143,9 +177,13 @@ fn volume_sampling_runs_through_scalar_and_simd_shader_paths() {
         );
     };
     let scalar = render(Arc::clone(&pipeline), triangle(), &bind, Backend::Scalar);
-    let simd = render(pipeline, triangle(), &bind, Backend::Simd);
+    let simd = render(Arc::clone(&pipeline), triangle(), &bind, Backend::Simd);
     assert_eq!(scalar, simd);
     assert_eq!(&scalar[(16 * 32 + 16) * 4..][..4], &[0, 255, 0, 255]);
+    assert_eq!(
+        scalar,
+        render_capture(Arc::clone(&pipeline), triangle(), &bind, "volume")
+    );
 
     let explicit = shader_pipeline(
         Program::new(vec![
