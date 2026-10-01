@@ -47,8 +47,9 @@ to open ordinary doors, operate manual lifts, or use the exit, and Escape to
 exit. Every frame submits the scene again through SILICON; movement stays inside
 a BSP-leaf floor, keeps a 16-unit margin from one-sided or explicitly blocking
 lines, limits steps to 24 units, and requires 56 units of ceiling clearance.
-WAD stim packs, medikits, health bonuses, soul spheres, radiation suits, clips,
-ammo boxes, green/blue armor, armor bonuses, and keys render as cutout
+WAD stim packs, medikits, health bonuses, soul spheres, radiation suits,
+invulnerability and partial-invisibility spheres, clips, ammo boxes, green/blue
+armor, armor bonuses, and keys render as cutout
 billboards. Pickups require clear sight and a 24-unit range. Health/ammo and
 armor upgrades stay on the map when they cannot improve the player's inventory;
 repeated keys, health bonuses, soul spheres, and armor bonuses are consumed on
@@ -66,6 +67,14 @@ enemy melee, hitscan, fireball, and sector damage leave both health and armor
 unchanged. The duration and immunity follow id Software's [`P_GivePower` and
 `P_DamageMobj`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c)
 and [`INVULNTICS`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/doomdef.h).
+Map thing 2024 is a partial-invisibility sphere. Collecting one starts or
+refreshes a 60-second timer; while active, former-human and shotgunner hitscan
+attacks can miss and imp fireballs can veer off target. Melee attacks remain
+accurate. The sample models each hitscan attack as one ray and does not draw
+Doom's fuzzy player-shadow effect. The duration and enemy aim deviation follow
+id Software's [`P_GivePower`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c),
+[`INVISTICS`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/doomdef.h),
+and [`A_FaceTarget`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_enemy.c).
 The player starts with
 50 pistol rounds. Press `E` within 64 units from the front of a special-1 door
 to raise its back sector at 70 units per second, wait 150 tics (about 4.3
@@ -211,8 +220,8 @@ that test fixture is not included.
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
 gib states, Doom's detailed actor navigation, other sound events, other
-power-up effects beyond health bonuses, soul spheres, radiation suits, and
-invulnerability spheres, locked-door action variants, crossing specials other than 2 and 88,
+power-up effects beyond health bonuses, soul spheres, radiation suits,
+invulnerability spheres, and partial-invisibility spheres, locked-door action variants, crossing specials other than 2 and 88,
 other use specials, episode finales, other weapons and their ammunition, and full weapon animation
 beyond the brief idle/fire pose remain unimplemented.
 `F_SKY1` ceilings use the map's episode sky texture, sampled by view angle. The

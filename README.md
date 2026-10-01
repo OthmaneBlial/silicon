@@ -197,7 +197,11 @@ advance when the next WAD map exists; special-51 exits route through episode
 secret maps. The player or a living enemy can cross a special-88 line, or the
 player can use a special-62 line to move its tagged platform down, wait, then return it to its
 starting height. Map thing 2022 grants 30 seconds of invulnerability against
-all implemented player damage. The special-23 use line lowers its three tagged
+all implemented player damage. Map thing 2024 grants 60 seconds of partial
+invisibility: human and shotgunner hitscan attacks can miss, and imp fireballs
+can veer off target; melee remains accurate. The sample uses one ray per
+hitscan attack and omits Doom's fuzzy shadow rendering. The special-23 use line
+lowers its three tagged
 floors to their lowest neighboring height once. Matching red, yellow, or blue cards and
 skulls open special-28, special-27, and special-26 doors; use-only specials
 32/33/34 open and leave their matching blue/red/yellow keyed doors open, and
