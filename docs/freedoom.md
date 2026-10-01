@@ -48,11 +48,12 @@ shotgunners fire 6-damage hitscan attacks within 512 units, at most once every
 launch happen as soon as the cooldown expires; the pose plays afterward, with
 no attack windup or aim spread. The window title
 reports health, ammo, pickups, kills, draw calls, and triangles. Imps launch a
-straight BAL1A0 fireball within 512 units when they have clear sight;
-it travels at 180 units per second, lasts up to 3 seconds, and deals 8 damage
-on contact, with a 2-second launch cooldown. On wall or player impact it plays
-BAL1C0–BAL1E0 for six Doom tics each. This prototype omits vertical aiming and
-motion. The WAD
+3D straight BAL1A0 fireball aimed at the player's body midpoint within 512
+units when they have clear sight. It travels at 180 units per second, lasts up
+to 3 seconds, and deals 8 damage on contact when the projectile height overlaps
+the player, with a 2-second launch cooldown. Its z position follows a straight
+line between the shooter and player's floor-based body midpoints. On wall or
+player impact it plays BAL1C0–BAL1E0 for six Doom tics each. The WAD
 pistol's PISGA0 patch is the idle camera-aligned billboard; firing briefly uses
 its PISGC0 patch for 0.16 seconds. Both weapon poses use SILICON's cutout shader
 and draw pipeline.
@@ -80,7 +81,7 @@ that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; enemy
-idle/pain/gib states, projectile vertical motion, keys, exits, other weapons and
+idle/pain/gib states, keys, exits, other weapons and
 their ammunition, full weapon animation beyond the brief idle/fire pose, and
 sound remain unimplemented.
 `F_SKY1` ceilings show the clear color. The checked-in

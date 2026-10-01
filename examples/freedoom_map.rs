@@ -18,6 +18,7 @@ const MAP_LUMPS: [&str; 11] = [
 ];
 const MAX_WAD_BYTES: u64 = 128 * 1024 * 1024;
 const DEPTH_BUCKET_SIZE: f32 = 2048.0;
+const ACTOR_HEIGHT: f32 = 56.0;
 
 #[derive(Clone, Copy)]
 struct Lump {
@@ -1001,8 +1002,10 @@ struct Actor {
 struct Projectile {
     x: f32,
     y: f32,
+    z: f32,
     velocity_x: f32,
     velocity_y: f32,
+    velocity_z: f32,
     lifetime: f32,
     explosion_time: Option<f32>,
 }
@@ -1155,7 +1158,7 @@ fn projectile_vertices(
         sprite,
         camera_angle,
         sector,
-        sector.floor + 28.0,
+        projectile.z,
     )
 }
 
@@ -1575,6 +1578,10 @@ fn bsp_sector_at(map: &Map, x: f32, y: f32) -> Option<Sector> {
     map.sectors.get(sidedef.sector as usize).copied()
 }
 
+fn floor_at(map: &Map, x: f32, y: f32) -> f32 {
+    bsp_sector_at(map, x, y).map_or(0.0, |sector| sector.floor)
+}
+
 fn distance_to_segment_squared(point: Vertex2, a: Vertex2, b: Vertex2) -> f32 {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
@@ -1591,7 +1598,7 @@ fn can_occupy(map: &Map, player: Player, from: Sector) -> bool {
     let Some(sector) = bsp_sector_at(map, player.x, player.y) else {
         return false;
     };
-    if sector.floor > from.floor + 24.0 || sector.ceiling < sector.floor + 56.0 {
+    if sector.floor > from.floor + 24.0 || sector.ceiling < sector.floor + ACTOR_HEIGHT {
         return false;
     }
     let point = Vertex2 {
@@ -1807,12 +1814,16 @@ fn update_actors(
             )
         {
             if actor.attack_cooldown == 0.0 {
-                let speed = 180.0 / distance.max(1.0);
+                let z = floor_at(map, actor.x, actor.y) + ACTOR_HEIGHT * 0.5;
+                let dz = floor_at(map, player.x, player.y) + ACTOR_HEIGHT * 0.5 - z;
+                let speed = 180.0 / (distance * distance + dz * dz).sqrt().max(1.0);
                 projectiles.push(Projectile {
                     x: actor.x,
                     y: actor.y,
+                    z,
                     velocity_x: dx * speed,
                     velocity_y: dy * speed,
+                    velocity_z: dz * speed,
                     lifetime: 3.0,
                     explosion_time: None,
                 });
@@ -1872,6 +1883,7 @@ fn update_projectiles(
             x: from.x + projectile.velocity_x * delta,
             y: from.y + projectile.velocity_y * delta,
         };
+        let next_z = projectile.z + projectile.velocity_z * delta;
         let step_x = to.x - from.x;
         let step_y = to.y - from.y;
         let step_distance = (step_x * step_x + step_y * step_y).sqrt();
@@ -1881,16 +1893,26 @@ fn update_projectiles(
                 y: step_y / step_distance,
             };
             let travel = nearest_blocking_wall(map, from, direction).min(step_distance);
+            let fraction = if step_distance > 0.0 {
+                (travel / step_distance).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             projectile.x = from.x + direction.x * travel;
             projectile.y = from.y + direction.y * travel;
+            projectile.z += (next_z - projectile.z) * fraction;
             projectile.explosion_time = Some(0.0);
             return true;
         }
         projectile.x = to.x;
         projectile.y = to.y;
+        projectile.z = next_z;
         let dx = player.x - to.x;
         let dy = player.y - to.y;
-        if dx * dx + dy * dy <= 16.0 * 16.0 {
+        let player_floor = floor_at(map, player.x, player.y);
+        if dx * dx + dy * dy <= 16.0 * 16.0
+            && (player_floor..=player_floor + ACTOR_HEIGHT).contains(&projectile.z)
+        {
             if *health > 0 {
                 *health -= 8;
             }
@@ -3179,14 +3201,47 @@ mod tests {
 
     #[test]
     fn imps_launch_visible_fireballs_that_hit_and_stop_at_walls() {
+        let sector = Sector {
+            floor: 0.0,
+            ceiling: 128.0,
+            light: 255,
+            floor_flat: [0; 8],
+            ceiling_flat: [0; 8],
+        };
+        let raised = Sector {
+            floor: 32.0,
+            ..sector
+        };
+        let side = |sector| SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper: [0; 8],
+            lower: [0; 8],
+            middle: [0; 8],
+            sector,
+        };
         let mut map = Map {
-            vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
-            sectors: vec![],
-            sides: vec![],
-            lines: vec![[0, 1, 1, u16::MAX, u16::MAX]],
-            segs: vec![],
-            subsectors: vec![],
-            nodes: vec![],
+            vertices: vec![
+                Vertex2 { x: 10.0, y: -32.0 },
+                Vertex2 { x: 10.0, y: 32.0 },
+                Vertex2 { x: 90.0, y: -32.0 },
+                Vertex2 { x: 90.0, y: 32.0 },
+                Vertex2 { x: 50.0, y: -32.0 },
+                Vertex2 { x: 50.0, y: 32.0 },
+            ],
+            sectors: vec![sector, raised],
+            sides: vec![side(0), side(1)],
+            lines: vec![[0, 1, 0, 0, 1], [2, 3, 0, 1, 0], [4, 5, 1, 0, 1]],
+            segs: vec![[0, 1, 0, 0, 0], [2, 3, 1, 0, 0]],
+            subsectors: vec![[1, 0], [1, 1]],
+            nodes: vec![Node {
+                x: 50,
+                y: 0,
+                dx: 0,
+                dy: 1,
+                child_bounds: [Bounds2::default(); 2],
+                children: [0x8001, 0x8000],
+            }],
             things: vec![],
         };
         let mut actors = [Actor {
@@ -3217,7 +3272,7 @@ mod tests {
         );
         assert!(projectiles.is_empty());
 
-        map.lines.clear();
+        map.lines[2][2] = 0;
         update_actors(
             &map,
             &mut actors,
@@ -3227,8 +3282,11 @@ mod tests {
             0.05,
         );
         assert_eq!(projectiles.len(), 1);
+        assert_eq!(projectiles[0].z, 60.0);
+        assert!(projectiles[0].velocity_z < 0.0);
         update_projectiles(&map, &mut projectiles, player, &mut health, 0.4);
         assert_eq!(health, 100);
+        assert!(projectiles[0].z < 60.0);
         update_projectiles(&map, &mut projectiles, player, &mut health, 0.1);
         assert_eq!(health, 92);
         assert_eq!(projectiles.len(), 1);
@@ -3245,16 +3303,19 @@ mod tests {
         projectiles.push(Projectile {
             x: 100.0,
             y: 0.0,
+            z: 60.0,
             velocity_x: -180.0,
             velocity_y: 0.0,
+            velocity_z: -55.0,
             lifetime: 3.0,
             explosion_time: None,
         });
-        map.lines.push([0, 1, 1, u16::MAX, u16::MAX]);
+        map.lines[2][2] = 1;
         update_projectiles(&map, &mut projectiles, player, &mut health, 0.3);
         assert_eq!(projectiles.len(), 1);
         assert_eq!(projectiles[0].explosion_time, Some(0.0));
         assert!((projectiles[0].x - 50.0).abs() < 0.01);
+        assert!((projectiles[0].z - 44.722).abs() < 0.05);
         assert_eq!(health, 92);
         health = 0;
         update_projectiles(&map, &mut projectiles, player, &mut health, 0.2);
