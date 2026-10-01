@@ -165,10 +165,13 @@ Doom's BSP wall occlusion or per-column portal clipping. At the checked-in
 960×720 start view, 570 of 682 subsectors remain in the horizontal BSP view and
 SILICON submits 5,613 triangles across 210 draws: 5,509 map triangles, 64 sky
 triangles, 29 enemy billboards, ten pickup billboards, and one weapon billboard.
-Five release renders on Apple M2 measured a median process CPU time of 0.68 s.
-The earlier depth-band comparison measured 0.62 s against
-0.69 s at its predecessor. This fixed-pose measurement is not an engine-wide
-benchmark. Earlier opaque-only counts were
+The sky draw follows opaque map batches with `LessEqual` depth testing and depth
+writes disabled, so the rasterizer rejects sky samples behind nearer map
+geometry before it runs the sky shader.
+Five release renders on Apple M2 measured a median process CPU time of 0.58 s;
+the E1M1 output is byte-identical to the preceding capture. The earlier
+depth-band comparison measured 0.62 s against 0.69 s at its predecessor. These
+fixed-pose measurements are not engine-wide benchmarks. Earlier opaque-only counts were
 3,896 triangles and 164 draws for this view. The screenshot shows the player
 start, pistol, and a medikit; enemies are outside that camera view. A temporary
 WAD with only its player start moved was used to capture an enemy sprite in view;

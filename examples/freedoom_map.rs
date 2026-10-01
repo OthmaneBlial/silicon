@@ -3424,7 +3424,7 @@ impl PreparedScene {
                 &vertex_shader,
                 &fragment_shader,
                 Pipeline {
-                    depth_compare: api::Compare::Always,
+                    depth_compare: api::Compare::LessEqual,
                     depth_write: false,
                     ..Pipeline::default()
                 },
@@ -3581,23 +3581,6 @@ impl PreparedScene {
         commands.begin_render_pass(Color::new(0.12, 0.22, 0.36, 1.0));
         commands.bind_pipeline(self.pipeline.clone());
         commands.bind_uniform_buffer(uniform_buffer.clone());
-        if let (Some(texture), Some(pipeline)) = (&self.sky_texture, &self.sky_pipeline) {
-            let vertices = sky_vertices(
-                player,
-                eye_height,
-                (texture.levels[0].width, texture.levels[0].height),
-                (960, 720),
-            );
-            let count = u32::try_from(vertices.len())
-                .map_err(|_| invalid("sky vertex count exceeds SILICON draw range"))?;
-            if count > 0 {
-                commands.bind_pipeline(pipeline.clone());
-                commands.bind_texture(0, Arc::clone(texture), self.sampler);
-                commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
-                commands.draw(0, count);
-                commands.bind_pipeline(self.pipeline.clone());
-            }
-        }
         let mut batches = BTreeMap::new();
         for (leaf, draws) in self.draws.iter().enumerate() {
             if !visible[leaf] {
@@ -3636,6 +3619,22 @@ impl PreparedScene {
             commands.bind_texture(0, texture, self.sampler);
             commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
             commands.draw(0, count);
+        }
+        if let (Some(texture), Some(pipeline)) = (&self.sky_texture, &self.sky_pipeline) {
+            let vertices = sky_vertices(
+                player,
+                eye_height,
+                (texture.levels[0].width, texture.levels[0].height),
+                (960, 720),
+            );
+            let count = u32::try_from(vertices.len())
+                .map_err(|_| invalid("sky vertex count exceeds SILICON draw range"))?;
+            if count > 0 {
+                commands.bind_pipeline(pipeline.clone());
+                commands.bind_texture(0, Arc::clone(texture), self.sampler);
+                commands.bind_vertex_buffer(self.device.create_vertex_buffer(vertices)?);
+                commands.draw(0, count);
+            }
         }
         commands.bind_pipeline(self.sprite_pipeline.clone());
         commands.bind_uniform_buffer(uniform_buffer.clone());
