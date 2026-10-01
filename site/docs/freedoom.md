@@ -167,8 +167,9 @@ SILICON submits 5,613 triangles across 210 draws: 5,509 map triangles, 64 sky
 triangles, 29 enemy billboards, ten pickup billboards, and one weapon billboard.
 The sky draw follows opaque map batches with `LessEqual` depth testing and depth
 writes disabled, so the rasterizer rejects sky samples behind nearer map
-geometry before it runs the sky shader.
-Five release renders on Apple M2 measured a median process CPU time of 0.58 s;
+geometry before it runs the sky shader. The panorama sits 64 map units inside
+the 8,192-unit far clip plane to leave room for f32 transform rounding. Five
+release renders on Apple M2 measured a median process CPU time of 0.60 s;
 the E1M1 output is byte-identical to the preceding capture. The earlier
 depth-band comparison measured 0.62 s against 0.69 s at its predecessor. These
 fixed-pose measurements are not engine-wide benchmarks. Earlier opaque-only counts were

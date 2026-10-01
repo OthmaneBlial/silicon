@@ -54,6 +54,9 @@ const DOOM_SKY_MID: f32 = 100.0;
 const DOOM_SKY_BASE_WIDTH: f32 = 320.0;
 const DOOM_SKY_ANGLE_COLUMNS: f32 = 1024.0;
 const SKY_MESH_SEGMENTS: usize = 32;
+const DOOM_VIEW_FAR: f32 = 8192.0;
+// Keep the panorama inside clip space despite f32 view-transform rounding.
+const SKY_CLIP_MARGIN: f32 = 64.0;
 
 #[derive(Clone, Copy)]
 struct Lump {
@@ -1376,7 +1379,7 @@ fn sky_vertices(
     let forward = Vec3::new(angle.cos(), 0.0, -angle.sin());
     let up = Vec3::new(0.0, 1.0, 0.0);
     let right = forward.cross(up);
-    let distance = 4096.0;
+    let distance = DOOM_VIEW_FAR - SKY_CLIP_MARGIN;
     let center = Vec3::new(player.x, eye_height, -player.y) + forward * distance;
     let half_height = distance * (1.22_f32 * 0.5).tan();
     let aspect = output_width as f32 / output_height as f32;
@@ -3570,7 +3573,7 @@ impl PreparedScene {
         let radians = player.angle.to_radians();
         let forward = Vec3::new(radians.cos(), 0.0, -radians.sin());
         let view = Mat4::look_at(eye, eye + forward, Vec3::new(0.0, 1.0, 0.0));
-        let projection = Mat4::perspective(1.22, 4.0 / 3.0, 1.0, 8192.0);
+        let projection = Mat4::perspective(1.22, 4.0 / 3.0, 1.0, DOOM_VIEW_FAR);
         let uniforms = (projection * view)
             .0
             .into_iter()
