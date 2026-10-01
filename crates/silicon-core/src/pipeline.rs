@@ -59,7 +59,7 @@ impl Fragment {
         self.varyings[3].xyz()
     }
 }
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Compare {
     Never,
     #[default]
@@ -85,20 +85,20 @@ impl Compare {
         }
     }
 }
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Cull {
     #[default]
     None,
     Front,
     Back,
 }
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum FrontFace {
     #[default]
     Ccw,
     Cw,
 }
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Blend {
     #[default]
     Replace,
@@ -123,7 +123,7 @@ impl Blend {
         }
     }
 }
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum StencilOp {
     #[default]
     Keep,
@@ -145,7 +145,7 @@ impl StencilOp {
         }
     }
 }
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StencilState {
     pub compare: Compare,
     pub reference: u8,
@@ -155,7 +155,7 @@ pub struct StencilState {
     pub depth_fail: StencilOp,
     pub pass: StencilOp,
 }
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Pipeline {
     pub color_write: bool,
     pub depth_compare: Compare,

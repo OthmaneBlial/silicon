@@ -646,6 +646,28 @@ pub fn shader_cube_with_programs(
     fragment: shader::Program,
 ) -> Result<FrameCapture> {
     use std::sync::Arc;
+    shader_cube_with_pipeline(
+        width,
+        height,
+        time,
+        Arc::new(ShaderPipeline {
+            state: Pipeline {
+                cull: Cull::Back,
+                ..Default::default()
+            },
+            vertex,
+            fragment,
+        }),
+    )
+}
+/// The same cube/resources, using a prebuilt pipeline object.
+pub fn shader_cube_with_pipeline(
+    width: u32,
+    height: u32,
+    time: f32,
+    pipeline: std::sync::Arc<ShaderPipeline>,
+) -> Result<FrameCapture> {
+    use std::sync::Arc;
     if !time.is_finite() {
         return Err("scene time must be finite".into());
     }
@@ -671,14 +693,7 @@ pub fn shader_cube_with_programs(
     )?;
     let mut commands = device.commands();
     commands.begin_render_pass(Color::new(0.022, 0.032, 0.05, 1.));
-    commands.bind_pipeline(Arc::new(ShaderPipeline {
-        state: Pipeline {
-            cull: Cull::Back,
-            ..Default::default()
-        },
-        vertex,
-        fragment,
-    }));
+    commands.bind_pipeline(pipeline);
     commands.bind_vertex_buffer(device.create_vertex_buffer(mesh.vertices)?);
     commands.bind_index_buffer(device.create_index_buffer(mesh.indices.clone())?);
     commands.bind_uniform_buffer(device.create_uniform_buffer(uniforms)?);
@@ -695,32 +710,42 @@ pub fn shader_cube_with_programs(
 
 /// GLSL compiled externally by glslang, then translated and executed by SILICON.
 pub fn spirv_cube(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
-    static PROGRAMS: OnceLock<shader::Result<(shader::Program, shader::Program)>> = OnceLock::new();
-    let programs = PROGRAMS
+    use std::sync::Arc;
+    static PIPELINE: OnceLock<shader::Result<Arc<ShaderPipeline>>> = OnceLock::new();
+    let pipeline = PIPELINE
         .get_or_init(|| {
-            compile_graphics(
+            ShaderPipeline::from_spirv(
                 include_bytes!("../../../assets/shaders/textured.vert.spv"),
                 include_bytes!("../../../assets/shaders/textured.frag.spv"),
+                Pipeline {
+                    cull: Cull::Back,
+                    ..Default::default()
+                },
             )
         })
         .as_ref()
         .map_err(|e| e.clone())?;
-    shader_cube_with_programs(width, height, time, programs.0.clone(), programs.1.clone())
+    shader_cube_with_pipeline(width, height, time, Arc::clone(pipeline))
 }
 
 /// Nested GLSL discard, conditional sampling, Phi merge and early return on a textured cube.
 pub fn spirv_cutout(width: u32, height: u32, time: f32) -> Result<FrameCapture> {
-    static PROGRAMS: OnceLock<shader::Result<(shader::Program, shader::Program)>> = OnceLock::new();
-    let programs = PROGRAMS
+    use std::sync::Arc;
+    static PIPELINE: OnceLock<shader::Result<Arc<ShaderPipeline>>> = OnceLock::new();
+    let pipeline = PIPELINE
         .get_or_init(|| {
-            compile_graphics(
+            ShaderPipeline::from_spirv(
                 include_bytes!("../../../assets/shaders/textured.vert.spv"),
                 include_bytes!("../../../assets/shaders/control.ssa.frag.spv"),
+                Pipeline {
+                    cull: Cull::Back,
+                    ..Default::default()
+                },
             )
         })
         .as_ref()
         .map_err(|e| e.clone())?;
-    shader_cube_with_programs(width, height, time, programs.0.clone(), programs.1.clone())
+    shader_cube_with_pipeline(width, height, time, Arc::clone(pipeline))
 }
 fn compile_graphics(
     vertex: &[u8],

@@ -256,7 +256,7 @@ fn report(r: &Renderer, elapsed: f64, submission: Option<&Submission>) {
         );
     }
 }
-fn load_shader(path: &str) -> Result<(shader::spirv::Module, shader::spirv::Compiled)> {
+fn load_shader_bytes(path: &str) -> Result<Vec<u8>> {
     use std::io::Read;
     let file = std::fs::File::open(path)?;
     if file.metadata()?.len() > 1024 * 1024 {
@@ -264,6 +264,13 @@ fn load_shader(path: &str) -> Result<(shader::spirv::Module, shader::spirv::Comp
     }
     let mut bytes = Vec::new();
     file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(format!("{path}: SPIR-V exceeds 1 MiB").into());
+    }
+    Ok(bytes)
+}
+fn load_shader(path: &str) -> Result<(shader::spirv::Module, shader::spirv::Compiled)> {
+    let bytes = load_shader_bytes(path)?;
     let module = shader::spirv::Module::parse(&bytes).map_err(|e| format!("{path}: {e}"))?;
     let compiled = module.translate().map_err(|e| format!("{path}: {e}"))?;
     Ok((module, compiled))
@@ -273,7 +280,7 @@ fn run() -> Result<()> {
     let command = args.first().map_or("help", String::as_str);
     if command == "help" || command == "--help" {
         println!(
-            "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N --report timings.json]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n  silicon inspect-shader shader.spv\n  silicon render-shaders vertex.spv fragment.spv [render options]\n\nExecution: --backend scalar|simd --threads 1..64 --samples 1|2|4\nScenes: showcase, cubemap_showcase, anisotropy_showcase, cube, textured_cube, triangle_3d, shader_cube, spirv_cube, spirv_showcase, spirv_cutout, shadow_showcase, pbr_showcase, stencil\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
+            "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N --report timings.json]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n  silicon inspect-shader shader.spv\n  silicon render-shaders vertex.spv fragment.spv [render options]\n  silicon pipeline-cache vertex.spv fragment.spv\n\nExecution: --backend scalar|simd --threads 1..64 --samples 1|2|4\nScenes: showcase, cubemap_showcase, anisotropy_showcase, cube, textured_cube, triangle_3d, shader_cube, spirv_cube, spirv_showcase, spirv_cutout, shadow_showcase, pbr_showcase, stencil\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
         );
         return Ok(());
     }
@@ -291,10 +298,48 @@ fn run() -> Result<()> {
         );
         return Ok(());
     }
+    if command == "pipeline-cache" {
+        if args.len() != 3 {
+            return Err("pipeline-cache requires vertex and fragment SPIR-V paths".into());
+        }
+        let vertex = load_shader_bytes(&args[1])?;
+        let fragment = load_shader_bytes(&args[2])?;
+        let state = Pipeline {
+            cull: Cull::Back,
+            ..Default::default()
+        };
+        let mut cache = PipelineCache::default();
+        let cold_start = Instant::now();
+        let _ = cache.get_or_compile(&vertex, &fragment, state)?;
+        let cold = cold_start.elapsed();
+        const WARM_HITS: usize = 100;
+        let warm_start = Instant::now();
+        for _ in 0..WARM_HITS {
+            let _ = cache.get_or_compile(&vertex, &fragment, state)?;
+        }
+        let warm = warm_start.elapsed();
+        let stats = cache.stats();
+        println!(
+            "Pipeline cache: {} entries, {} hits, {} misses, {} evictions",
+            stats.entries, stats.hits, stats.misses, stats.evictions
+        );
+        println!(
+            "Cold miss (parse + translate + link): {:.3} ms | {WARM_HITS} warm hits: {:.3} ms total ({:.3} µs/hit)",
+            cold.as_secs_f64() * 1000.,
+            warm.as_secs_f64() * 1000.,
+            warm.as_secs_f64() * 1_000_000. / WARM_HITS as f64
+        );
+        println!(
+            "Instrumented compile: {:.3} ms | key creation + lookups: {:.3} ms",
+            stats.compile_time.as_secs_f64() * 1000.,
+            stats.lookup_time.as_secs_f64() * 1000.
+        );
+        return Ok(());
+    }
     if command == "inspect-shader" || command == "render-shaders" {
         let path = args.get(1).ok_or("SPIR-V path required")?;
-        let (module, vertex) = load_shader(path)?;
         if command == "inspect-shader" {
+            let (module, vertex) = load_shader(path)?;
             println!(
                 "SPIR-V 1.0 | {:?} main | ID bound {} | {} binary / {} SIR instructions",
                 vertex.stage,
@@ -317,19 +362,22 @@ fn run() -> Result<()> {
             return Ok(());
         }
         let fragment_path = args.get(2).ok_or("fragment SPIR-V path required")?;
-        let (_, fragment) = load_shader(fragment_path)?;
-        shader::spirv::link(&vertex, &fragment)?;
+        let vertex = load_shader_bytes(path)?;
+        let fragment = load_shader_bytes(fragment_path)?;
         let o = options(&args[3..])?;
         if o.capture.is_some() && o.samples != SampleCount::One {
             return Err("frame captures do not store multisample state".into());
         }
-        let c = demo::shader_cube_with_programs(
-            o.scene.width,
-            o.scene.height,
-            o.scene.time,
-            vertex.program,
-            fragment.program,
+        let pipeline = PipelineCache::default().get_or_compile(
+            &vertex,
+            &fragment,
+            Pipeline {
+                cull: Cull::Back,
+                ..Default::default()
+            },
         )?;
+        let c =
+            demo::shader_cube_with_pipeline(o.scene.width, o.scene.height, o.scene.time, pipeline)?;
         let mut r = Renderer::new(o.scene.width, o.scene.height)?;
         r.set_sample_count(o.samples)?;
         r.backend = o.backend;

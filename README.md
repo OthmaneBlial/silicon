@@ -148,7 +148,7 @@ flowchart LR
 | Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 → SIR; nested selections, Phi, early return/discard |
 | Output merger | Replace, source alpha, additive and multiplicative blending; color/depth write enables |
 | Execution | Scalar reference, optional SIMD coverage4 and NEON/SSE four-fragment SIR, disjoint worker bands |
-| Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling, cargo-fuzz targets |
+| Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling, pipeline-cache probe, cargo-fuzz targets |
 
 The opt-in SIMD path processes four coverage lanes and runs recorded SIR fragment
 shaders in masked groups of four. Arithmetic spans fragments; vertex shaders,
@@ -163,6 +163,7 @@ bytes and bitwise VM outputs/traces for all sixteen lane masks. See [SIMD detail
 cargo run --release -p silicon-cli -- benchmark showcase --frames 30 --backend scalar --threads 1
 cargo run --release -p silicon-cli -- benchmark spirv_showcase --frames 30 --backend simd --threads 4 --report output/frames.json
 cargo run --release -p silicon-cli -- profile spirv_showcase --threads 4
+cargo run --release -p silicon-cli -- pipeline-cache assets/shaders/textured.vert.spv assets/shaders/textured.frag.spv
 python3 benchmarks/run.py --frames 30
 ```
 
@@ -195,8 +196,9 @@ PNG and scalar/SIMD/parallel equivalence. Golden changes require an explicit
 
 This is a research software GPU, not a conformant driver. SPIR-V support is
 a narrow graphics subset with acyclic structured selections with a fixed binding contract. **General
-SPIR-V/GLSL compatibility, WGSL, Vulkan/OpenGL compatibility, compute, JIT, MSAA,
-shadow maps and games are not implemented.** Do not infer support from the long-term roadmap. Multiple color
+SPIR-V/GLSL compatibility, WGSL, Vulkan/OpenGL compatibility, compute, JIT,
+and games are not implemented.** Do not infer support from the long-term roadmap. MSAA and
+GLSL shadow-map samples are implemented within the documented renderer subset. Multiple color
 attachments and asynchronous queues are also future work.
 
 No Mesa, LLVMpipe, SwiftShader, ANGLE, wgpu backend or existing rasterizer

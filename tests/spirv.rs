@@ -6,6 +6,76 @@ use shader::{
 use silicon::*;
 const VERTEX: &[u8] = include_bytes!("../assets/shaders/textured.vert.spv");
 const FRAGMENT: &[u8] = include_bytes!("../assets/shaders/textured.frag.spv");
+#[test]
+fn pipeline_cache_reuses_linked_programs_and_keys_pipeline_state() {
+    let mut cache = PipelineCache::default();
+    let first = cache
+        .get_or_compile(VERTEX, FRAGMENT, Pipeline::default())
+        .unwrap();
+    let hit = cache
+        .get_or_compile(VERTEX, FRAGMENT, Pipeline::default())
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &hit));
+
+    let changed_state = Pipeline {
+        cull: Cull::Back,
+        ..Default::default()
+    };
+    cache
+        .get_or_compile(VERTEX, FRAGMENT, changed_state)
+        .unwrap();
+    let before_eviction = cache.stats();
+    assert_eq!(
+        (
+            before_eviction.hits,
+            before_eviction.misses,
+            before_eviction.entries
+        ),
+        (1, 2, 2)
+    );
+    for reference in 0..=PIPELINE_CACHE_CAPACITY as u8 {
+        let state = Pipeline {
+            stencil: Some(StencilState {
+                compare: silicon::Compare::Always,
+                reference,
+                read_mask: u8::MAX,
+                write_mask: u8::MAX,
+                fail: StencilOp::Keep,
+                depth_fail: StencilOp::Keep,
+                pass: StencilOp::Keep,
+            }),
+            ..Default::default()
+        };
+        cache.get_or_compile(VERTEX, FRAGMENT, state).unwrap();
+    }
+    let stats = cache.stats();
+    assert_eq!(stats.entries, PIPELINE_CACHE_CAPACITY);
+    assert!(stats.evictions > 0);
+    assert!(stats.compile_time > std::time::Duration::ZERO);
+    assert!(stats.lookup_time > std::time::Duration::ZERO);
+}
+#[test]
+fn built_in_spirv_scene_reuses_pipeline_across_frames() {
+    let first = demo::spirv_cube(16, 16, 0.).unwrap();
+    let second = demo::spirv_cube(16, 16, 0.5).unwrap();
+    let pipeline = |capture: &FrameCapture| {
+        std::sync::Arc::clone(
+            capture
+                .commands
+                .stream()
+                .iter()
+                .find_map(|command| match command {
+                    Command::BindPipeline(pipeline) => Some(pipeline),
+                    _ => None,
+                })
+                .unwrap(),
+        )
+    };
+    assert!(std::sync::Arc::ptr_eq(
+        &pipeline(&first),
+        &pipeline(&second)
+    ));
+}
 fn compiled(bytes: &[u8]) -> shader::spirv::Compiled {
     Module::parse(bytes).unwrap().translate().unwrap()
 }

@@ -3,6 +3,7 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use silicon_shader::{Instruction, Program};
 use std::{
+    collections::HashMap,
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
@@ -37,6 +38,91 @@ pub struct ShaderPipeline {
     pub state: Pipeline,
     pub vertex: Program,
     pub fragment: Program,
+}
+impl ShaderPipeline {
+    pub(crate) fn from_spirv(
+        vertex: &[u8],
+        fragment: &[u8],
+        state: Pipeline,
+    ) -> shader::Result<Arc<Self>> {
+        use shader::spirv::{Module, link};
+        let vertex = Module::parse(vertex)?.translate()?;
+        let fragment = Module::parse(fragment)?.translate()?;
+        link(&vertex, &fragment)?;
+        Ok(Arc::new(Self {
+            state,
+            vertex: vertex.program,
+            fragment: fragment.program,
+        }))
+    }
+}
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct PipelineCacheKey {
+    vertex: Vec<u8>,
+    fragment: Vec<u8>,
+    state: Pipeline,
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PipelineCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub entries: usize,
+    pub lookup_time: Duration,
+    pub compile_time: Duration,
+}
+/// A caller-owned cache for linked, translated SPIR-V pipelines.
+/// ponytail: fixed 16-entry arbitrary eviction; add LRU only if hit rates demand it.
+#[derive(Default)]
+pub struct PipelineCache {
+    entries: HashMap<PipelineCacheKey, Arc<ShaderPipeline>>,
+    stats: PipelineCacheStats,
+}
+pub const PIPELINE_CACHE_CAPACITY: usize = 16;
+impl PipelineCache {
+    pub fn get_or_compile(
+        &mut self,
+        vertex: &[u8],
+        fragment: &[u8],
+        state: Pipeline,
+    ) -> Result<Arc<ShaderPipeline>> {
+        if vertex.len() > 1024 * 1024 || fragment.len() > 1024 * 1024 {
+            return Err("pipeline cache accepts SPIR-V modules up to 1 MiB each".into());
+        }
+        let start = Instant::now();
+        let key = PipelineCacheKey {
+            vertex: vertex.to_vec(),
+            fragment: fragment.to_vec(),
+            state,
+        };
+        if let Some(pipeline) = self.entries.get(&key) {
+            self.stats.hits = self.stats.hits.saturating_add(1);
+            self.stats.lookup_time = self.stats.lookup_time.saturating_add(start.elapsed());
+            return Ok(Arc::clone(pipeline));
+        }
+        self.stats.misses = self.stats.misses.saturating_add(1);
+        self.stats.lookup_time = self.stats.lookup_time.saturating_add(start.elapsed());
+        let compile_start = Instant::now();
+        let compiled = ShaderPipeline::from_spirv(vertex, fragment, state)
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() });
+        self.stats.compile_time = self
+            .stats
+            .compile_time
+            .saturating_add(compile_start.elapsed());
+        let pipeline = compiled?;
+        if self.entries.len() == PIPELINE_CACHE_CAPACITY
+            && let Some(candidate) = self.entries.keys().next().cloned()
+        {
+            self.entries.remove(&candidate);
+            self.stats.evictions = self.stats.evictions.saturating_add(1);
+        }
+        self.entries.insert(key, Arc::clone(&pipeline));
+        self.stats.entries = self.entries.len();
+        Ok(pipeline)
+    }
+    pub fn stats(&self) -> PipelineCacheStats {
+        self.stats
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Command {
