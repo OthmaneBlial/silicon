@@ -78,8 +78,8 @@ first covered sample; depth tests and attachment writes remain per sample.
 Resolve averages the stored color bytes, reports the
 nearest sample depth, and exposes sample zero's stencil value through the
 single-sample framebuffer. Multisample attachments are capped at 512 MiB.
-The CLI accepts `--samples 2` or `--samples 4`; captures do not currently store
-multisample state.
+The CLI accepts `--samples 2` or `--samples 4`. Frame captures preserve the
+sample count and replay the same per-sample color, depth and stencil state.
 
 The scalar reference and optional NEON/AVX2 coverage paths both process four
 adjacent pixel masks with identical i64 arithmetic. With the SIMD backend,

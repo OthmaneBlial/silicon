@@ -369,9 +369,6 @@ fn run() -> Result<()> {
         let vertex = load_shader_bytes(path)?;
         let fragment = load_shader_bytes(fragment_path)?;
         let o = options(&args[3..])?;
-        if o.capture.is_some() && o.samples != SampleCount::One {
-            return Err("frame captures do not store multisample state".into());
-        }
         let pipeline = PipelineCache::default().get_or_compile(
             &vertex,
             &fragment,
@@ -380,8 +377,9 @@ fn run() -> Result<()> {
                 ..Default::default()
             },
         )?;
-        let c =
+        let mut c =
             demo::shader_cube_with_pipeline(o.scene.width, o.scene.height, o.scene.time, pipeline)?;
+        c.sample_count = o.samples;
         let mut r = Renderer::new(o.scene.width, o.scene.height)?;
         r.set_sample_count(o.samples)?;
         r.backend = o.backend;
@@ -427,10 +425,11 @@ fn run() -> Result<()> {
                 })
                 .sum::<u64>();
             println!(
-                "SILICON capture v{} | {}x{} | {} commands | {} render passes | {} draws | {} triangles submitted",
+                "SILICON capture v{} | {}x{} | {} samples/pixel | {} commands | {} render passes | {} draws | {} triangles submitted",
                 c.version,
                 c.width,
                 c.height,
+                c.sample_count.get(),
                 commands.len(),
                 render_passes,
                 draw_calls,
@@ -492,9 +491,6 @@ fn run() -> Result<()> {
         return Err(format!("unknown command {command}; run silicon --help").into());
     }
     let mut o = options(&args[1..])?;
-    if o.capture.is_some() && o.samples != SampleCount::One {
-        return Err("frame captures do not store multisample state".into());
-    }
     let mut r = Renderer::new(o.scene.width, o.scene.height)?;
     r.set_sample_count(o.samples)?;
     if o.benchmark_report.is_some() && command != "benchmark" {
@@ -650,7 +646,7 @@ fn run() -> Result<()> {
         }
     }
     if let Some(path) = o.capture {
-        let c = match o.scene.scene.as_str() {
+        let mut c = match o.scene.scene.as_str() {
             "shader_cube" => demo::shader_cube(o.scene.width, o.scene.height, o.scene.time)?,
             "spirv_cube" => demo::spirv_cube(o.scene.width, o.scene.height, o.scene.time)?,
             "spirv_showcase" => demo::spirv_showcase(o.scene.width, o.scene.height, o.scene.time)?,
@@ -665,6 +661,7 @@ fn run() -> Result<()> {
                 );
             }
         };
+        c.sample_count = o.samples;
         c.save(&path)?;
         println!("Captured {path}");
     }

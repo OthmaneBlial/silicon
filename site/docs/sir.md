@@ -70,7 +70,7 @@ Golden tests additionally compare an approved PNG with one quantization step of
 cross-platform tolerance.
 
 ```sh
-cargo run --release -p silicon-cli -- render shader_cube --capture output/cube.silicon
+cargo run --release -p silicon-cli -- render shader_cube --samples 4 --capture output/cube.silicon
 cargo run --release -p silicon-cli -- inspect output/cube.silicon
 cargo run --release -p silicon-cli -- replay output/cube.silicon
 cargo run --release -p silicon-cli -- debug-pixel shader_cube --pixel 480,320
