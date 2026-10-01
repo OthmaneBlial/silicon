@@ -46,10 +46,12 @@ most once every 0.85 seconds. Former humans fire 3-damage hitscan attacks and
 shotgunners fire 6-damage hitscan attacks within 512 units, at most once every
 1.4 seconds and only with clear sight past blocking lines. Damage and projectile
 launch happen as soon as the cooldown expires; the pose plays afterward, with
-no attack windup or aim spread. A surviving pistol hit briefly shows the Doom
-pain sprite for four tics on imps and demons or six tics on former humans and
-shotgunners; this prototype triggers it on every surviving hit instead of
-rolling Doom's pain chance. The window title
+no attack windup or aim spread. A surviving pistol hit rolls against Doom's
+pain chances: 200/256 for imps and former humans, 180/256 for demons, and
+170/256 for shotgunners. Successful rolls show the pain sprite for four tics
+on imps and demons or six tics on former humans and shotgunners. A deterministic
+local xorshift supplies rolls, so probabilities match but Doom's global random
+sequence does not. The window title
 reports health, ammo, pickups, kills, draw calls, and triangles. Imps launch a
 3D straight BAL1A0 fireball aimed at the player's body midpoint within 512
 units when they have clear sight. It travels at 180 units per second, lasts up

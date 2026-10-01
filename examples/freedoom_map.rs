@@ -779,22 +779,36 @@ fn actor_attack_frame(sprite: [u8; 4], remaining: f32) -> Option<usize> {
     None
 }
 
-fn actor_pain_profile(sprite: [u8; 4]) -> Option<(usize, f32)> {
+fn actor_pain_profile(sprite: [u8; 4]) -> Option<(usize, f32, u8)> {
     match &sprite {
-        b"TROO" | b"SARG" => Some((7, 4.0)),
-        b"POSS" | b"SPOS" => Some((6, 6.0)),
+        b"TROO" => Some((7, 4.0, 200)),
+        b"SARG" => Some((7, 4.0, 180)),
+        b"POSS" => Some((6, 6.0, 200)),
+        b"SPOS" => Some((6, 6.0, 170)),
         _ => None,
     }
 }
 
 fn actor_pain_duration(sprite: [u8; 4]) -> f32 {
-    actor_pain_profile(sprite).map_or(0.0, |(_, tics)| tics / 35.0)
+    actor_pain_profile(sprite).map_or(0.0, |(_, tics, _)| tics / 35.0)
 }
 
 fn actor_pain_frame(sprite: [u8; 4], remaining: f32) -> Option<usize> {
     actor_pain_profile(sprite)
         .filter(|_| remaining > 0.0)
-        .map(|(frame, _)| frame)
+        .map(|(frame, _, _)| frame)
+}
+
+fn actor_pain_triggered(sprite: [u8; 4], roll: u8) -> bool {
+    actor_pain_profile(sprite).is_some_and(|(_, _, chance)| roll < chance)
+}
+
+// ponytail: one deterministic xorshift keeps the gameplay repeatable; use Doom's global RNG if exact replay compatibility is required.
+fn gameplay_random_byte(state: &mut u32) -> u8 {
+    *state ^= *state << 13;
+    *state ^= *state >> 17;
+    *state ^= *state << 5;
+    (*state >> 24) as u8
 }
 
 fn actor_death_profile(sprite: [u8; 4]) -> Option<(&'static [usize], &'static [f32])> {
@@ -1721,7 +1735,7 @@ fn has_line_of_sight(map: &Map, from: Vertex2, to: Vertex2) -> bool {
     nearest_blocking_wall(map, from, direction) >= distance
 }
 
-fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player) -> bool {
+fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, pain_rng: &mut u32) -> bool {
     let origin = Vertex2 {
         x: player.x,
         y: player.y,
@@ -1759,7 +1773,9 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player) -> bool {
             actors[index].death_animation_time = Some(0.0);
             true
         } else {
-            actors[index].pain_animation_remaining = actor_pain_duration(actors[index].sprite);
+            if actor_pain_triggered(actors[index].sprite, gameplay_random_byte(pain_rng)) {
+                actors[index].pain_animation_remaining = actor_pain_duration(actors[index].sprite);
+            }
             false
         }
     } else {
@@ -2370,6 +2386,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
     let mut collected = 0;
     let mut shot_cooldown = 0.0f32;
     let mut weapon_flash = 0.0f32;
+    let mut pain_rng = 0x5349_4c49u32;
     let mut last = std::time::Instant::now();
     let mut frames = 0u64;
     while window.is_open() && !window.is_key_down(Key::Escape) {
@@ -2405,7 +2422,7 @@ fn run_interactive(path: &Path, output: &Path) -> api::Result<()> {
                 ammo -= 1;
                 shot_cooldown = 0.35;
                 weapon_flash = 0.16;
-                kills += usize::from(fire_weapon(&scene.map, &mut actors, player));
+                kills += usize::from(fire_weapon(&scene.map, &mut actors, player, &mut pain_rng));
             }
         }
         update_actors(
@@ -2983,6 +3000,7 @@ mod tests {
             y: 0.0,
             angle: 0.0,
         };
+        let mut pain_rng = 1;
         let map = Map {
             vertices: vec![],
             sectors: vec![],
@@ -2995,7 +3013,7 @@ mod tests {
         };
         let mut wounded = actors;
         wounded[0].health = 60;
-        assert!(!fire_weapon(&map, &mut wounded, player));
+        assert!(!fire_weapon(&map, &mut wounded, player, &mut pain_rng));
         assert_eq!(wounded[0].health, 40);
         assert_eq!(
             wounded[0].pain_animation_remaining,
@@ -3014,7 +3032,19 @@ mod tests {
         assert!((wounded[0].pain_animation_remaining - (4.0 / 35.0 - 0.05)).abs() < 0.0001);
         assert_eq!(wounded[0].x, 100.0);
 
-        assert!(fire_weapon(&map, &mut actors, player));
+        let mut unreacting = actors;
+        unreacting[0].health = 60;
+        let mut no_pain_rng = 12_800;
+        assert!(!fire_weapon(
+            &map,
+            &mut unreacting,
+            player,
+            &mut no_pain_rng
+        ));
+        assert_eq!(unreacting[0].health, 40);
+        assert_eq!(unreacting[0].pain_animation_remaining, 0.0);
+
+        assert!(fire_weapon(&map, &mut actors, player, &mut pain_rng));
         assert_eq!(actors[0].health, 0);
         assert_eq!(actors[0].death_animation_time, Some(0.0));
         let mut projectiles = Vec::new();
@@ -3058,24 +3088,29 @@ mod tests {
             lines: vec![[0, 1, 1, u16::MAX, u16::MAX]],
             ..map
         };
-        assert!(!fire_weapon(&map, &mut actors, player));
+        assert!(!fire_weapon(&map, &mut actors, player, &mut pain_rng));
         assert_eq!(actors[0].health, 20);
     }
 
     #[test]
-    fn enemy_pain_poses_match_doom_sprite_frames_and_tics() {
-        for (sprite, frame, tics) in [
-            (*b"TROO", 7, 4.0),
-            (*b"SARG", 7, 4.0),
-            (*b"POSS", 6, 6.0),
-            (*b"SPOS", 6, 6.0),
+    fn enemy_pain_reactions_match_doom_frames_tics_and_chance_thresholds() {
+        for (sprite, frame, tics, chance) in [
+            (*b"TROO", 7, 4.0, 200),
+            (*b"SARG", 7, 4.0, 180),
+            (*b"POSS", 6, 6.0, 200),
+            (*b"SPOS", 6, 6.0, 170),
         ] {
             let duration = tics / 35.0;
             assert_eq!(actor_pain_duration(sprite), duration);
             assert_eq!(actor_pain_frame(sprite, duration), Some(frame));
             assert_eq!(actor_pain_frame(sprite, 0.0), None);
+            assert!(actor_pain_triggered(sprite, chance - 1));
+            assert!(!actor_pain_triggered(sprite, chance));
         }
         assert_eq!(actor_pain_duration(*b"none"), 0.0);
+        assert!(!actor_pain_triggered(*b"none", 0));
+        let mut random = 1;
+        assert_eq!(gameplay_random_byte(&mut random), 0);
     }
 
     #[test]
