@@ -278,7 +278,11 @@ fn load_shader(path: &str) -> Result<(shader::spirv::Module, shader::spirv::Comp
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let command = args.first().map_or("help", String::as_str);
-    if command == "help" || command == "--help" {
+    if command == "help"
+        || args
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
         println!(
             "SILICON Software GPU\n\n  silicon info\n  silicon render [scene|scene.json] [--width W --height H --time T --output frame.png]\n  silicon run [scene] [--frames N]\n  silicon benchmark [scene] [--frames N --report timings.json]\n  silicon profile [scene]\n  silicon debug-pixel [scene] --pixel X,Y\n  silicon render shader_cube --capture frame.silicon\n  silicon replay frame.silicon [--output frame.png]\n  silicon inspect frame.silicon\n  silicon inspect-shader shader.spv\n  silicon render-shaders vertex.spv fragment.spv [render options]\n  silicon pipeline-cache vertex.spv fragment.spv\n\nExecution: --backend scalar|simd --threads 1..64 --samples 1|2|4\nScenes: showcase, cubemap_showcase, anisotropy_showcase, cube, textured_cube, triangle_3d, shader_cube, spirv_cube, spirv_showcase, spirv_cutout, shadow_showcase, pbr_showcase, stencil\nWindow: Escape exits, Space pauses, arrows adjust rotation. PNG and capture modes need no display."
         );
