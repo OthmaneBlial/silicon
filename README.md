@@ -318,8 +318,8 @@ flowchart LR
 | Shading | Native Lambert/Blinn reference; GLSL Blinn and Cook-Torrance GGX metallic/roughness through SPIR-V |
 | Attachments | Up to four RGBA8 fragment outputs, shared depth/stencil, RGBA8/BGRA8 framebuffer storage, 8 depth compare modes |
 | Texturing | RGBA8/RGB8/R8 2D, array and 3D textures; depth textures and cube maps; nearest/bilinear/trilinear, clamp/repeat/mirror and mip generation/LOD |
-| Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 graphics subset plus narrow vec4/uint storage-buffer compute subset → SIR; nested selections, Phi, early return/discard |
-| Compute | Experimental SIR dispatch, 3D IDs, up to 12 indexed read buffers, checked record layouts, staged indexed writes, 64 KiB per-workgroup shared memory and barriers, scalar f32 storage atomics, bounded GLSL/SPIR-V vec4 addition, guarded inversion, shared-array broadcast and uint atomics; divergent barriers and shared-memory races fail safely; synchronized kernels use the scalar scheduler |
+| Shaders | Rust closures; bounded SIR VM; strict SPIR-V 1.0 graphics subset plus narrow vec4/uint storage-buffer compute subset → SIR; nested selections, restricted loops with canonical header Phi values, early return/discard |
+| Compute | Experimental SIR dispatch, 3D IDs, up to 12 indexed read buffers, checked record layouts, staged indexed writes, 64 KiB per-workgroup shared memory and barriers, scalar f32 storage atomics, bounded GLSL/SPIR-V vec4 addition, guarded inversion, local loops with header Phi values, shared-array broadcast and uint atomics; divergent barriers and shared-memory races fail safely; synchronized kernels use the scalar scheduler |
 | Output merger | Replace, source alpha, additive and multiplicative blending; color/depth write enables |
 | Execution | Scalar reference, optional SIMD coverage4 and NEON/SSE four-fragment SIR, disjoint worker bands with optional shared vertex outputs |
 | Tools | Headless rendering, native window, frame capture/replay/inspection, pixel trace, profiling, pipeline-cache probe, cargo-fuzz targets |

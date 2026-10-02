@@ -19,6 +19,8 @@ for shader in textured.vert textured.frag mrt.vert mrt.frag arithmetic.frag math
   glslangValidator -V --target-env vulkan1.0 -o "assets/shaders/$shader.spv" "assets/shaders/$shader"
   spirv-val --target-env vulkan1.0 "assets/shaders/$shader.spv"
 done
+spirv-opt --ssa-rewrite assets/shaders/loop.frag.spv -o assets/shaders/loop.ssa.frag.spv
+spirv-val --target-env vulkan1.0 assets/shaders/loop.ssa.frag.spv
 spirv-opt --ssa-rewrite assets/shaders/control.frag.spv -o assets/shaders/control.ssa.frag.spv
 spirv-val --target-env vulkan1.0 assets/shaders/control.ssa.frag.spv
 glslangValidator -V --target-env vulkan1.0 -Os assets/shaders/boolean.frag -o assets/shaders/boolean.frag.spv
@@ -188,17 +190,19 @@ SPIR-V lowering accepts acyclic `OpSelectionMerge` regions and a restricted
 `OpLoopMerge None` form. A loop header branches to a separate condition block;
 the condition branches true to the body and false to the merge. One continue
 block has one reachable predecessor and branches directly back to the header.
-Mutable Function locals carry values with SIR `Move` instructions. Loop-header
-`OpPhi` values, loop breaks and other loop-control masks are unsupported.
-`loop.frag` checks scalar/SIMD rendering, and `compute_loop.comp` checks scalar
-and SIMD-requested compute dispatch.
+Mutable Function locals and loop-header `OpPhi` values with exactly the
+preheader and continue inputs carry values through SIR `Move` instructions.
+Phi instructions in the loop condition block, loop breaks and other
+loop-control masks are unsupported. `loop.frag` and its `spirv-opt` SSA rewrite
+check scalar/SIMD rendering; `compute_loop.comp` covers scalar and
+SIMD-requested dispatch with and without header Phi values.
 
 At most 1 MiB per module, ID bound 65536, 256 virtual SSA temporaries, 64
 simultaneously live runtime registers and 4096 SIR instructions. Dead temporaries
 are recycled after their last use, without increasing VM storage. Combined
 selection/loop nesting is bounded to 64; main is bounded to 4096 SPIR-V
-instructions. Loop-carried `OpPhi` values, loop breaks, switches, function
-calls, general integer arithmetic, specialization constants, arbitrary SSBO
+instructions. Loop Phi forms outside the header pattern above, loop breaks,
+switches, function calls, general integer arithmetic, specialization constants, arbitrary SSBO
 layouts, storage images, implicit samples from transformed coordinates,
 explicit sample offsets/gradients, general shared-memory layouts/barriers,
 WGSL input and an integrated GLSL compiler remain unsupported. The compute

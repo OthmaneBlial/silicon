@@ -19,8 +19,9 @@ simultaneously live registers, and a main body of at most 4096 SPIR-V
 instructions. SIR loops are paired and limited to 65,536 dynamically visited
 instructions per invocation. SPIR-V lowering accepts structured selections and
 the restricted `OpLoopMerge None` local-loop form documented in
-[`spirv.md`](spirv.md); loop-carried `OpPhi`, loop breaks and other loop-control
-masks remain unsupported. Per-path definition checks prevent cross-branch reads. JSON
+[`spirv.md`](spirv.md), including loop-header Phi values with exactly one
+preheader value and one continue-block value. Condition-block Phi values, loop breaks and other
+loop-control masks remain unsupported. Per-path definition checks prevent cross-branch reads. JSON
 nesting also obeys serde_json's
 recursion limit. These are validation bounds, not a process-wide allocation
 budget. Captures can duplicate resources, and the software GPU is not a hardened

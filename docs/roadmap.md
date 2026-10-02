@@ -52,8 +52,8 @@ Cube maps use cross-face bilinear filtering; implicit SPIR-V sampling is limited
 to an unmodified fragment input direction, and anisotropic SPIR-V sampling
 remains future work.
 
-Future research: persistent raster workers, loop-carried SPIR-V `OpPhi`, loop
-breaks and broader control flow, cross-workgroup barriers, other
+Future research: persistent raster workers, SPIR-V loop breaks and broader loop
+control flow, cross-workgroup barriers, other
 integer/vector atomics and broader compute-stage SPIR-V, transformed implicit sampling,
 anisotropic SPIR-V sampling, JIT, general DOOM portal-window clipping and
 wall-band composition, advanced enemy states and full gameplay rules, and

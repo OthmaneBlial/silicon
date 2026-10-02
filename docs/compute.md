@@ -149,11 +149,14 @@ glslangValidator -V --target-env vulkan1.0 \
 glslangValidator -V --target-env vulkan1.0 \
   assets/shaders/compute_loop.comp \
   -o assets/shaders/compute_loop.comp.spv
+spirv-opt --ssa-rewrite assets/shaders/compute_loop.comp.spv \
+  -o assets/shaders/compute_loop.ssa.comp.spv
+spirv-val --target-env vulkan1.0 assets/shaders/compute_loop.ssa.comp.spv
 cargo run --release --example compute_spirv_vector_add
 cargo run --release --example compute_spirv_invert
 cargo run --release --example compute_spirv_shared
 cargo run --release --example compute_spirv_atomic_uint
-cargo test -p silicon-core dispatches_glsl_spirv_loop_carried_locals
+cargo test -p silicon-core dispatches_glsl_spirv_loop_carried_locals_and_phi_values
 ```
 
 These examples prove GLSL → SPIR-V → SIR → CPU storage-buffer execution with
@@ -167,7 +170,8 @@ not supported. The shared-memory example broadcasts the first input value in
 each 64-invocation group and verifies 4,096 outputs. `compute_loop.comp` checks
 the restricted SPIR-V local-loop form in scalar and SIMD-requested dispatch.
 Compute SPIR-V does not support other atomic types or operations, textures,
-uniforms, loop-carried `OpPhi` values, loop breaks or storage images.
+uniforms, loop Phi forms outside the header pattern documented in
+[`spirv.md`](spirv.md), loop breaks or storage images.
 
 This remains an initial data-parallel path, not general compute compatibility.
 Dispatch is synchronous; command-buffer capture/replay and C API support are not
