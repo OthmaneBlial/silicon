@@ -63,6 +63,9 @@ const PLATFORM_WAIT: f32 = 3.0;
 const FLOOR_SPEED: f32 = 35.0;
 const DOOM_TICS_PER_SECOND: f32 = 35.0;
 const PISTOL_REFIRE_TICS: f32 = 19.0;
+const SHOTGUN_REFIRE_TICS: f32 = 44.0;
+const SHOTGUN_PELLETS: usize = 7;
+const SHELL_AMMO_MAX: i32 = 50;
 const RADIATION_SUIT_TICS: f32 = 60.0 * DOOM_TICS_PER_SECOND;
 const INVULNERABILITY_TICS: f32 = 30.0 * DOOM_TICS_PER_SECOND;
 const INVISIBILITY_TICS: f32 = 60.0 * DOOM_TICS_PER_SECOND;
@@ -1582,6 +1585,7 @@ struct PreparedScene {
     fist_fire: SpriteTexture,
     fist_followthrough: SpriteTexture,
     fist_return: SpriteTexture,
+    shotgun: [SpriteTexture; 4],
     projectile_sprite: SpriteTexture,
     projectile_explosion: [SpriteTexture; 3],
     actors: Vec<Actor>,
@@ -1641,6 +1645,9 @@ enum PickupEffect {
         consume_at_max: bool,
     },
     Ammo(i32),
+    Shells(i32),
+    Shotgun,
+    ShotgunDrop,
     Key(u8),
     Armor {
         points: i32,
@@ -1660,6 +1667,12 @@ struct Armor {
     class: u8,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PlayerWeapons {
+    shells: i32,
+    shotgun_owned: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct PlayerEffects {
     berserk: bool,
@@ -1673,28 +1686,48 @@ struct PlayerEffects {
 enum SpaceWeapon {
     Pistol,
     Fist,
+    Shotgun,
 }
 
 fn choose_space_weapon(
     current: SpaceWeapon,
     pistol_pressed: bool,
     fist_pressed: bool,
+    shotgun_pressed: bool,
+    shotgun_owned: bool,
     berserk_pickup: bool,
+    shotgun_pickup: bool,
 ) -> SpaceWeapon {
     if pistol_pressed {
         SpaceWeapon::Pistol
+    } else if shotgun_pressed && shotgun_owned {
+        SpaceWeapon::Shotgun
     } else if fist_pressed || berserk_pickup {
         SpaceWeapon::Fist
+    } else if shotgun_pickup {
+        SpaceWeapon::Shotgun
     } else {
         current
     }
 }
 
-fn check_weapon_ammo(weapon: SpaceWeapon, ammo: i32) -> SpaceWeapon {
-    if weapon == SpaceWeapon::Pistol && ammo == 0 {
-        SpaceWeapon::Fist
-    } else {
-        weapon
+fn check_weapon_ammo(weapon: SpaceWeapon, bullets: i32, weapons: PlayerWeapons) -> SpaceWeapon {
+    match weapon {
+        SpaceWeapon::Pistol if bullets == 0 => {
+            if weapons.shotgun_owned && weapons.shells > 0 {
+                SpaceWeapon::Shotgun
+            } else {
+                SpaceWeapon::Fist
+            }
+        }
+        SpaceWeapon::Shotgun if !weapons.shotgun_owned || weapons.shells == 0 => {
+            if bullets > 0 {
+                SpaceWeapon::Pistol
+            } else {
+                SpaceWeapon::Fist
+            }
+        }
+        _ => weapon,
     }
 }
 
@@ -1734,30 +1767,238 @@ fn fist_pose(remaining_tics: f32) -> Option<FistPose> {
     }
 }
 
+fn shotgun_pose(remaining_tics: f32) -> Option<usize> {
+    let elapsed = SHOTGUN_REFIRE_TICS - remaining_tics;
+    let mut boundary = 0.0;
+    for (frame, duration) in [
+        (0, 3.0),
+        (0, 7.0),
+        (1, 5.0),
+        (2, 5.0),
+        (3, 4.0),
+        (2, 5.0),
+        (1, 5.0),
+        (0, 3.0),
+        (0, 7.0),
+    ] {
+        boundary += duration;
+        if elapsed < boundary {
+            return Some(frame);
+        }
+    }
+    None
+}
+
 #[test]
 fn weapon_selection_and_ammo_fallback_are_explicit() {
     assert_eq!(
-        choose_space_weapon(SpaceWeapon::Pistol, false, false, false),
+        choose_space_weapon(
+            SpaceWeapon::Pistol,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        ),
         SpaceWeapon::Pistol
     );
     assert_eq!(
-        choose_space_weapon(SpaceWeapon::Pistol, false, false, true),
+        choose_space_weapon(SpaceWeapon::Pistol, false, false, false, false, true, false,),
         SpaceWeapon::Fist
     );
     assert_eq!(
-        choose_space_weapon(SpaceWeapon::Fist, true, false, false),
+        choose_space_weapon(SpaceWeapon::Fist, true, false, false, false, false, false,),
         SpaceWeapon::Pistol
     );
     assert_eq!(
-        choose_space_weapon(SpaceWeapon::Pistol, false, true, false),
+        choose_space_weapon(SpaceWeapon::Pistol, false, true, false, false, false, false,),
         SpaceWeapon::Fist
     );
-    assert_eq!(check_weapon_ammo(SpaceWeapon::Pistol, 0), SpaceWeapon::Fist);
     assert_eq!(
-        check_weapon_ammo(SpaceWeapon::Pistol, 1),
+        choose_space_weapon(SpaceWeapon::Pistol, false, false, false, true, false, true,),
+        SpaceWeapon::Shotgun
+    );
+    assert_eq!(
+        choose_space_weapon(SpaceWeapon::Shotgun, false, false, true, true, false, false,),
+        SpaceWeapon::Shotgun
+    );
+    assert_eq!(
+        check_weapon_ammo(SpaceWeapon::Pistol, 0, PlayerWeapons::default()),
+        SpaceWeapon::Fist
+    );
+    assert_eq!(
+        check_weapon_ammo(SpaceWeapon::Pistol, 1, PlayerWeapons::default()),
         SpaceWeapon::Pistol
     );
-    assert_eq!(check_weapon_ammo(SpaceWeapon::Fist, 0), SpaceWeapon::Fist);
+    assert_eq!(
+        check_weapon_ammo(
+            SpaceWeapon::Pistol,
+            0,
+            PlayerWeapons {
+                shells: 4,
+                shotgun_owned: true,
+            },
+        ),
+        SpaceWeapon::Shotgun
+    );
+    assert_eq!(
+        check_weapon_ammo(
+            SpaceWeapon::Shotgun,
+            0,
+            PlayerWeapons {
+                shells: 0,
+                shotgun_owned: true,
+            },
+        ),
+        SpaceWeapon::Fist
+    );
+    assert_eq!(
+        check_weapon_ammo(SpaceWeapon::Fist, 0, PlayerWeapons::default()),
+        SpaceWeapon::Fist
+    );
+    assert_eq!(shotgun_pose(SHOTGUN_REFIRE_TICS), Some(0));
+    assert_eq!(shotgun_pose(29.0), Some(2));
+    assert_eq!(shotgun_pose(0.0), None);
+}
+
+#[test]
+fn shotgun_and_shell_pickups_supply_a_capped_weapon_inventory() {
+    assert_eq!(
+        pickup_definition(2001),
+        Some((*b"SHOT", PickupEffect::Shotgun))
+    );
+    assert_eq!(
+        pickup_definition(2008),
+        Some((*b"SHEL", PickupEffect::Shells(4)))
+    );
+    assert_eq!(
+        pickup_definition(2049),
+        Some((*b"SBOX", PickupEffect::Shells(20)))
+    );
+    let map = Map {
+        vertices: vec![],
+        sectors: vec![],
+        sides: vec![],
+        lines: vec![],
+        segs: vec![],
+        subsectors: vec![],
+        nodes: vec![],
+        things: vec![],
+    };
+    let player = Player {
+        x: 0.0,
+        y: 0.0,
+        angle: 0.0,
+    };
+    let make_pickup = |kind| {
+        let (sprite, effect) = pickup_definition(kind).expect("known shotgun test pickup");
+        Pickup {
+            sprite,
+            x: 0.0,
+            y: 0.0,
+            effect,
+            active: true,
+        }
+    };
+    let mut pickups = [make_pickup(2008), make_pickup(2049), make_pickup(2001)];
+    let mut health = 100;
+    let mut ammo = 50;
+    let mut weapons = PlayerWeapons::default();
+    let mut keys = 0;
+    let mut armor = Armor::default();
+    let mut effects = PlayerEffects::default();
+    assert_eq!(
+        collect_pickups_with_weapons(
+            &map,
+            &mut pickups,
+            player,
+            &mut health,
+            &mut ammo,
+            &mut weapons,
+            &mut keys,
+            &mut armor,
+            &mut effects,
+        ),
+        3
+    );
+    assert_eq!(
+        weapons,
+        PlayerWeapons {
+            shells: 32,
+            shotgun_owned: true,
+        }
+    );
+
+    let mut capped_pickups = [make_pickup(2049), make_pickup(2008)];
+    weapons.shells = 48;
+    assert_eq!(
+        collect_pickups_with_weapons(
+            &map,
+            &mut capped_pickups,
+            player,
+            &mut health,
+            &mut ammo,
+            &mut weapons,
+            &mut keys,
+            &mut armor,
+            &mut effects,
+        ),
+        1
+    );
+    assert_eq!(weapons.shells, SHELL_AMMO_MAX);
+    assert!(!capped_pickups[0].active && capped_pickups[1].active);
+}
+
+#[test]
+fn shotgun_fires_seven_spread_rays_through_the_shared_wall_test() {
+    let player = Player {
+        x: 0.0,
+        y: 0.0,
+        angle: 0.0,
+    };
+    let mut actors = [Actor {
+        sprite: *b"TROO",
+        x: 100.0,
+        y: 0.0,
+        health: 1000,
+        target_time_remaining: 0.0,
+        attack_cooldown: 0.0,
+        attack_animation_remaining: 0.0,
+        pain_animation_remaining: 0.0,
+        death_animation_time: None,
+        animation_time: 0.0,
+        angle: 0.0,
+    }];
+    let map = Map {
+        vertices: vec![],
+        sectors: vec![],
+        sides: vec![],
+        lines: vec![],
+        segs: vec![],
+        subsectors: vec![],
+        nodes: vec![],
+        things: vec![],
+    };
+    let initial_health = actors[0].health;
+    let mut rng = 7;
+    assert_eq!(fire_shotgun(&map, &mut actors, player, &mut rng), 0);
+    let damage = initial_health - actors[0].health;
+    assert!((35..=105).contains(&damage));
+    assert_eq!(damage % 5, 0);
+
+    let blocked = Map {
+        vertices: vec![Vertex2 { x: 50.0, y: -32.0 }, Vertex2 { x: 50.0, y: 32.0 }],
+        lines: vec![[0, 1, 1, u16::MAX, u16::MAX, 0, 0]],
+        ..map
+    };
+    actors[0].health = initial_health;
+    let mut blocked_rng = 7;
+    assert_eq!(
+        fire_shotgun(&blocked, &mut actors, player, &mut blocked_rng),
+        0
+    );
+    assert_eq!(actors[0].health, initial_health);
 }
 
 struct WallSection {
@@ -1914,6 +2155,9 @@ fn make_fullbright(vertices: &mut [Vertex]) {
 
 fn pickup_definition(kind: u16) -> Option<([u8; 4], PickupEffect)> {
     match kind {
+        2001 => Some((*b"SHOT", PickupEffect::Shotgun)),
+        2008 => Some((*b"SHEL", PickupEffect::Shells(4))),
+        2049 => Some((*b"SBOX", PickupEffect::Shells(20))),
         5 => Some((*b"BKEY", PickupEffect::Key(KEY_BLUE))),
         6 => Some((*b"YKEY", PickupEffect::Key(KEY_YELLOW))),
         13 => Some((*b"RKEY", PickupEffect::Key(KEY_RED))),
@@ -1979,12 +2223,13 @@ fn pickup_definition(kind: u16) -> Option<([u8; 4], PickupEffect)> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn collect_pickups(
+fn collect_pickups_with_weapons(
     map: &Map,
     pickups: &mut [Pickup],
     player: Player,
     health: &mut i32,
     ammo: &mut i32,
+    weapons: &mut PlayerWeapons,
     keys: &mut u8,
     armor: &mut Armor,
     effects: &mut PlayerEffects,
@@ -2011,6 +2256,7 @@ fn collect_pickups(
         let mut next_health = *health;
         let mut consume_at_max = false;
         let mut next_ammo = *ammo;
+        let mut next_weapons = *weapons;
         let mut next_keys = *keys;
         let mut next_armor = *armor;
         let mut next_effects = *effects;
@@ -2026,6 +2272,17 @@ fn collect_pickups(
                 consume_at_max = consume;
             }
             PickupEffect::Ammo(amount) => next_ammo = (*ammo + amount).min(200),
+            PickupEffect::Shells(amount) => {
+                next_weapons.shells = (weapons.shells + amount).min(SHELL_AMMO_MAX)
+            }
+            PickupEffect::Shotgun => {
+                next_weapons.shotgun_owned = true;
+                next_weapons.shells = (weapons.shells + 8).min(SHELL_AMMO_MAX);
+            }
+            PickupEffect::ShotgunDrop => {
+                next_weapons.shotgun_owned = true;
+                next_weapons.shells = (weapons.shells + 4).min(SHELL_AMMO_MAX);
+            }
             PickupEffect::Key(key) => next_keys |= key,
             PickupEffect::Armor { points, class } => {
                 if next_armor.points < points {
@@ -2060,6 +2317,7 @@ fn collect_pickups(
         }
         if next_health == *health
             && next_ammo == *ammo
+            && next_weapons == *weapons
             && next_keys == *keys
             && next_armor == *armor
             && next_effects == *effects
@@ -2079,6 +2337,7 @@ fn collect_pickups(
         }
         *health = next_health;
         *ammo = next_ammo;
+        *weapons = next_weapons;
         *keys = next_keys;
         *armor = next_armor;
         *effects = next_effects;
@@ -2086,6 +2345,31 @@ fn collect_pickups(
         collected += 1;
     }
     collected
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn collect_pickups(
+    map: &Map,
+    pickups: &mut [Pickup],
+    player: Player,
+    health: &mut i32,
+    ammo: &mut i32,
+    keys: &mut u8,
+    armor: &mut Armor,
+    effects: &mut PlayerEffects,
+) -> usize {
+    collect_pickups_with_weapons(
+        map,
+        pickups,
+        player,
+        health,
+        ammo,
+        &mut PlayerWeapons::default(),
+        keys,
+        armor,
+        effects,
+    )
 }
 
 fn weapon_vertices(player: Player, sprite: &SpriteTexture, sector: Sector) -> Vec<Vertex> {
@@ -3932,19 +4216,24 @@ fn alert_actors_on_noise(map: &Map, actors: &mut [Actor], source: Vertex2) {
     }
 }
 
-fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, rng: &mut u32) -> bool {
+fn fire_hitscan_ray(
+    map: &Map,
+    actors: &mut [Actor],
+    player: Player,
+    angle: f32,
+    damage: i32,
+    rng: &mut u32,
+) -> bool {
     let origin = Vertex2 {
         x: player.x,
         y: player.y,
     };
-    alert_actors_on_noise(map, actors, origin);
-    let radians = player.angle.to_radians();
+    let radians = angle.to_radians();
     let direction = Vertex2 {
         x: radians.cos(),
         y: radians.sin(),
     };
     let nearest_wall = nearest_blocking_wall(map, origin, direction);
-    let damage = i32::from(gameplay_random_byte(rng) % 3 + 1) * 5;
     let target = actors
         .iter()
         .enumerate()
@@ -3953,8 +4242,7 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, rng: &mut u32) -
             let dx = actor.x - player.x;
             let dy = actor.y - player.y;
             let distance = (dx * dx + dy * dy).sqrt();
-            let aim_error =
-                (dy.atan2(dx).to_degrees() - player.angle + 180.0).rem_euclid(360.0) - 180.0;
+            let aim_error = (dy.atan2(dx).to_degrees() - angle + 180.0).rem_euclid(360.0) - 180.0;
             let aim_width = 1.0 + (18.0 / distance.max(1.0)).atan().to_degrees();
             let along_ray = dx * direction.x + dy * direction.y;
             (distance <= 1024.0
@@ -3972,6 +4260,46 @@ fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, rng: &mut u32) -
     }
 }
 
+fn fire_weapon(map: &Map, actors: &mut [Actor], player: Player, rng: &mut u32) -> bool {
+    alert_actors_on_noise(
+        map,
+        actors,
+        Vertex2 {
+            x: player.x,
+            y: player.y,
+        },
+    );
+    let damage = i32::from(gameplay_random_byte(rng) % 3 + 1) * 5;
+    fire_hitscan_ray(map, actors, player, player.angle, damage, rng)
+}
+
+fn fire_shotgun(map: &Map, actors: &mut [Actor], player: Player, rng: &mut u32) -> usize {
+    alert_actors_on_noise(
+        map,
+        actors,
+        Vertex2 {
+            x: player.x,
+            y: player.y,
+        },
+    );
+    (0..SHOTGUN_PELLETS)
+        .map(|_| {
+            let damage = i32::from(gameplay_random_byte(rng) % 3 + 1) * 5;
+            let spread = (i16::from(gameplay_random_byte(rng))
+                - i16::from(gameplay_random_byte(rng))) as f32
+                * (360.0 / 16_384.0);
+            usize::from(fire_hitscan_ray(
+                map,
+                actors,
+                player,
+                player.angle + spread,
+                damage,
+                rng,
+            ))
+        })
+        .sum()
+}
+
 fn damage_actor(actor: &mut Actor, damage: i32, pain_rng: &mut u32) -> bool {
     actor.health -= damage;
     if actor.health <= 0 {
@@ -3985,6 +4313,34 @@ fn damage_actor(actor: &mut Actor, damage: i32, pain_rng: &mut u32) -> bool {
         }
         false
     }
+}
+
+fn spawn_enemy_weapon_drops(actors: &[Actor], pickups: &mut Vec<Pickup>) -> usize {
+    let mut dropped = 0;
+    for actor in actors
+        .iter()
+        .filter(|actor| actor.sprite == *b"SPOS" && actor.health <= 0)
+    {
+        if pickups.iter().any(|pickup| {
+            pickup.x == actor.x
+                && pickup.y == actor.y
+                && matches!(
+                    pickup.effect,
+                    PickupEffect::Shotgun | PickupEffect::ShotgunDrop
+                )
+        }) {
+            continue;
+        }
+        pickups.push(Pickup {
+            sprite: *b"SHOT",
+            x: actor.x,
+            y: actor.y,
+            effect: PickupEffect::ShotgunDrop,
+            active: true,
+        });
+        dropped += 1;
+    }
+    dropped
 }
 
 fn punch_weapon(
@@ -4323,6 +4679,12 @@ impl PreparedScene {
         let fist_fire = sprite_patch_texture(&data, *b"PUNGC0\0\0")?;
         let fist_followthrough = sprite_patch_texture(&data, *b"PUNGD0\0\0")?;
         let fist_return = sprite_patch_texture(&data, *b"PUNGB0\0\0")?;
+        let shotgun = [
+            sprite_patch_texture(&data, *b"SHTGA0\0\0")?,
+            sprite_patch_texture(&data, *b"SHTGB0\0\0")?,
+            sprite_patch_texture(&data, *b"SHTGC0\0\0")?,
+            sprite_patch_texture(&data, *b"SHTGD0\0\0")?,
+        ];
         let projectile_sprite = sprite_patch_texture(&data, *b"BAL1A0\0\0")?;
         let projectile_explosion = [
             sprite_patch_texture(&data, *b"BAL1C0\0\0")?,
@@ -4336,6 +4698,7 @@ impl PreparedScene {
         };
         let mut sprites = BTreeMap::new();
         let mut pickup_sprites = BTreeMap::new();
+        pickup_sprites.insert(*b"SHOT", sprite_patch_texture(&data, *b"SHOTA0\0\0")?);
         let mut actors = Vec::new();
         let mut pickups = Vec::new();
         for &(x, y, thing_angle, kind, flags) in &map.things {
@@ -4403,6 +4766,7 @@ impl PreparedScene {
             fist_fire,
             fist_followthrough,
             fist_return,
+            shotgun,
             projectile_sprite,
             projectile_explosion,
             actors,
@@ -4643,6 +5007,10 @@ impl PreparedScene {
                         None => &self.weapon_idle,
                     }
                 }
+                SpaceWeapon::Shotgun => {
+                    &self.shotgun
+                        [shotgun_pose(weapon_firing_tics * DOOM_TICS_PER_SECOND).unwrap_or(0)]
+                }
             },
         };
         let mut vertices = weapon_vertices(player, weapon, sector);
@@ -4812,6 +5180,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
     let mut pickups = scene.pickups.clone();
     let mut health = 100;
     let mut ammo = 50;
+    let mut weapons = PlayerWeapons::default();
     let mut keys = 0;
     let mut armor = Armor::default();
     let mut effects = PlayerEffects::default();
@@ -4875,7 +5244,6 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             exited = false;
             secret_exit = false;
             effects.berserk = false;
-            selected_weapon = SpaceWeapon::Pistol;
         }
         let now = std::time::Instant::now();
         let delta = now.duration_since(last).as_secs_f32().min(0.05);
@@ -4990,12 +5358,14 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     .iter()
                     .filter(|pickup| pickup.active && pickup.effect == PickupEffect::Berserk)
                     .count();
-                collected += collect_pickups(
+                let shotgun_owned_before = weapons.shotgun_owned;
+                collected += collect_pickups_with_weapons(
                     &scene.map,
                     &mut pickups,
                     player,
                     &mut health,
                     &mut ammo,
+                    &mut weapons,
                     &mut keys,
                     &mut armor,
                     &mut effects,
@@ -5009,7 +5379,10 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                     selected_weapon,
                     window.is_key_pressed(Key::Key1, KeyRepeat::No),
                     window.is_key_pressed(Key::Key2, KeyRepeat::No),
+                    window.is_key_pressed(Key::Key3, KeyRepeat::No),
+                    weapons.shotgun_owned,
                     collected_berserk,
+                    !shotgun_owned_before && weapons.shotgun_owned,
                 );
                 shot_cooldown = (shot_cooldown - delta).max(0.0);
                 weapon_flash = (weapon_flash - delta).max(0.0);
@@ -5017,7 +5390,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                 punch_flash = (punch_flash - delta).max(0.0);
                 let space_down = window.is_key_down(Key::Space);
                 if space_down && shot_cooldown == 0.0 {
-                    selected_weapon = check_weapon_ammo(selected_weapon, ammo);
+                    selected_weapon = check_weapon_ammo(selected_weapon, ammo, weapons);
                 }
                 if space_down
                     && selected_weapon == SpaceWeapon::Pistol
@@ -5034,6 +5407,16 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                         &mut gameplay_rng,
                     ));
                 }
+                if space_down
+                    && selected_weapon == SpaceWeapon::Shotgun
+                    && shot_cooldown == 0.0
+                    && weapons.shells > 0
+                {
+                    weapons.shells -= 1;
+                    shot_cooldown = SHOTGUN_REFIRE_TICS / DOOM_TICS_PER_SECOND;
+                    weapon_flash = 9.0 / DOOM_TICS_PER_SECOND;
+                    kills += fire_shotgun(&scene.map, &mut actors, player, &mut gameplay_rng);
+                }
                 if (window.is_key_down(Key::Q)
                     || (space_down && selected_weapon == SpaceWeapon::Fist))
                     && punch_cooldown == 0.0
@@ -5048,6 +5431,7 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
                         &mut gameplay_rng,
                     ));
                 }
+                spawn_enemy_weapon_drops(&actors, &mut pickups);
             }
         }
         if health > 0 && !exited {
@@ -5095,7 +5479,11 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             &projectiles,
             &pickups,
             selected_weapon,
-            weapon_flash,
+            if selected_weapon == SpaceWeapon::Shotgun {
+                shot_cooldown
+            } else {
+                weapon_flash
+            },
             punch_flash,
             &effects,
             &mut renderer,
@@ -5112,16 +5500,17 @@ fn run_interactive(path: &Path, map_name: &str, output: &Path) -> api::Result<()
             "PLAYING"
         };
         let space_action = match selected_weapon {
-            SpaceWeapon::Pistol => "fire",
+            SpaceWeapon::Pistol | SpaceWeapon::Shotgun => "fire",
             SpaceWeapon::Fist => "punch",
         };
         let triangles = frame_triangles(&scene, player, static_draws, submission.draws)?;
         let visible = visible_geometry_order(&scene.map, player, &scene.visibility_fallbacks).len();
         window.set_title(&format!(
-            "SILICON | {} {state} | WASD move, arrows turn, Shift run, 1 pistol, 2 fist, Space {space_action}, Q punch, E open/use | HP {health} | armor {}/{} | ammo {ammo} | suit {:.0}s | invul {:.0}s | invis {:.0}s | visor {:.0}s | berserk {} | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
+            "SILICON | {} {state} | WASD move, arrows turn, Shift run, 1 pistol, 2 fist, 3 shotgun, Space {space_action}, Q punch, E open/use | HP {health} | armor {}/{} | bullets {ammo}, shells {} | suit {:.0}s | invul {:.0}s | invis {:.0}s | visor {:.0}s | berserk {} | keys R{} Y{} B{} | secrets {secrets_found}/{total_secrets} | maps {} | items {collected} | kills {kills} | {} triangles, {} draws, {visible}/{} BSP leaves",
             scene.map_name,
             armor.points,
             armor.class,
+            weapons.shells,
             effects.radiation_suit_tics / DOOM_TICS_PER_SECOND,
             effects.invulnerability_tics / DOOM_TICS_PER_SECOND,
             effects.partial_invisibility_tics / DOOM_TICS_PER_SECOND,
@@ -7825,6 +8214,78 @@ mod tests {
         };
         assert!(!fire_weapon(&map, &mut actors, player, &mut pain_rng));
         assert_eq!(actors[0].health, 20);
+    }
+
+    #[test]
+    fn dead_shotgunners_drop_one_collectable_shotgun() {
+        let actor = |sprite, x, health| Actor {
+            sprite,
+            x,
+            y: 0.0,
+            health,
+            target_time_remaining: 0.0,
+            attack_cooldown: 0.0,
+            attack_animation_remaining: 0.0,
+            pain_animation_remaining: 0.0,
+            death_animation_time: Some(0.0),
+            animation_time: 0.0,
+            angle: 0.0,
+        };
+        let actors = [
+            actor(*b"SPOS", 64.0, 0),
+            actor(*b"POSS", 128.0, 0),
+            actor(*b"SPOS", 192.0, 1),
+        ];
+        let mut pickups = Vec::new();
+        assert_eq!(spawn_enemy_weapon_drops(&actors, &mut pickups), 1);
+        assert_eq!(pickups.len(), 1);
+        assert_eq!(pickups[0].sprite, *b"SHOT");
+        assert_eq!(pickups[0].effect, PickupEffect::ShotgunDrop);
+        assert_eq!((pickups[0].x, pickups[0].y), (64.0, 0.0));
+        let map = Map {
+            vertices: vec![],
+            sectors: vec![],
+            sides: vec![],
+            lines: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let player = Player {
+            x: 64.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut health = 100;
+        let mut ammo = 50;
+        let mut weapons = PlayerWeapons::default();
+        let mut keys = 0;
+        let mut armor = Armor::default();
+        let mut effects = PlayerEffects::default();
+        assert_eq!(
+            collect_pickups_with_weapons(
+                &map,
+                &mut pickups,
+                player,
+                &mut health,
+                &mut ammo,
+                &mut weapons,
+                &mut keys,
+                &mut armor,
+                &mut effects,
+            ),
+            1
+        );
+        assert_eq!(
+            weapons,
+            PlayerWeapons {
+                shells: 4,
+                shotgun_owned: true,
+            }
+        );
+        assert_eq!(spawn_enemy_weapon_drops(&actors, &mut pickups), 0);
+        assert_eq!(pickups.len(), 1);
     }
 
     #[test]
