@@ -181,10 +181,16 @@ The combat slice loads four normal-skill enemy types from WAD things and their
 classic `A1`–`D1` walk and `E1`–`G1` attack sprite patches: former humans (20
 health), shotgunners (30), imps (60), and demons (150), including their
 species-specific death patches. Moving enemies cycle their walk frames, play
-three-frame attack poses and non-gib death sequences, and choose among eight
-camera-relative views using Doom's state durations; killed enemies remain as
-their final corpse frame. Paired Freedoom patches are horizontally flipped
-where Doom does so. Cutout billboards use a SILICON fragment shader. With the
+three-frame attack poses and normal death sequences, and choose among eight
+camera-relative views using Doom's state durations. Imps, former humans, and
+shotgunners use their species' XDeath sequence when a hit leaves health below
+negative spawn health; demons retain the normal death sequence because Doom
+defines no SARG XDeath state. The extra frames and overkill threshold follow
+id Software's [`P_KillMobj`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c)
+and [monster state table](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/info.c).
+The final death or gib frame remains as a corpse. Paired Freedoom patches are
+horizontally flipped where Doom does so. Cutout billboards use a SILICON
+fragment shader. With the
 pistol selected, Space fires a seeded 5, 10, or 15-damage hitscan; holding it
 repeats after 19 Doom tics (about 0.54 seconds), and pistol ammo caps at 200.
 Damage follows id Software's [`P_GunShot`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c);
@@ -292,8 +298,8 @@ WAD with only its player start moved was used to capture an enemy sprite in view
 that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
-game rules. Frustum bounds reject only map geometry outside the view; enemy
-gib states, Doom's detailed actor navigation, other sound events, other
+game rules. Frustum bounds reject only map geometry outside the view; Doom's
+detailed actor navigation, other sound events, other
 power-up effects beyond health bonuses, soul spheres, radiation suits,
 invulnerability spheres, partial-invisibility spheres, and light-amplification
 visors, locked-door action variants, crossing specials other than 2 and 88,
