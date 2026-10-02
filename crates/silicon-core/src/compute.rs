@@ -1036,6 +1036,7 @@ fn id(value: [u32; 3]) -> Vec4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use silicon_shader::spirv::Module;
 
     fn add_program() -> Program {
         use Instruction::*;
@@ -1101,13 +1102,8 @@ mod tests {
     }
 
     #[test]
-    fn dispatches_glsl_spirv_loop_carried_locals() {
+    fn dispatches_glsl_spirv_loop_carried_locals_and_phi_values() {
         let device = Device::new();
-        let pipeline = device
-            .create_compute_pipeline_from_spirv(include_bytes!(
-                "../../../assets/shaders/compute_loop.comp.spv"
-            ))
-            .unwrap();
         let input = device
             .create_storage_buffer(
                 (0..8)
@@ -1115,21 +1111,37 @@ mod tests {
                     .collect(),
             )
             .unwrap();
-        let mut output = device.create_storage_buffer(vec![Vec4::ZERO; 8]).unwrap();
-        let mut simd_output = device.create_storage_buffer(vec![Vec4::ZERO; 8]).unwrap();
+        for (shader, has_phi) in [
+            (
+                include_bytes!("../../../assets/shaders/compute_loop.comp.spv").as_slice(),
+                false,
+            ),
+            (
+                include_bytes!("../../../assets/shaders/compute_loop.ssa.comp.spv").as_slice(),
+                true,
+            ),
+        ] {
+            let module = Module::parse(shader).unwrap();
+            assert_eq!(
+                module.instructions().iter().any(|op| op.opcode == 245),
+                has_phi
+            );
+            let pipeline = device.create_compute_pipeline_from_spirv(shader).unwrap();
+            let mut output = device.create_storage_buffer(vec![Vec4::ZERO; 8]).unwrap();
+            let mut simd_output = device.create_storage_buffer(vec![Vec4::ZERO; 8]).unwrap();
+            let scalar = device
+                .dispatch_compute(&pipeline, [2, 1, 1], &[&input], &mut output)
+                .unwrap();
+            let simd = device
+                .dispatch_compute_simd(&pipeline, [2, 1, 1], &[&input], &mut simd_output)
+                .unwrap();
 
-        let scalar = device
-            .dispatch_compute(&pipeline, [2, 1, 1], &[&input], &mut output)
-            .unwrap();
-        let simd = device
-            .dispatch_compute_simd(&pipeline, [2, 1, 1], &[&input], &mut simd_output)
-            .unwrap();
-
-        assert_eq!(scalar.invocations, 8);
-        assert_eq!(simd, scalar);
-        assert_eq!(simd_output.as_slice(), output.as_slice());
-        for (index, value) in output.as_slice().iter().enumerate() {
-            assert_eq!(*value, Vec4::new(index as f32 * 3.0, 0.75, 1.5, 3.0));
+            assert_eq!(scalar.invocations, 8);
+            assert_eq!(simd, scalar);
+            assert_eq!(simd_output.as_slice(), output.as_slice());
+            for (index, value) in output.as_slice().iter().enumerate() {
+                assert_eq!(*value, Vec4::new(index as f32 * 3.0, 0.75, 1.5, 3.0));
+            }
         }
     }
 
