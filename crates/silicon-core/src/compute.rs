@@ -1157,12 +1157,14 @@ mod tests {
             .unwrap();
         let shader = include_bytes!("../../../assets/shaders/compute_loop_break.comp.spv");
         let pipeline = device.create_compute_pipeline_from_spirv(shader).unwrap();
-        assert!(
+        assert_eq!(
             pipeline
                 .program
                 .instructions()
                 .iter()
-                .any(|op| matches!(op, Instruction::LoopBreak))
+                .filter(|op| matches!(op, Instruction::LoopBreak))
+                .count(),
+            2
         );
         let mut output = device.create_storage_buffer(vec![Vec4::ZERO; 8]).unwrap();
         let mut simd_output = device.create_storage_buffer(vec![Vec4::ZERO; 8]).unwrap();
@@ -1177,7 +1179,16 @@ mod tests {
         assert_eq!(simd, scalar);
         assert_eq!(simd_output.as_slice(), output.as_slice());
         for (index, value) in output.as_slice().iter().enumerate() {
-            assert_eq!(*value, Vec4::new(index as f32 * 3.0, 0.75, 1.5, 3.0));
+            let iterations = if index < 2 { 2.0 } else { 3.0 };
+            assert_eq!(
+                *value,
+                Vec4::new(
+                    index as f32 * iterations,
+                    0.25 * iterations,
+                    0.5 * iterations,
+                    iterations
+                )
+            );
         }
     }
 

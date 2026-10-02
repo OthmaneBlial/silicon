@@ -12,6 +12,9 @@ void main() {
     vec4 value = vec4(0.0);
     float iteration = 0.0;
     while (iteration < 10.0) {
+        if (index < 2u && iteration >= 2.0) {
+            break;
+        }
         if (iteration >= 3.0) {
             break;
         }

@@ -80,6 +80,52 @@ impl Compiler<'_> {
         }
         Ok(())
     }
+    fn join_loop_exits(&mut self, paths: &[Path]) -> Result<()> {
+        let first = &paths[0].1;
+        let mut available = first.available.clone();
+        let mut written = first.written.clone();
+        for (_, env) in &paths[1..] {
+            available.retain(|id| env.available.contains(id));
+            written.retain(|id| env.written.contains(id));
+        }
+        let mut locals = BTreeMap::new();
+        for (&root, initial) in &first.locals {
+            let mut uv = match &initial.value {
+                Value::Reg(_, uv) => *uv,
+                _ => return Err("loop-carried locals require SIR register values".into()),
+            };
+            let mut common = true;
+            for (_, env) in &paths[1..] {
+                let Some(current) = env.locals.get(&root) else {
+                    common = false;
+                    break;
+                };
+                if current.ty != initial.ty {
+                    return Err("loop local type changes across exit paths".into());
+                }
+                let (Value::Reg(dst, _), Value::Reg(src, current_uv)) =
+                    (&initial.value, &current.value)
+                else {
+                    return Err("loop-carried locals require SIR register values".into());
+                };
+                if dst != src {
+                    return Err("loop exit local does not use its stable register".into());
+                }
+                uv &= current_uv;
+            }
+            if common {
+                let mut local = initial.clone();
+                if let Value::Reg(dst, _) = local.value {
+                    local.value = Value::Reg(dst, uv);
+                }
+                locals.insert(root, local);
+            }
+        }
+        self.available = Some(available);
+        self.locals = locals;
+        self.written = written;
+        Ok(())
+    }
     fn lower_phi(&mut self, op: &Op, paths: &[Path], predecessors: &BTreeSet<u32>) -> Result<()> {
         let a = &op.operands;
         let pairs: BTreeMap<_, _> = a[2..].chunks_exact(2).map(|p| (p[1], p[0])).collect();
@@ -481,9 +527,6 @@ impl Compiler<'_> {
         self.ops.push(Sir::LoopEnd);
         let mut merge_paths = vec![(condition_id, header_env)];
         if !loop_scope.breaks.is_empty() {
-            if loop_scope.breaks.len() > 1 {
-                return Err(merge_op.error("supports one loop-break edge"));
-            }
             if blocks[&merge_id]
                 .code
                 .iter()
@@ -503,7 +546,7 @@ impl Compiler<'_> {
                 return Err(merge_op.error("loop merge has unsupported predecessors"));
             }
         }
-        self.join_paths(&merge_paths)?;
+        self.join_loop_exits(&merge_paths)?;
         self.region(
             merge_id,
             merge_paths,
