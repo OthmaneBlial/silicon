@@ -373,8 +373,9 @@ and scalar/SIMD/parallel equivalence. Golden changes require an explicit
 ## Boundaries
 
 This is a research software GPU, not a conformant driver. Graphics SPIR-V support is
-a narrow subset with acyclic structured selections and a fixed binding contract;
-compute SPIR-V supports only the documented vec4 storage-buffer and bounded uint atomic paths. **General
+a narrow subset with structured selections, restricted local-carrying loops and
+a fixed binding contract; compute SPIR-V supports the documented vec4
+storage-buffer, bounded uint atomic and restricted local-loop paths. **General
 SPIR-V/GLSL compatibility, WGSL, conformant Vulkan/OpenGL drivers, general compute,
 JIT, and full-game compatibility are not implemented.** Phase 70 is a limited
 Freedoom E1M1 gameplay slice. The small Rust Vulkan-like subset is documented

@@ -33,11 +33,12 @@ External shader fixtures are included for inspection and headless cube rendering
 ./silicon render-shaders assets/shaders/textured.vert.spv assets/shaders/control.ssa.frag.spv --backend simd --output output/external.png
 ```
 
-The SPIR-V 1.0 subset supports acyclic structured selections, Phi/local merges,
-scalar bool, early return, fragment discard and scalar explicit-LOD texture
-sampling. `shadow_showcase` samples a SILICON-generated CPU depth map. The
-`stencil` scene constrains its textured cube and alpha-blended overlay to a portal.
-General GLSL/SPIR-V conformance, SPIR-V loops, switches, Vulkan/OpenGL drivers, compute, JIT,
+The SPIR-V 1.0 subset supports structured selections, restricted local-carrying
+loops, Phi/local merges, scalar bool, early return, fragment discard and scalar
+explicit-LOD texture sampling. `shadow_showcase` samples a SILICON-generated
+CPU depth map. The `stencil` scene constrains its textured cube and alpha-blended overlay to a portal.
+General GLSL/SPIR-V conformance, loop-carried `OpPhi`, loop breaks, switches,
+Vulkan/OpenGL drivers, general compute, JIT,
 MSAA and games remain unsupported. Captures embed lowered SIR and owned resources; newer SIR
 instructions require this CLI or newer. Older version-1 captures remain readable.
 
