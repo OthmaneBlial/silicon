@@ -1553,6 +1553,12 @@ struct Draw {
     bounds: Option<Bounds3>,
 }
 
+#[derive(Clone)]
+struct VisibleDraw {
+    index: usize,
+    retained_vertices: Option<Vec<Vertex>>,
+}
+
 struct PreparedScene {
     map_name: String,
     map: Map,
@@ -2488,11 +2494,11 @@ fn project_doom_point(
     let (sin, cos) = player.angle.to_radians().sin_cos();
     let dx = point.x - player.x;
     let dz = point.z + player.y;
-    let forward = dx * cos + dz * sin;
+    let forward = dx * cos - dz * sin;
     if !forward.is_finite() || !(1.0..=DOOM_VIEW_FAR).contains(&forward) {
         return None;
     }
-    let right = dx * sin - dz * cos;
+    let right = dx * sin + dz * cos;
     let half_vfov = (1.22_f32 * 0.5).tan();
     let half_hfov = half_vfov * width as f32 / height as f32;
     Some((
@@ -2631,6 +2637,31 @@ fn bounds_hidden_by_walls(
         })
 }
 
+fn cull_hidden_triangles(
+    vertices: &[Vertex],
+    columns: &[Vec<OcclusionSpan>],
+    player: Player,
+    eye_height: f32,
+    height: u32,
+) -> Option<Vec<Vertex>> {
+    let mut retained = None;
+    for (index, triangle) in vertices.chunks_exact(3).enumerate() {
+        let hidden = geometry_bounds(triangle).is_some_and(|bounds| {
+            bounds_hidden_by_walls(bounds, columns, player, eye_height, height)
+        });
+        if hidden {
+            retained.get_or_insert_with(|| {
+                let mut output = Vec::with_capacity(vertices.len());
+                output.extend_from_slice(&vertices[..index * 3]);
+                output
+            });
+        } else if let Some(output) = retained.as_mut() {
+            output.extend_from_slice(triangle);
+        }
+    }
+    retained
+}
+
 fn visible_map_draws(
     map: &Map,
     draws: &[Vec<Draw>],
@@ -2639,7 +2670,7 @@ fn visible_map_draws(
     width: u32,
     height: u32,
     eye_height: f32,
-) -> Vec<Vec<usize>> {
+) -> Vec<Vec<VisibleDraw>> {
     let mut solid_columns = vec![Vec::new(); width as usize];
     let mut visible = vec![Vec::new(); draws.len()];
     for leaf in visible_geometry_order(map, player, fallback_bounds) {
@@ -2649,12 +2680,23 @@ fn visible_map_draws(
         for (index, draw) in leaf_draws.iter().enumerate() {
             if draw
                 .bounds
-                .is_some_and(|bounds| bounds3_in_view(bounds, player, eye_height))
-                && !draw.bounds.is_some_and(|bounds| {
+                .is_some_and(|bounds| !bounds3_in_view(bounds, player, eye_height))
+                || draw.bounds.is_some_and(|bounds| {
                     bounds_hidden_by_walls(bounds, &solid_columns, player, eye_height, height)
                 })
             {
-                visible[leaf].push(index);
+                continue;
+            }
+            let retained_vertices =
+                cull_hidden_triangles(&draw.vertices, &solid_columns, player, eye_height, height);
+            if retained_vertices
+                .as_ref()
+                .is_none_or(|vertices| !vertices.is_empty())
+            {
+                visible[leaf].push(VisibleDraw {
+                    index,
+                    retained_vertices,
+                });
             }
         }
         for draw in leaf_draws.iter().filter(|draw| draw.wall && !draw.masked) {
@@ -4429,8 +4471,8 @@ impl PreparedScene {
         );
         let mut batches = BTreeMap::new();
         for (leaf, draws) in self.draws.iter().enumerate() {
-            for &index in visible_draws.get(leaf).into_iter().flatten() {
-                let draw = &draws[index];
+            for visible in visible_draws.get(leaf).into_iter().flatten() {
+                let draw = &draws[visible.index];
                 let depth = draw
                     .bounds
                     .map(|bounds| depth_bucket(bounds, player))
@@ -4438,7 +4480,12 @@ impl PreparedScene {
                 let batch = batches
                     .entry((depth, draw.wall, draw.masked, draw.name))
                     .or_insert_with(|| (Arc::clone(&draw.texture), Vec::new()));
-                batch.1.extend_from_slice(&draw.vertices);
+                batch.1.extend_from_slice(
+                    visible
+                        .retained_vertices
+                        .as_deref()
+                        .unwrap_or(&draw.vertices),
+                );
             }
         }
         if light_amplification {
@@ -4652,8 +4699,16 @@ fn frame_triangles(
     let static_triangles = visible
         .iter()
         .enumerate()
-        .flat_map(|(leaf, indices)| indices.iter().map(move |&index| &scene.draws[leaf][index]))
-        .map(|draw| draw.vertices.len() / 3)
+        .flat_map(|(leaf, draws)| {
+            draws.iter().map(move |visible| {
+                visible
+                    .retained_vertices
+                    .as_ref()
+                    .unwrap_or(&scene.draws[leaf][visible.index].vertices)
+                    .len()
+                    / 3
+            })
+        })
         .sum::<usize>();
     let sky_triangles = usize::from(scene.sky_texture.is_some()) * SKY_MESH_SEGMENTS * 2;
     let sky_draws = usize::from(scene.sky_texture.is_some());
@@ -7415,6 +7470,100 @@ mod tests {
             41.0,
             DOOM_FRAME_HEIGHT,
         ));
+    }
+
+    #[test]
+    fn wall_culling_drops_only_triangles_fully_hidden_by_a_wall() {
+        let player = Player {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        };
+        let mut columns = vec![Vec::new(); 96];
+        add_solid_wall_columns(
+            &mut columns,
+            72,
+            player,
+            41.0,
+            [
+                Vec3::new(20.0, 0.0, 20.0),
+                Vec3::new(20.0, 0.0, -20.0),
+                Vec3::new(20.0, 46.0, -20.0),
+                Vec3::new(20.0, 46.0, 20.0),
+            ],
+        );
+        let vertex = |x, y, z| Vertex {
+            position: Vec3::new(x, y, z),
+            normal: Vec3::ZERO,
+            uv: Vec2::ZERO,
+            color: Vec4::new(1.0, 1.0, 1.0, 1.0),
+        };
+        let hidden = [
+            vertex(40.0, 12.0, -2.0),
+            vertex(40.0, 30.0, -2.0),
+            vertex(40.0, 20.0, 2.0),
+        ];
+        let visible = [
+            vertex(40.0, 65.0, -2.0),
+            vertex(40.0, 70.0, -2.0),
+            vertex(40.0, 68.0, 2.0),
+        ];
+        let crossing = [
+            vertex(40.0, 20.0, -4.0),
+            vertex(40.0, 60.0, -4.0),
+            vertex(40.0, 60.0, 4.0),
+        ];
+        assert_eq!(
+            cull_hidden_triangles(&hidden, &columns, player, 41.0, 72),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            cull_hidden_triangles(&visible, &columns, player, 41.0, 72),
+            None
+        );
+        assert_eq!(
+            cull_hidden_triangles(&crossing, &columns, player, 41.0, 72),
+            None
+        );
+        let mut geometry = hidden.to_vec();
+        geometry.extend(visible);
+        geometry.extend(crossing);
+        let mut retained = visible.to_vec();
+        retained.extend(crossing);
+        assert_eq!(
+            cull_hidden_triangles(&geometry, &columns, player, 41.0, 72),
+            Some(retained)
+        );
+    }
+
+    #[test]
+    fn doom_projection_matches_camera_basis_at_nonzero_yaw() {
+        let player = Player {
+            x: 13.0,
+            y: -7.0,
+            angle: 35.0,
+        };
+        let (sin, cos) = player.angle.to_radians().sin_cos();
+        let depth = 80.0;
+        let lateral = 12.0;
+        let vertical = 8.0;
+        let eye_height = 41.0;
+        let point = Vec3::new(
+            player.x + depth * cos + lateral * sin,
+            eye_height + vertical,
+            -player.y - depth * sin + lateral * cos,
+        );
+        let width = 960;
+        let height = 720;
+        let projected = project_doom_point(point, player, eye_height, width, height)
+            .expect("point in front of the player should project");
+        let half_vfov = (1.22_f32 * 0.5).tan();
+        let half_hfov = half_vfov * width as f32 / height as f32;
+        let expected_x = width as f32 * 0.5 + lateral / (depth * half_hfov) * width as f32 * 0.5;
+        let expected_y = height as f32 * 0.5 - vertical / (depth * half_vfov) * height as f32 * 0.5;
+        assert!((projected.0 - expected_x).abs() < 0.001);
+        assert!((projected.1 - expected_y).abs() < 0.001);
+        assert!((projected.2 - depth).abs() < 0.001);
     }
 
     #[test]
