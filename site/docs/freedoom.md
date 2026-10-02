@@ -31,7 +31,8 @@ as E1M2, for either rendering or interactive play. Each map uses its own
 player-1 start and the same SILICON pipeline. Special-11 exits load the next
 episode map when its marker exists. Special-51 secret exits load that episode's
 M9, whose ordinary exit returns to E1M4, E2M6, E3M7, or E4M3, respectively.
-Health, ammo, keys, and armor carry forward while map-local counters reset. Episode-
+Health, bullet and shell ammo, weapon ownership, keys, and armor carry forward
+while map-local counters reset. Episode-
 ending map exits stop at `EXITED` because the prototype has no finale. These
 routes follow id Software's
 [`G_DoCompleted`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/g_game.c)
@@ -43,8 +44,9 @@ clear opening near the right edge. Visual completeness beyond E1M2 remains in
 progress. The first command writes
 `output/freedoom_map.png`. The interactive view uses
 WASD to move and strafe, arrow keys to turn, Shift to run, `1` for the pistol,
-and `2` for the fist. Space attacks with the selected weapon; a berserk pack
-automatically selects the fist. `Q` always punches. Press `E` to open ordinary
+`2` for the fist, and `3` for the shotgun after you acquire it. Space attacks
+with the selected weapon; a berserk pack automatically selects the fist. `Q`
+always punches. Press `E` to open ordinary
 doors, operate manual lifts, or use the exit,
 and Escape to exit. Every frame submits the scene again through SILICON;
 movement stays inside
@@ -52,13 +54,14 @@ a BSP-leaf floor, keeps a 16-unit margin from one-sided or explicitly blocking
 lines, limits steps to 24 units, and requires 56 units of ceiling clearance.
 WAD stim packs, medikits, health bonuses, soul spheres, berserk packs, radiation suits,
 invulnerability and partial-invisibility spheres, light-amplification visors,
-clips, ammo boxes, green/blue
+clips, ammo boxes, shells, shell boxes, shotguns, green/blue
 armor, armor bonuses, and keys render as cutout
 billboards. Pickups require clear sight and a 24-unit range. Health/ammo and
 armor upgrades stay on the map when they cannot improve the player's inventory;
 repeated keys, health bonuses, soul spheres, and armor bonuses are consumed on
 contact. Health pickups cap at 100; bonuses and soul spheres can raise health to
-200. Armor and pistol ammo cap at 200. Green armor absorbs one third of damage,
+200. Armor and pistol ammo cap at 200; shells cap at 50. Green armor absorbs
+one third of damage,
 blue armor one half, and armor bonuses add one point up to 200. These
 rules follow id Software's [`P_GiveBody`, `P_GiveArmor`,
 `P_TouchSpecialThing`, and `P_DamageMobj`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c).
@@ -195,13 +198,28 @@ pistol selected, Space fires a seeded 5, 10, or 15-damage hitscan; holding it
 repeats after 19 Doom tics (about 0.54 seconds), and pistol ammo caps at 200.
 Damage follows id Software's [`P_GunShot`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c);
 the refire interval follows its pistol states and [`A_ReFire`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c).
-Press `1` for the pistol or `2` for the fist. A berserk pack selects the fist,
-but you can switch back to the pistol. Space falls back to the fist when pistol ammo
-runs out, matching Doom's [`P_CheckAmmo`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c). With the fist selected, Space punches.
+Press `1` for the pistol, `2` for the fist, or `3` for an owned shotgun. A
+berserk pack selects the fist, but you can switch back. Space switches from an
+empty pistol to the shotgun when shells remain, then to the fist; an empty
+shotgun switches to the pistol when bullets remain, otherwise the fist. This
+follows Doom's [`P_CheckAmmo`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c).
+Thing 2001 grants the shotgun and eight shells; shell pickups grant four or
+twenty shells up to the 50-shell cap. Each dead shotgunner drops one shotgun
+with four shells. These pickup amounts follow [`P_GiveWeapon` and
+`P_TouchSpecialThing`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_inter.c).
+With the shotgun selected, Space consumes one shell and fires seven spread
+hitscan pellets. Each pellet deals a seeded 5, 10, or 15 damage and stops at a
+blocking wall; angle spread and damage follow [`A_FireShotgun` and
+`P_GunShot`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c).
+Holding Space repeats after 44 Doom tics (about 1.26 seconds). The SHTGA0–D0
+weapon poses follow the shotgun state durations in
+[`info.c`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/info.c).
+The rays stay horizontal and do not model Doom's vertical autoaim.
+With the fist selected, Space punches.
 Press or hold `Q` for a fist punch with a 22-tic (about 0.63-second) cooldown,
 no ammo cost, and Doom's randomized 2–20 damage; holding repeats punches when
 ready. This held-attack behavior follows Doom's [`A_ReFire`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/p_pspr.c)
-and pistol/fist state sequences in [`info.c`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/info.c).
+and pistol/fist/shotgun state sequences in [`info.c`](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/info.c).
 It hits the nearest living enemy whose
 16-unit radius intersects the forward trace within 64 units, unless a blocking
 line comes first. The hit is immediate; PUNGC0, PUNGD0, PUNGC0, and PUNGB0
@@ -223,7 +241,7 @@ seconds. Former humans fire 3-damage hitscan attacks and
 shotgunners fire 6-damage hitscan attacks within 512 units, at most once every
 1.4 seconds and only with clear sight past blocking lines. Damage and projectile
 launch happen as soon as the cooldown expires; the pose plays afterward, with
-no attack windup or aim spread. A surviving pistol hit rolls against Doom's
+no attack windup or aim spread. A surviving bullet hit rolls against Doom's
 pain chances: 200/256 for imps and former humans, 180/256 for demons, and
 170/256 for shotgunners. Successful rolls show the pain sprite for four tics
 on imps and demons or six tics on former humans and shotgunners. A deterministic
@@ -276,8 +294,8 @@ covered when their mesh is only partly hidden; partially covered triangles
 remain whole. This is not Doom's exact per-column portal clipping. At the
 checked-in 960×720 camera pose, 570 of 682 subsectors remain in the horizontal
 BSP view. The historical pre-occlusion capture measured 5,713 triangles across
-260 draws; the current render of the verified 0.13.0 release WAD reports 1,841
-triangles across 199 draws at that pose. Its PNG is byte-identical to the
+260 draws; the current render of the verified 0.13.0 release WAD reports 1,871
+triangles across 214 draws at that pose. Its PNG is byte-identical to the
 checked-in screenshot. The timing measurements below predate wall culling; no
 new render-time measurement was collected. The checked-in camera view
 contains 59 visible pickup billboards: nine health/ammo items, 30 health
@@ -300,13 +318,13 @@ that test fixture is not included.
 
 This is a limited gameplay prototype, not Doom's complete player physics or
 game rules. Frustum bounds reject only map geometry outside the view; Doom's
-detailed actor navigation, other sound events, other
+detailed actor navigation, vertical shotgun autoaim, other sound events, other
 power-up effects beyond health bonuses, soul spheres, radiation suits,
 invulnerability spheres, partial-invisibility spheres, and light-amplification
 visors, locked-door action variants, crossing specials other than 2 and 88,
-other use specials, episode finales, weapons beyond the pistol and fist and
-their ammunition, and complete weapon state sequences beyond the implemented
-pistol and fist poses remain unimplemented.
+other use specials, episode finales, weapons beyond the pistol, fist, and
+shotgun and their ammunition, and weapon poses beyond the implemented pistol,
+fist, and shotgun sequences remain unimplemented.
 `F_SKY1` ceilings use the map's episode sky texture, sampled by view angle. The
 checked-in [`E1M1 screenshot`](../assets/screenshots/freedoom_e1m1.png) was
 rendered from the unmodified release WAD. The WAD itself is not included. The release archive

@@ -179,9 +179,9 @@ Opaque, unmasked wall quads mark only vertical spans that cover an entire
 screen column. A mesh is culled only when its full projected bounds fit inside a
 nearer wall span in every covered column; bounds overlapping wall edges or
 portal openings stay visible. The pre-occlusion checked-in capture measured 5,713
-triangles across 260 draws in 570 of 682 horizontal BSP leaves; current WAD
-render counts have not been remeasured. The armor items do not appear in the
-captured pixels.
+triangles across 260 draws in 570 of 682 horizontal BSP leaves; the current
+release WAD render reports 1,871 triangles across 214 draws at that view, with
+a byte-identical PNG. The armor items do not appear in the captured pixels.
 `F_SKY1` surfaces use the map's WAD sky texture.
 View-visible map meshes are grouped by material inside coarse depth bands so
 nearer ranges reach the depth test first. BSP cells are split at sector
@@ -189,10 +189,13 @@ boundaries before validated pieces fill flat geometry. Leaf mesh bounds restore
 view-visible geometry when WAD child bounds are too tight, while the player's
 leaf is always retained.
 The interactive prototype adds first-person movement, basic collision, player
-hitscan, health, ammo and armor pickups, Doom-timed enemy idle and chance-based pain
-poses, sight-based wake-up with a 100-tic target timeout, sector-portal enemy
+hitscan, health, ammo, shotgun and armor pickups, Doom-timed enemy idle and
+chance-based pain poses, sight-based wake-up with a 100-tic target timeout, sector-portal enemy
 pursuit around blocked corridors, pistol-noise alerts that wake enemies through
-open sectors even when a shot misses, melee attacks, line-of-sight hitscan for
+open sectors even when a shot misses, a shotgun selected with `3` that fires
+seven 5/10/15-damage pellets per shell, and four-shell drops from dead
+shotgunners. Empty ammo falls back to the other owned gun or the fist. It also
+has melee attacks, line-of-sight hitscan for
 humans and shotgunners, and imp fireballs. The player can trigger E1M1's WAD
 special-1 doors with `E` and use episode exits; ordinary doors raise, wait, and
 close with matching map geometry and collision. Its special-117 use door raises
