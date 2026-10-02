@@ -753,12 +753,21 @@ fn monster_sprite(kind: u16) -> Option<([u8; 4], i32)> {
     }
 }
 
+fn actor_spawn_health(sprite: [u8; 4]) -> Option<i32> {
+    match &sprite {
+        b"TROO" => Some(60),
+        b"SARG" => Some(150),
+        b"POSS" => Some(20),
+        b"SPOS" => Some(30),
+        _ => None,
+    }
+}
+
 fn sprite_actor_textures(data: &[u8], prefix: [u8; 4]) -> api::Result<Vec<Vec<SpriteTexture>>> {
     let lumps = wad_lumps(data)?;
     let last_frame = match &prefix {
-        b"TROO" => b'M',
+        b"TROO" | b"POSS" | b"SPOS" => b'U',
         b"SARG" => b'N',
-        b"POSS" | b"SPOS" => b'L',
         _ => b'G',
     };
     (b'A'..=last_frame)
@@ -896,7 +905,26 @@ fn gameplay_random_byte(state: &mut u32) -> u8 {
     (*state >> 24) as u8
 }
 
-fn actor_death_profile(sprite: [u8; 4]) -> Option<(&'static [usize], &'static [f32])> {
+fn actor_xdeath_profile(sprite: [u8; 4]) -> Option<(&'static [usize], &'static [f32])> {
+    match &sprite {
+        b"TROO" => Some((&[13, 14, 15, 16, 17, 18, 19, 20], &[5.0; 7])),
+        b"POSS" | b"SPOS" => Some((&[12, 13, 14, 15, 16, 17, 18, 19, 20], &[5.0; 8])),
+        _ => None,
+    }
+}
+
+fn actor_gibbed(sprite: [u8; 4], health: i32) -> bool {
+    actor_xdeath_profile(sprite).is_some()
+        && actor_spawn_health(sprite).is_some_and(|spawn_health| health < -spawn_health)
+}
+
+fn actor_death_profile(
+    sprite: [u8; 4],
+    gibbed: bool,
+) -> Option<(&'static [usize], &'static [f32])> {
+    if gibbed && let Some(profile) = actor_xdeath_profile(sprite) {
+        return Some(profile);
+    }
     match &sprite {
         b"TROO" => Some((&[8, 9, 10, 11, 12], &[8.0, 8.0, 6.0, 6.0])),
         b"SARG" => Some((&[8, 9, 10, 11, 12, 13], &[8.0, 8.0, 4.0, 4.0, 4.0])),
@@ -905,14 +933,14 @@ fn actor_death_profile(sprite: [u8; 4]) -> Option<(&'static [usize], &'static [f
     }
 }
 
-fn actor_death_duration(sprite: [u8; 4]) -> f32 {
-    actor_death_profile(sprite)
+fn actor_death_duration(sprite: [u8; 4], gibbed: bool) -> f32 {
+    actor_death_profile(sprite, gibbed)
         .map(|(_, tics)| tics.iter().sum::<f32>() / 35.0)
         .unwrap_or_default()
 }
 
-fn actor_death_frame(sprite: [u8; 4], elapsed: f32) -> Option<usize> {
-    let (frames, durations) = actor_death_profile(sprite)?;
+fn actor_death_frame(sprite: [u8; 4], elapsed: f32, gibbed: bool) -> Option<usize> {
+    let (frames, durations) = actor_death_profile(sprite, gibbed)?;
     let mut elapsed_tics = elapsed * 35.0;
     for (index, &duration) in durations.iter().enumerate() {
         if elapsed_tics < duration {
@@ -3975,8 +4003,10 @@ fn update_actors(
     for actor in actors.iter_mut() {
         if actor.health <= 0 {
             if let Some(time) = actor.death_animation_time {
-                actor.death_animation_time =
-                    Some((time + delta).min(actor_death_duration(actor.sprite)));
+                actor.death_animation_time = Some((time + delta).min(actor_death_duration(
+                    actor.sprite,
+                    actor_gibbed(actor.sprite, actor.health),
+                )));
             }
             continue;
         }
@@ -4463,8 +4493,12 @@ impl PreparedScene {
             };
             let view_to_actor = (actor.y - player.y).atan2(actor.x - player.x).to_degrees();
             let frame = if actor.health <= 0 {
-                actor_death_frame(actor.sprite, actor.death_animation_time.unwrap_or_default())
-                    .unwrap_or(0)
+                actor_death_frame(
+                    actor.sprite,
+                    actor.death_animation_time.unwrap_or_default(),
+                    actor_gibbed(actor.sprite, actor.health),
+                )
+                .unwrap_or(0)
             } else {
                 actor_pain_frame(actor.sprite, actor.pain_animation_remaining)
                     .or_else(|| actor_attack_frame(actor.sprite, actor.attack_animation_remaining))
@@ -5454,14 +5488,52 @@ mod tests {
         for (sprite, frames, durations) in profiles {
             let mut elapsed = 0.0;
             for (&frame, &duration) in frames.iter().zip(durations) {
-                assert_eq!(actor_death_frame(sprite, elapsed / 35.0), Some(frame));
+                assert_eq!(
+                    actor_death_frame(sprite, elapsed / 35.0, false),
+                    Some(frame)
+                );
                 elapsed += duration;
             }
             let corpse = frames.last().copied();
-            assert_eq!(actor_death_frame(sprite, elapsed / 35.0), corpse);
-            assert_eq!(actor_death_frame(sprite, 100.0), corpse);
-            assert_eq!(actor_death_duration(sprite), elapsed / 35.0);
+            assert_eq!(actor_death_frame(sprite, elapsed / 35.0, false), corpse);
+            assert_eq!(actor_death_frame(sprite, 100.0, false), corpse);
+            assert_eq!(actor_death_duration(sprite, false), elapsed / 35.0);
         }
+    }
+
+    #[test]
+    fn enemy_gib_states_require_doom_overkill_and_hold_the_gib_corpse() {
+        let profiles: [([u8; 4], i32, &[usize], &[f32]); 3] = [
+            (*b"TROO", 60, &[13, 14, 15, 16, 17, 18, 19, 20], &[5.0; 7]),
+            (
+                *b"POSS",
+                20,
+                &[12, 13, 14, 15, 16, 17, 18, 19, 20],
+                &[5.0; 8],
+            ),
+            (
+                *b"SPOS",
+                30,
+                &[12, 13, 14, 15, 16, 17, 18, 19, 20],
+                &[5.0; 8],
+            ),
+        ];
+        for (sprite, spawn_health, frames, durations) in profiles {
+            assert_eq!(actor_spawn_health(sprite), Some(spawn_health));
+            assert!(!actor_gibbed(sprite, -spawn_health));
+            assert!(actor_gibbed(sprite, -spawn_health - 1));
+            let mut elapsed = 0.0;
+            for (&frame, &duration) in frames.iter().zip(durations) {
+                assert_eq!(actor_death_frame(sprite, elapsed / 35.0, true), Some(frame));
+                elapsed += duration;
+            }
+            let corpse = frames.last().copied();
+            assert_eq!(actor_death_frame(sprite, elapsed / 35.0, true), corpse);
+            assert_eq!(actor_death_frame(sprite, 100.0, true), corpse);
+            assert_eq!(actor_death_duration(sprite, true), elapsed / 35.0);
+        }
+        assert!(!actor_gibbed(*b"SARG", -151));
+        assert_eq!(actor_death_frame(*b"SARG", 100.0, true), Some(13));
     }
 
     #[test]
