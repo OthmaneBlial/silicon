@@ -17,8 +17,10 @@ to 32 MiB; CLI scene descriptors and SPIR-V binaries to 1 MiB. SPIR-V has an ID
 bound of at most 65536 and at most 256 virtual temporaries, lowered to 64
 simultaneously live registers, and a main body of at most 4096 SPIR-V
 instructions. SIR loops are paired and limited to 65,536 dynamically visited
-instructions per invocation; SPIR-V control-flow lowering still accepts only
-acyclic selections. Per-path definition checks prevent cross-branch reads. JSON
+instructions per invocation. SPIR-V lowering accepts structured selections and
+the restricted `OpLoopMerge None` local-loop form documented in
+[`spirv.md`](spirv.md); loop-carried `OpPhi`, loop breaks and other loop-control
+masks remain unsupported. Per-path definition checks prevent cross-branch reads. JSON
 nesting also obeys serde_json's
 recursion limit. These are validation bounds, not a process-wide allocation
 budget. Captures can duplicate resources, and the software GPU is not a hardened

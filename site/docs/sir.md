@@ -44,8 +44,9 @@ observe loop-carried values. The body must update its condition for termination.
 Validation accounts for the zero-iteration path, rejects loops crossing
 selection boundaries, and pairs at most 64 nested loops. Each invocation is
 limited to 65,536 dynamically visited instructions; exceeding the limit returns
-an error. SPIR-V `OpLoopMerge` and loop-carried `OpPhi` are not yet lowered into
-these SIR instructions.
+an error. The SPIR-V translator lowers a restricted `OpLoopMerge None` form
+using mutable Function locals and SIR `Move`. Loop-header `OpPhi` values, loop
+breaks and other loop-control masks remain unsupported.
 
 `Merge { dst, a, b }` selects the immediately preceding selection's true/false
 value. Consecutive merges implement SPIR-V Phi and local snapshots; another

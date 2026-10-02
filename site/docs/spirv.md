@@ -15,7 +15,7 @@ The committed original GLSL sources and their `.spv` fixtures are in
 recompile fixtures, not to build, test or run SILICON:
 
 ```sh
-for shader in textured.vert textured.frag mrt.vert mrt.frag arithmetic.frag math.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag compute_vector_add.comp compute_invert.comp compute_shared.comp compute_shared_multi.comp; do
+for shader in textured.vert textured.frag mrt.vert mrt.frag arithmetic.frag math.frag negate.frag lit.vert lit.frag shadow.frag pbr.vert pbr.frag cubemap_implicit.vert cubemap_implicit.frag locals.frag control.frag loop.frag; do
   glslangValidator -V --target-env vulkan1.0 -o "assets/shaders/$shader.spv" "assets/shaders/$shader"
   spirv-val --target-env vulkan1.0 "assets/shaders/$shader.spv"
 done
@@ -66,9 +66,10 @@ faces. This environment term is not split-sum image-based lighting.
 ## Accepted subset
 
 - One `main` entry point: Vertex, Fragment or the documented narrow Compute
-  subset, one `void()` function, acyclic structured selection blocks, `OpReturn`,
-  Logical/GLSL450 memory model and Shader capability. Fragment requires
-  OriginUpperLeft; compute requires `LocalSize`. GLSL.std.450 supports `Round`,
+  subset, one `void()` function, structured selections and the restricted loop
+  form below, `OpReturn`, Logical/GLSL450 memory model and Shader capability.
+  Fragment requires OriginUpperLeft; compute requires `LocalSize`. GLSL.std.450
+  supports `Round`,
   `RoundEven`, `Trunc`, `Floor`, `Ceil`, `Fract`, `Sin`, `Cos`, `Exp`, `Log`,
   `Exp2`, `Log2`, `Sqrt`, `InverseSqrt`, `Pow`, `FMin`, `FMax`, `FClamp`,
   `FMix`, `Length` and `Normalize` with checked operand counts/types.
@@ -183,31 +184,37 @@ gradients, and other image operands remain unsupported.
 
 ## Limits and evidence
 
-SPIR-V lowering currently accepts acyclic `OpSelectionMerge` regions only.
-`OpLoopMerge` declares structured loop headers, continue targets and merge
-blocks, but these control-flow regions and their loop-carried `OpPhi` values are
-not yet translated. Bounded loops are currently available only to hand-built
-SIR programs.
+SPIR-V lowering accepts acyclic `OpSelectionMerge` regions and a restricted
+`OpLoopMerge None` form. A loop header branches to a separate condition block;
+the condition branches true to the body and false to the merge. One continue
+block has one reachable predecessor and branches directly back to the header.
+Mutable Function locals carry values with SIR `Move` instructions. Loop-header
+`OpPhi` values, loop breaks and other loop-control masks are unsupported.
+`loop.frag` checks scalar/SIMD rendering, and `compute_loop.comp` checks scalar
+and SIMD-requested compute dispatch.
 
 At most 1 MiB per module, ID bound 65536, 256 virtual SSA temporaries, 64
 simultaneously live runtime registers and 4096 SIR instructions. Dead temporaries
-are recycled after their last use, without increasing VM storage. Selection
-nesting is bounded to 64 and main to 4096 SPIR-V instructions. SPIR-V loops,
-switches, function calls, general integer arithmetic, specialization
-constants, arbitrary SSBO layouts, storage images, implicit samples from
-transformed coordinates, explicit sample offsets/gradients, general shared-memory
-layouts/barriers, WGSL or GLSL compiler. The compute subset accepts up to 12
+are recycled after their last use, without increasing VM storage. Combined
+selection/loop nesting is bounded to 64; main is bounded to 4096 SPIR-V
+instructions. Loop-carried `OpPhi` values, loop breaks, switches, function
+calls, general integer arithmetic, specialization constants, arbitrary SSBO
+layouts, storage images, implicit samples from transformed coordinates,
+explicit sample offsets/gradients, general shared-memory layouts/barriers,
+WGSL input and an integrated GLSL compiler remain unsupported. The compute
+subset accepts up to 12
 read-only vec4 arrays at bindings 0..N-1 and exactly one write-only vec4 output
 at N, plus fixed Workgroup `vec4[N]` arrays up to 4,096 elements total and the
 GLSL `barrier()` semantics above. Up to 12 uint atomic arrays may follow the
 output; other atomic types/operations remain unsupported. Textures and uniforms
-are unsupported in compute. Unreachable
-blocks are accepted only as isolated `OpUnreachable` merge blocks.
-Conditional targets must be distinct; overlapping regions, back edges and branches
-outside their structured region fail. Phi pairs must match all predecessors,
-with values available on the named paths. General arbitrary CFGs and vector bool
-are unsupported. Unsupported cases return errors. Zero-length normalization
-returns zero; undefined GLSL inputs do not establish a conformance guarantee.
+are unsupported in compute. Unreachable blocks are accepted only as isolated
+`OpUnreachable` merge blocks.
+Conditional targets must be distinct; overlapping regions, unstructured back
+edges and branches outside their structured region fail. Phi pairs must match
+all predecessors, with values available on the named paths. General arbitrary
+CFGs and vector bool are unsupported. Unsupported cases return errors.
+Zero-length normalization returns zero; undefined GLSL inputs do not establish
+a conformance guarantee.
 
 Tests compare compiled GLSL with an independent hand-written SIR reference at
 exact framebuffer bytes, then capture/replay and SIMD/four-band rendering.
