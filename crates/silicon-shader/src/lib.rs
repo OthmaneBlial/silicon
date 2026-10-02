@@ -1869,6 +1869,14 @@ mod tests {
     }
 
     #[test]
+    fn loop_break_programs_cannot_contain_workgroup_barriers() {
+        let error =
+            Program::new_compute(vec![Instruction::WorkgroupBarrier, Instruction::LoopBreak])
+                .unwrap_err();
+        assert!(error.contains("LoopBreak cannot share a program with a workgroup barrier"));
+    }
+
+    #[test]
     fn unary_math_matches_scalar_and_packet_execution() {
         let program = Program::new(vec![
             Instruction::Input { dst: 0, slot: 0 },
