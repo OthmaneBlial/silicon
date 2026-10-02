@@ -137,7 +137,7 @@ impl Program {
                     .ok_or_else(|| format!("SIR instruction {pc}: missing uniform {slot}"))
             };
             let (dst, value) = match *op {
-                LoopHeader | LoopStart { .. } | LoopEnd => {
+                LoopHeader | LoopStart { .. } | LoopEnd | LoopBreak => {
                     return Err("SIR loops must use the scalar lane executor".into());
                 }
                 If { condition } => {

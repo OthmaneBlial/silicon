@@ -334,6 +334,8 @@ pub enum Instruction {
     },
     /// Synchronize all invocations in the current workgroup.
     WorkgroupBarrier,
+    /// Exit the innermost loop and resume immediately after its matching `LoopEnd`.
+    LoopBreak,
 }
 
 /// A scalar f32 atomic operation on a vec4 storage element's x component.
@@ -391,7 +393,7 @@ impl Instruction {
                 *condition = f(*condition, false)?;
                 return Ok(());
             }
-            Else | EndIf | LoopHeader | LoopEnd | Return | Discard => return Ok(()),
+            Else | EndIf | LoopHeader | LoopEnd | LoopBreak | Return | Discard => return Ok(()),
             Normalize3 { dst, src }
             | Not { dst, src }
             | Neg { dst, src }
@@ -530,9 +532,18 @@ struct ExecutionState {
     live: bool,
     choice: bool,
     selections: Vec<(bool, bool)>,
-    loops: Vec<(usize, usize)>,
+    loops: Vec<LoopFrame>,
     dynamic_instructions: usize,
     pc: usize,
+}
+
+#[derive(Clone, Copy)]
+struct LoopFrame {
+    start: usize,
+    end: usize,
+    selection_depth: usize,
+    active: bool,
+    choice: bool,
 }
 
 impl ExecutionState {
@@ -601,6 +612,11 @@ struct Definitions {
     registers: [bool; 64],
     outputs: [bool; 8],
     live: bool,
+}
+struct ValidationLoop {
+    entry: Definitions,
+    selection_path: Vec<(usize, bool)>,
+    breaks: Vec<Definitions>,
 }
 impl Definitions {
     fn join(self, other: Self) -> Self {
@@ -677,7 +693,15 @@ impl Program {
         };
         let mut selections: Vec<(Definitions, Option<Definitions>)> = Vec::new();
         let mut selection_ids = Vec::new();
-        let mut loops: Vec<(Definitions, Vec<(usize, bool)>)> = Vec::new();
+        let mut loops: Vec<ValidationLoop> = Vec::new();
+        if ops.iter().any(|op| matches!(op, Instruction::LoopBreak))
+            && ops
+                .iter()
+                .any(|op| matches!(op, Instruction::WorkgroupBarrier))
+        {
+            // ponytail: barrier generations are not tracked yet; keep breaking workgroups bounded.
+            return Err("SIR LoopBreak cannot share a program with a workgroup barrier".into());
+        }
         let mut merging: Option<(Definitions, Definitions)> = None;
         for (pc, op) in ops.iter().enumerate() {
             if !matches!(op, Instruction::Merge { .. }) {
@@ -731,14 +755,15 @@ impl Program {
                 }
                 Instruction::LoopStart { condition } => {
                     source(condition)?;
-                    loops.push((
-                        state,
-                        selection_ids
+                    loops.push(ValidationLoop {
+                        entry: state,
+                        selection_path: selection_ids
                             .iter()
                             .zip(&selections)
                             .map(|(&id, (_, branch))| (id, branch.is_some()))
                             .collect(),
-                    ));
+                        breaks: Vec::new(),
+                    });
                     None
                 }
                 Instruction::Move { dst, src } => {
@@ -747,9 +772,8 @@ impl Program {
                 }
                 Instruction::LoopHeader => None,
                 Instruction::LoopEnd => {
-                    let (entry, selection_path) =
-                        loops.pop().ok_or("SIR LoopEnd without LoopStart")?;
-                    if selection_path
+                    let validation_loop = loops.pop().ok_or("SIR LoopEnd without LoopStart")?;
+                    if validation_loop.selection_path
                         != selection_ids
                             .iter()
                             .zip(&selections)
@@ -760,7 +784,18 @@ impl Program {
                             "SIR instruction {pc}: loop crosses a selection boundary"
                         ));
                     }
-                    state = entry.join(state);
+                    state = validation_loop.entry.join(state);
+                    for broken in validation_loop.breaks {
+                        state = state.join(broken);
+                    }
+                    None
+                }
+                Instruction::LoopBreak => {
+                    let Some(validation_loop) = loops.last_mut() else {
+                        return Err(format!("SIR instruction {pc}: LoopBreak without LoopStart"));
+                    };
+                    validation_loop.breaks.push(state);
+                    state.live = false;
                     None
                 }
                 Instruction::Return => {
@@ -1269,21 +1304,35 @@ impl Program {
                     let end = self.loop_pairs[pc].expect("validated loop pair");
                     let value = regs[condition as usize];
                     if value.x == 0. {
-                        if loops.last().is_some_and(|&(start, _)| start == pc) {
+                        if loops.last().is_some_and(|frame| frame.start == pc) {
                             loops.pop();
                         }
                         next_pc = end + 1;
-                    } else if loops.last().is_none_or(|&(start, _)| start != pc) {
-                        loops.push((pc, end));
+                    } else if loops.last().is_none_or(|frame| frame.start != pc) {
+                        loops.push(LoopFrame {
+                            start: pc,
+                            end,
+                            selection_depth: selections.len(),
+                            active,
+                            choice,
+                        });
                     }
                     (None, value)
                 }
                 Instruction::LoopEnd => {
-                    let (_, end) = *loops.last().ok_or("SIR LoopEnd without active loop")?;
-                    if end != pc {
+                    let frame = *loops.last().ok_or("SIR LoopEnd without active loop")?;
+                    if frame.end != pc {
                         return Err(format!("SIR instruction {pc}: mismatched LoopEnd"));
                     }
                     next_pc = self.loop_entries[pc].expect("validated loop entry");
+                    (None, Vec4::ZERO)
+                }
+                Instruction::LoopBreak => {
+                    let frame = loops.pop().ok_or("SIR LoopBreak without active loop")?;
+                    next_pc = frame.end + 1;
+                    selections.truncate(frame.selection_depth);
+                    active = frame.active && live;
+                    choice = frame.choice;
                     (None, Vec4::ZERO)
                 }
                 Instruction::Return | Instruction::Discard => {

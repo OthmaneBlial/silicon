@@ -514,6 +514,81 @@ fn loop_headers_recompute_conditions_and_move_carried_values() {
 }
 
 #[test]
+fn loop_break_unwinds_nested_selections_and_preserves_loop_values() {
+    let program = Program::new(vec![
+        Const {
+            dst: 0,
+            value: Vec4::ZERO,
+        },
+        Const {
+            dst: 1,
+            value: Vec4::new(1., 1., 1., 1.),
+        },
+        Const {
+            dst: 2,
+            value: Vec4::new(3., 3., 3., 3.),
+        },
+        Const {
+            dst: 3,
+            value: Vec4::new(1., 1., 1., 1.),
+        },
+        LoopStart { condition: 3 },
+        Compare {
+            dst: 4,
+            a: 0,
+            b: 2,
+            kind: Comparison::GreaterEqual,
+        },
+        If { condition: 4 },
+        If { condition: 4 },
+        LoopBreak,
+        Else,
+        Move { dst: 5, src: 0 },
+        EndIf,
+        Else,
+        Move { dst: 5, src: 0 },
+        EndIf,
+        Add { dst: 0, a: 0, b: 1 },
+        LoopEnd,
+        Output { slot: 0, src: 0 },
+    ])
+    .unwrap();
+    let scalar = program
+        .execute(&[], &[], |_, _| unreachable!(), false)
+        .unwrap();
+    assert_eq!(scalar.outputs[0], Vec4::new(3., 3., 3., 3.));
+
+    let packet = program
+        .execute4(
+            [&[]; 4],
+            &[],
+            [&[]; 4],
+            0b1111,
+            |_, _, _| unreachable!(),
+            [false; 4],
+        )
+        .unwrap();
+    assert!(
+        packet
+            .iter()
+            .all(|lane| lane.outputs[0] == scalar.outputs[0])
+    );
+}
+
+#[test]
+fn loop_break_outside_a_loop_is_rejected() {
+    let error = Program::new(vec![
+        LoopBreak,
+        Const {
+            dst: 0,
+            value: Vec4::ZERO,
+        },
+    ])
+    .unwrap_err();
+    assert!(error.contains("LoopBreak without LoopStart"));
+}
+
+#[test]
 fn bounded_loops_survive_capture_round_trip() {
     use silicon::{
         Color, Device, FrameCapture, Pipeline, SampleCount, ShaderPipeline, Vec3, Vertex,
