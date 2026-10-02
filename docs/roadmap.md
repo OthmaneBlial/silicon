@@ -17,8 +17,8 @@ long-term. This repository ships working stages and labels the remaining work.
 | Frame inspector | `silicon inspect` reports render passes, draw/triangle totals, resources, pipeline state and SIR module instruction counts; no GUI |
 | Headless mode | `render` and `replay` write PNGs without opening a window |
 | SIMD / tiled parallel rendering | Scalar reference, NEON/AVX2 coverage4, NEON/SSE masked four-fragment SIR, ordered bounded 16×16 tile bins, disjoint worker bands, bounded shared vertex outputs and clipped triangle setups for matching draws, and equivalence tests |
-| SPIR-V / ordinary GLSL | Strict binary parser + typed SIR lowering, restricted GLSL local loops, textured cube, lit OBJ showcase, local/uniform, arithmetic, and float-negation fixtures |
-| Divergent shader control flow | Bounded SIR loops (65,536 dynamic instruction limit, scalar packet fallback), compiled GLSL local loops, nested selections, local/Phi merges and early return/discard; differential VM, compute and attachment tests |
+| SPIR-V / ordinary GLSL | Strict binary parser + typed SIR lowering, restricted GLSL local loops and one-edge structured breaks, textured cube, lit OBJ showcase, local/uniform, arithmetic, and float-negation fixtures |
+| Divergent shader control flow | Bounded SIR loops (65,536 dynamic instruction limit, scalar packet fallback), compiled GLSL local loops and one-edge breaks, nested selections, local/Phi merges and early return/discard; differential VM, compute and attachment tests |
 | Shadow maps / explicit-LOD sampling | Two SILICON CPU raster passes; 512×512 `Depth32Float` texture sampled by ordinary GLSL/SPIR-V; scalar and SIMD replay match |
 | PBR material shading | Cook-Torrance GGX direct lighting, tangent-space normal mapping, and explicit-LOD `samplerCube` reflections in ordinary GLSL/SPIR-V, with capture replay |
 | Cube-map sampling and visual reflections | Six-face `CubeMap` sampler, mip-selected roughness approximation, explicit and direct-input implicit GLSL sampling, scalar/SIMD pixel equivalence; transformed direction derivatives remain unsupported |
@@ -29,7 +29,7 @@ long-term. This repository ships working stages and labels the remaining work.
 | GPU profiler | Command, vertex, primitive setup, coverage/depth, shader, and blend/write timing with render counters; headless presentation is marked unmeasured |
 | Raster benchmark scenes | `tile_stress` covers many small triangles/tiles; `overdraw` covers 128 front-to-back full-screen quads with measured early-Z rejection |
 | Stencil / transparency integration | Circular stencil portal constrains a textured cube and translucent overlay; scalar and SIMD four-band color/depth/stencil match |
-| Compute (phases 45–49, first slices) | Scalar and four-lane SIMD SIR dispatch expose 3D global/local/workgroup IDs, read up to 12 vec4 buffers by map or shader-selected index, stage indexed output writes, provide zeroed per-workgroup shared memory with synchronized barriers, and support scalar f32 add/exchange/compare-exchange atomics; a strict SPIR-V 1.0 GLCompute subset runs GLSL vec4 addition, guarded partial-workgroup inversion, restricted local loops, bounded shared-array broadcasts and uint add/exchange/compare-exchange atomics on the same CPU SIR path; shared-memory races and divergent barriers reject the whole dispatch; shared/atomic kernels use the scalar scheduler |
+| Compute (phases 45–49, first slices) | Scalar and four-lane SIMD SIR dispatch expose 3D global/local/workgroup IDs, read up to 12 vec4 buffers by map or shader-selected index, stage indexed output writes, provide zeroed per-workgroup shared memory with synchronized barriers, and support scalar f32 add/exchange/compare-exchange atomics; a strict SPIR-V 1.0 GLCompute subset runs GLSL vec4 addition, guarded partial-workgroup inversion, restricted local loops and one-edge breaks without barriers, bounded shared-array broadcasts and uint add/exchange/compare-exchange atomics on the same CPU SIR path; shared-memory races and divergent barriers reject the whole dispatch; shared/atomic kernels use the scalar scheduler |
 | Image regression tests | Approved SIR cube PNG, exact backend comparisons and <=1 channel-step tolerance; failures save `output/shader_cube.diff.png` |
 | Fuzzing | cargo-fuzz targets cover SPIR-V parsing/lowering, capture/resource validation and bounded replay, plus triangle setup and texture sampling; see `docs/security.md` |
 | Safety review | Explicit input/resource bounds and targeted malformed-input tests; this is not a hostile-workload sandbox or process-wide memory budget |
@@ -52,8 +52,8 @@ Cube maps use cross-face bilinear filtering; implicit SPIR-V sampling is limited
 to an unmodified fragment input direction, and anisotropic SPIR-V sampling
 remains future work.
 
-Future research: persistent raster workers, SPIR-V loop breaks and broader loop
-control flow, cross-workgroup barriers, other
+Future research: persistent raster workers, broader SPIR-V loop control flow
+(multiple or outer-targeted break edges and additional loop forms), cross-workgroup barriers, other
 integer/vector atomics and broader compute-stage SPIR-V, transformed implicit sampling,
 anisotropic SPIR-V sampling, JIT, general DOOM portal-window clipping and
 wall-band composition, advanced enemy states and full gameplay rules, and

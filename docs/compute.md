@@ -149,6 +149,10 @@ glslangValidator -V --target-env vulkan1.0 \
 glslangValidator -V --target-env vulkan1.0 \
   assets/shaders/compute_loop.comp \
   -o assets/shaders/compute_loop.comp.spv
+glslangValidator -V --target-env vulkan1.0 \
+  assets/shaders/compute_loop_break.comp \
+  -o assets/shaders/compute_loop_break.comp.spv
+spirv-val --target-env vulkan1.0 assets/shaders/compute_loop_break.comp.spv
 spirv-opt --ssa-rewrite assets/shaders/compute_loop.comp.spv \
   -o assets/shaders/compute_loop.ssa.comp.spv
 spirv-val --target-env vulkan1.0 assets/shaders/compute_loop.ssa.comp.spv
@@ -157,6 +161,7 @@ cargo run --release --example compute_spirv_invert
 cargo run --release --example compute_spirv_shared
 cargo run --release --example compute_spirv_atomic_uint
 cargo test -p silicon-core dispatches_glsl_spirv_loop_carried_locals_and_phi_values
+cargo test -p silicon-core dispatches_glsl_spirv_loop_breaks
 ```
 
 These examples prove GLSL → SPIR-V → SIR → CPU storage-buffer execution with
@@ -168,10 +173,13 @@ comparisons use exact float-backed SIR values: dispatch IDs are bounded to
 1,048,576 and comparison constants to 16,777,216. Other integer arithmetic is
 not supported. The shared-memory example broadcasts the first input value in
 each 64-invocation group and verifies 4,096 outputs. `compute_loop.comp` checks
-the restricted SPIR-V local-loop form in scalar and SIMD-requested dispatch.
+the restricted SPIR-V local-loop form; `compute_loop_break.comp` checks one
+structured break edge in scalar and SIMD-requested dispatch. Break-containing
+programs cannot also use workgroup barriers.
 Compute SPIR-V does not support other atomic types or operations, textures,
 uniforms, loop Phi forms outside the header pattern documented in
-[`spirv.md`](spirv.md), loop breaks or storage images.
+[`spirv.md`](spirv.md), multiple or outer-targeted loop breaks, loop-merge Phi
+values on breaking loops, or storage images.
 
 This remains an initial data-parallel path, not general compute compatibility.
 Dispatch is synchronous; command-buffer capture/replay and C API support are not
