@@ -1146,6 +1146,42 @@ mod tests {
     }
 
     #[test]
+    fn dispatches_glsl_spirv_loop_breaks() {
+        let device = Device::new();
+        let input = device
+            .create_storage_buffer(
+                (0..8)
+                    .map(|i| Vec4::new(i as f32, 0.25, 0.5, 1.0))
+                    .collect(),
+            )
+            .unwrap();
+        let shader = include_bytes!("../../../assets/shaders/compute_loop_break.comp.spv");
+        let pipeline = device.create_compute_pipeline_from_spirv(shader).unwrap();
+        assert!(
+            pipeline
+                .program
+                .instructions()
+                .iter()
+                .any(|op| matches!(op, Instruction::LoopBreak))
+        );
+        let mut output = device.create_storage_buffer(vec![Vec4::ZERO; 8]).unwrap();
+        let mut simd_output = device.create_storage_buffer(vec![Vec4::ZERO; 8]).unwrap();
+        let scalar = device
+            .dispatch_compute(&pipeline, [2, 1, 1], &[&input], &mut output)
+            .unwrap();
+        let simd = device
+            .dispatch_compute_simd(&pipeline, [2, 1, 1], &[&input], &mut simd_output)
+            .unwrap();
+
+        assert_eq!(scalar.invocations, 8);
+        assert_eq!(simd, scalar);
+        assert_eq!(simd_output.as_slice(), output.as_slice());
+        for (index, value) in output.as_slice().iter().enumerate() {
+            assert_eq!(*value, Vec4::new(index as f32 * 3.0, 0.75, 1.5, 3.0));
+        }
+    }
+
+    #[test]
     fn storage_only_commit_preserves_unwritten_elements() {
         let original = Vec4::new(9.0, 8.0, 7.0, 6.0);
         let replacement = Vec4::new(1.0, 2.0, 3.0, 4.0);
