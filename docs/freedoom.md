@@ -274,11 +274,11 @@ combined coverage contains its full projected bounds in every covered column.
 Bounds crossing uncovered wall edges or portal openings stay visible; this is
 not Doom's exact per-column portal clipping. At the
 checked-in 960×720 camera pose, 570 of 682 subsectors remain in the horizontal
-BSP view. The
-pre-occlusion checked-in capture measured 5,713 triangles across 260 draws.
-The screenshots, draw counts, and timing measurements below are historical
-captures from before this culler; current WAD render counts have not been
-remeasured. The checked-in camera view
+BSP view. The historical pre-occlusion capture measured 5,713 triangles across
+260 draws; the current render of the verified 0.13.0 release WAD reports 2,261
+triangles across 202 draws at that pose. Its PNG is byte-identical to the
+checked-in screenshot. The timing measurements below predate wall culling; no
+new render-time measurement was collected. The checked-in camera view
 contains 59 visible pickup billboards: nine health/ammo items, 30 health
 bonuses, one blue card, one green armor, and 18 armor bonuses; the armor items
 do not appear in that capture.
