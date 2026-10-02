@@ -49,10 +49,9 @@ an error. `LoopBreak` exits the innermost loop and resumes after its paired
 `LoopEnd`, unwinding any nested selections. The SPIR-V translator lowers a
 restricted `OpLoopMerge None` form using mutable Function locals and
 loop-header `OpPhi` values with exactly the
-preheader and continue inputs. One direct loop-body branch to the merge can
-lower to `LoopBreak`, including from a nested selection; the loop merge cannot
-contain Phi values, and only one break edge is accepted. `LoopBreak` preserves
-loop-carried locals. Programs containing both `LoopBreak` and a workgroup
+preheader and continue inputs. Direct loop-body branches to the merge can lower
+to `LoopBreak`, including from nested selections; the loop merge cannot
+contain Phi values. `LoopBreak` preserves loop-carried locals. Programs containing both `LoopBreak` and a workgroup
 barrier are rejected because dynamic barrier generations are not tracked.
 Condition-block Phi values and other loop-control masks remain unsupported.
 

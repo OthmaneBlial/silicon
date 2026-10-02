@@ -18,7 +18,7 @@ local SSA snapshots, vector component stores and float/vector uniform padding.
 `loop.frag` and `compute_loop.comp` check restricted local-carrying SPIR-V loops;
 their `.ssa.*.spv` fixtures also check loop-header Phi lowering. `loop_break.frag`
 checks a structured break from a nested selection to the loop merge;
-`compute_loop_break.comp` covers the same break form with storage buffers.
+`compute_loop_break.comp` covers two break edges with storage buffers.
 `pbr.vert` and `pbr.frag` power `pbr_showcase`, including a procedural
 tangent-space normal map on the sculpture. Split-sum image-based lighting is not
 implemented.

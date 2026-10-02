@@ -37,7 +37,7 @@ The SPIR-V 1.0 subset supports structured selections, restricted local-carrying
 loops, Phi/local merges, scalar bool, early return, fragment discard and scalar
 explicit-LOD texture sampling. `shadow_showcase` samples a SILICON-generated
 CPU depth map. The `stencil` scene constrains its textured cube and alpha-blended overlay to a portal.
-General GLSL/SPIR-V conformance, noncanonical loop Phi forms, multiple or
+General GLSL/SPIR-V conformance, noncanonical loop Phi forms,
 outer-targeted loop breaks, merge-block Phi values on breaking loops, switches,
 Vulkan/OpenGL drivers, general compute, JIT,
 MSAA and games remain unsupported. Captures embed lowered SIR and owned resources; newer SIR

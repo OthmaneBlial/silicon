@@ -173,12 +173,12 @@ comparisons use exact float-backed SIR values: dispatch IDs are bounded to
 1,048,576 and comparison constants to 16,777,216. Other integer arithmetic is
 not supported. The shared-memory example broadcasts the first input value in
 each 64-invocation group and verifies 4,096 outputs. `compute_loop.comp` checks
-the restricted SPIR-V local-loop form; `compute_loop_break.comp` checks one
-structured break edge in scalar and SIMD-requested dispatch. Break-containing
+the restricted SPIR-V local-loop form; `compute_loop_break.comp` checks two
+structured break edges in scalar and SIMD-requested dispatch. Break-containing
 programs cannot also use workgroup barriers.
 Compute SPIR-V does not support other atomic types or operations, textures,
 uniforms, loop Phi forms outside the header pattern documented in
-[`spirv.md`](spirv.md), multiple or outer-targeted loop breaks, loop-merge Phi
+[`spirv.md`](spirv.md), outer-targeted loop breaks, loop-merge Phi
 values on breaking loops, or storage images.
 
 This remains an initial data-parallel path, not general compute compatibility.

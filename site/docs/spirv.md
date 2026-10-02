@@ -192,12 +192,12 @@ the condition branches true to the body and false to the merge. One continue
 block has one reachable predecessor and branches directly back to the header.
 Mutable Function locals and loop-header `OpPhi` values with exactly the
 preheader and continue inputs carry values through SIR `Move` instructions.
-One direct `OpBranch` from the loop body to its merge is supported as a break,
+Direct `OpBranch` edges from the loop body to its merge are supported as breaks,
 including when nested under selections. A breaking loop's merge block cannot
-contain `OpPhi`; only one break edge is accepted. `loop.frag` and its
+contain `OpPhi`. `loop.frag` and its
 `spirv-opt` SSA rewrite check loop-carried values, while `loop_break.frag` checks
 the nested-selection break in scalar and SIMD rendering. The compute fixtures
-cover local loops and one-edge breaks in scalar and SIMD-requested dispatch.
+cover local loops and multiple break edges in scalar and SIMD-requested dispatch.
 Phi instructions in the loop condition block and other loop-control masks are
 unsupported. A program containing a break cannot also contain a workgroup
 barrier because the scheduler does not track dynamic barrier generations.
@@ -206,8 +206,8 @@ At most 1 MiB per module, ID bound 65536, 256 virtual SSA temporaries, 64
 simultaneously live runtime registers and 4096 SIR instructions. Dead temporaries
 are recycled after their last use, without increasing VM storage. Combined
 selection/loop nesting is bounded to 64; main is bounded to 4096 SPIR-V
-instructions. Loop Phi forms outside the header pattern above, multiple break
-edges, outer-loop-targeted breaks, Phi values in a breaking loop's merge block,
+instructions. Loop Phi forms outside the header pattern above,
+outer-loop-targeted breaks, Phi values in a breaking loop's merge block,
 switches, function calls, general integer arithmetic, specialization constants, arbitrary SSBO
 layouts, storage images, implicit samples from transformed coordinates,
 explicit sample offsets/gradients, general shared-memory layouts/barriers,
