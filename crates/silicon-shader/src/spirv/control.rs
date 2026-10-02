@@ -1,4 +1,4 @@
-//! Bounded structured selections and a restricted local-carrying loop form.
+//! Bounded structured selections and restricted local-carrying loops.
 use super::*;
 
 #[derive(Clone)]
@@ -12,6 +12,15 @@ struct Block<'a> {
     predecessors: BTreeSet<u32>,
 }
 type Path = (u32, Environment);
+struct LoopScope {
+    break_target: u32,
+    entry: Environment,
+    breaks: Vec<Path>,
+}
+struct RegionScope<'a> {
+    stop: Option<u32>,
+    loop_scope: Option<&'a mut LoopScope>,
+}
 
 impl Compiler<'_> {
     fn environment(&self) -> Environment {
@@ -254,7 +263,17 @@ impl Compiler<'_> {
             return Err("main entry has a predecessor".into());
         }
         let mut visited = BTreeSet::new();
-        self.region(entry, None, Vec::new(), 0, &blocks, &mut visited)?;
+        self.region(
+            entry,
+            Vec::new(),
+            0,
+            &blocks,
+            &mut visited,
+            RegionScope {
+                stop: None,
+                loop_scope: None,
+            },
+        )?;
         for (id, block) in &blocks {
             if !visited.contains(id)
                 && (block.code.len() != 1
@@ -275,6 +294,7 @@ impl Compiler<'_> {
         depth: usize,
         blocks: &BTreeMap<u32, Block<'_>>,
         visited: &mut BTreeSet<u32>,
+        outer_loop: Option<&mut LoopScope>,
     ) -> Result<Option<Path>> {
         let header = &blocks[&header_id];
         let merge_op = header
@@ -406,14 +426,22 @@ impl Compiler<'_> {
         }
         let header_env = self.environment();
         self.ops.push(Sir::LoopStart { condition });
+        let mut loop_scope = LoopScope {
+            break_target: merge_id,
+            entry: header_env.clone(),
+            breaks: Vec::new(),
+        };
         let body = self
             .region(
                 branch.operands[1],
-                Some(continue_id),
                 vec![(condition_id, header_env.clone())],
                 depth + 1,
                 blocks,
                 visited,
+                RegionScope {
+                    stop: Some(continue_id),
+                    loop_scope: Some(&mut loop_scope),
+                },
             )?
             .ok_or_else(|| merge_op.error("loop body has no path to its continue block"))?;
         if continuation.predecessors != BTreeSet::from([body.0]) || !visited.insert(continue_id) {
@@ -449,12 +477,52 @@ impl Compiler<'_> {
         for (result, dst, _, uv) in updates {
             self.values.get_mut(&result).unwrap().value = Value::Reg(dst, uv);
         }
-        for (&root, initial) in &header_env.locals {
+        self.commit_loop_locals(&header_env, "continue")?;
+        self.ops.push(Sir::LoopEnd);
+        let mut merge_paths = vec![(condition_id, header_env)];
+        if !loop_scope.breaks.is_empty() {
+            if loop_scope.breaks.len() > 1 {
+                return Err(merge_op.error("supports one loop-break edge"));
+            }
+            if blocks[&merge_id]
+                .code
+                .iter()
+                .take_while(|op| op.opcode == 245)
+                .next()
+                .is_some()
+            {
+                return Err(merge_op.error("loop merge Phi values with LoopBreak are unsupported"));
+            }
+            merge_paths.extend(loop_scope.breaks);
+            if merge_paths
+                .iter()
+                .map(|(pred, _)| *pred)
+                .collect::<BTreeSet<_>>()
+                != blocks[&merge_id].predecessors
+            {
+                return Err(merge_op.error("loop merge has unsupported predecessors"));
+            }
+        }
+        self.join_paths(&merge_paths)?;
+        self.region(
+            merge_id,
+            merge_paths,
+            depth,
+            blocks,
+            visited,
+            RegionScope {
+                stop: None,
+                loop_scope: outer_loop,
+            },
+        )
+    }
+    fn commit_loop_locals(&mut self, entry: &Environment, path: &str) -> Result<()> {
+        for (&root, initial) in &entry.locals {
             let current = self
                 .locals
                 .get(&root)
                 .cloned()
-                .ok_or("loop local is unavailable on the continue path")?;
+                .ok_or_else(|| format!("loop local is unavailable on the {path} path"))?;
             if current.ty != initial.ty {
                 return Err("loop local type changes across iterations".into());
             }
@@ -472,38 +540,36 @@ impl Compiler<'_> {
             self.locals.get_mut(&root).unwrap().value =
                 Value::Reg(*dst, *initial_uv && *current_uv);
         }
-        self.ops.push(Sir::LoopEnd);
-        self.restore(&header_env);
-        self.region(
-            merge_id,
-            None,
-            vec![(condition_id, header_env)],
-            depth,
-            blocks,
-            visited,
-        )
+        Ok(())
     }
     fn region(
         &mut self,
         mut id: u32,
-        stop: Option<u32>,
         mut incoming: Vec<Path>,
         depth: usize,
         blocks: &BTreeMap<u32, Block<'_>>,
         visited: &mut BTreeSet<u32>,
+        mut scope: RegionScope<'_>,
     ) -> Result<Option<Path>> {
         if depth > 64 {
             return Err("SPIR-V selection nesting exceeds 64".into());
         }
         loop {
-            if Some(id) == stop {
+            if Some(id) == scope.stop {
                 return Ok(incoming.into_iter().next());
             }
             let block = blocks
                 .get(&id)
                 .ok_or_else(|| format!("missing basic block %{id}"))?;
             if block.code.iter().any(|op| op.opcode == 246) {
-                return self.loop_region(id, incoming, depth, blocks, visited);
+                return self.loop_region(
+                    id,
+                    incoming,
+                    depth,
+                    blocks,
+                    visited,
+                    scope.loop_scope.as_deref_mut(),
+                );
             }
             if incoming
                 .iter()
@@ -522,6 +588,15 @@ impl Compiler<'_> {
             let end = block.code.last().unwrap();
             match end.opcode {
                 249 => {
+                    if let Some(loop_scope) = scope.loop_scope.as_deref_mut()
+                        && end.operands[0] == loop_scope.break_target
+                    {
+                        self.commit_loop_locals(&loop_scope.entry, "break")
+                            .map_err(|e| end.error(e))?;
+                        loop_scope.breaks.push((id, self.environment()));
+                        self.ops.push(Sir::LoopBreak);
+                        return Ok(None);
+                    }
                     incoming = vec![(id, self.environment())];
                     id = end.operands[0];
                 }
@@ -534,7 +609,7 @@ impl Compiler<'_> {
                         .operands[0];
                     if !blocks.contains_key(&merge)
                         || merge == id
-                        || Some(merge) == stop
+                        || Some(merge) == scope.stop
                         || visited.contains(&merge)
                     {
                         return Err(
@@ -549,21 +624,27 @@ impl Compiler<'_> {
                     self.ops.push(Sir::If { condition });
                     let yes = self.region(
                         end.operands[1],
-                        Some(merge),
                         vec![(id, entry.clone())],
                         depth + 1,
                         blocks,
                         visited,
+                        RegionScope {
+                            stop: Some(merge),
+                            loop_scope: scope.loop_scope.as_deref_mut(),
+                        },
                     )?;
                     self.ops.push(Sir::Else);
                     self.restore(&entry);
                     let no = self.region(
                         end.operands[2],
-                        Some(merge),
                         vec![(id, entry)],
                         depth + 1,
                         blocks,
                         visited,
+                        RegionScope {
+                            stop: Some(merge),
+                            loop_scope: scope.loop_scope.as_deref_mut(),
+                        },
                     )?;
                     self.ops.push(Sir::EndIf);
                     incoming = yes.into_iter().chain(no).collect();

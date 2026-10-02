@@ -16,7 +16,8 @@ scalar, packet and rendered execution;
 powers the depth-textured `shadow_showcase`. `locals.frag` checks
 local SSA snapshots, vector component stores and float/vector uniform padding.
 `loop.frag` and `compute_loop.comp` check restricted local-carrying SPIR-V loops;
-their `.ssa.*.spv` fixtures also check loop-header Phi lowering.
+their `.ssa.*.spv` fixtures also check loop-header Phi lowering. `loop_break.frag`
+checks a structured break from a nested selection to the loop merge.
 `pbr.vert` and `pbr.frag` power `pbr_showcase`, including a procedural
 tangent-space normal map on the sculpture. Split-sum image-based lighting is not
 implemented.

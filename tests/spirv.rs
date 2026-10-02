@@ -119,13 +119,20 @@ fn bytes(words: &[u32]) -> Vec<u8> {
 }
 #[test]
 fn structured_spirv_loops_carry_locals_and_phi_values_across_backends() {
-    for (loop_shader, has_phi) in [
+    for (loop_shader, has_phi, has_break) in [
         (
             include_bytes!("../assets/shaders/loop.frag.spv").as_slice(),
+            false,
             false,
         ),
         (
             include_bytes!("../assets/shaders/loop.ssa.frag.spv").as_slice(),
+            true,
+            false,
+        ),
+        (
+            include_bytes!("../assets/shaders/loop_break.frag.spv").as_slice(),
+            false,
             true,
         ),
     ] {
@@ -155,6 +162,14 @@ fn structured_spirv_loops_carry_locals_and_phi_values_across_backends() {
                 .instructions()
                 .iter()
                 .any(|op| matches!(op, LoopStart { .. }))
+        );
+        assert_eq!(
+            fragment
+                .program
+                .instructions()
+                .iter()
+                .any(|op| matches!(op, LoopBreak)),
+            has_break
         );
 
         for value in [0.0, 0.2, 0.5, 1.0] {
