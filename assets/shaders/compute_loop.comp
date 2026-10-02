@@ -1,0 +1,21 @@
+#version 450
+
+layout(local_size_x = 4) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Input {
+    vec4 values[];
+} input_data;
+
+layout(set = 0, binding = 1, std430) writeonly buffer Output {
+    vec4 values[];
+} output_data;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    vec4 source = input_data.values[index];
+    vec4 value = vec4(0.0);
+    for (float i = 0.0; i < 3.0; i += 1.0) {
+        value += source;
+    }
+    output_data.values[index] = value;
+}
