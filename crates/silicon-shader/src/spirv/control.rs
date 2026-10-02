@@ -286,15 +286,17 @@ impl Compiler<'_> {
         let [merge_id, continue_id, 0] = merge_op.operands.as_slice() else {
             return Err(merge_op.error("supports LoopControl None and two target labels"));
         };
+        let merge_index = header.code.iter().position(|op| op.opcode == 246).unwrap();
+        let header_phis = &header.code[..merge_index];
         if incoming.len() != 1 {
             return Err(merge_op.error("loop requires one preheader path"));
         }
         let (preheader_id, preheader_env) = &incoming[0];
         let (merge_id, continue_id) = (*merge_id, *continue_id);
-        if header.code.len() != 2
-            || header.code[0].opcode != 246
-            || header.code[1].opcode != 249
-            || header.code[1].operands[0] == header_id
+        if header.code.len() != merge_index + 2
+            || header_phis.iter().any(|op| op.opcode != 245)
+            || header.code[merge_index + 1].opcode != 249
+            || header.code[merge_index + 1].operands[0] == header_id
             || merge_id == header_id
             || continue_id == header_id
             || merge_id == continue_id
@@ -304,7 +306,7 @@ impl Compiler<'_> {
                 "requires a single preheader, a separate condition block, and one continue backedge",
             ));
         }
-        let condition_id = header.code[1].operands[0];
+        let condition_id = header.code[merge_index + 1].operands[0];
         let condition_block = blocks
             .get(&condition_id)
             .ok_or_else(|| merge_op.error("loop condition block is missing"))?;
@@ -364,6 +366,38 @@ impl Compiler<'_> {
                 self.locals.insert(root, local);
             }
         }
+        let mut loop_phis = Vec::new();
+        for phi in header_phis {
+            let a = &phi.operands;
+            let pairs: BTreeMap<_, _> = a[2..].chunks_exact(2).map(|p| (p[1], p[0])).collect();
+            if pairs.len() * 2 != a.len() - 2
+                || pairs.keys().copied().collect::<BTreeSet<_>>() != header.predecessors
+            {
+                return Err(phi.error(
+                    "loop-header Phi requires one value for the preheader and continue block",
+                ));
+            }
+            self.value_lanes(a[0]).map_err(|e| phi.error(e))?;
+            let initial = self
+                .path_value(pairs[preheader_id], preheader_env)
+                .map_err(|e| phi.error(e))?;
+            let (Value::Reg(src, uv), ty) = (initial.value, initial.ty) else {
+                return Err(phi.error("loop-carried Phi values must be SIR registers"));
+            };
+            if ty != a[0] {
+                return Err(phi.error("loop-carried Phi input/result type mismatch"));
+            }
+            let dst = self.emit(|dst| Sir::Move { dst, src })?;
+            self.values.insert(
+                a[1],
+                Typed {
+                    ty,
+                    value: Value::Reg(dst, uv),
+                },
+            );
+            self.available.as_mut().unwrap().insert(a[1]);
+            loop_phis.push((phi, a[1], dst, pairs[&continue_id], ty, uv));
+        }
         self.ops.push(Sir::LoopHeader);
         self.lower_prefix(condition_block, &[(header_id, preheader_env.clone())])?;
         let (condition, ty, _) = self.reg(branch.operands[0]).map_err(|e| branch.error(e))?;
@@ -387,6 +421,34 @@ impl Compiler<'_> {
         }
         self.restore(&body.1);
         self.lower_prefix(continuation, std::slice::from_ref(&body))?;
+        let continue_env = self.environment();
+        let phi_registers: BTreeSet<_> =
+            loop_phis.iter().map(|(_, _, dst, _, _, _)| *dst).collect();
+        let mut updates = Vec::with_capacity(loop_phis.len());
+        for (phi, result, dst, incoming, ty, initial_uv) in loop_phis {
+            let value = self
+                .path_value(incoming, &continue_env)
+                .map_err(|e| phi.error(e))?;
+            if value.ty != ty {
+                return Err(phi.error("loop-carried Phi input/result type mismatch"));
+            }
+            let Value::Reg(mut src, uv) = value.value else {
+                return Err(phi.error("loop-carried Phi values must be SIR registers"));
+            };
+            if phi_registers.contains(&src) {
+                src = self.emit(|dst| Sir::Move { dst, src })?;
+            }
+            updates.push((result, dst, src, initial_uv && uv));
+        }
+        for (_, dst, src, _) in &updates {
+            self.ops.push(Sir::Move {
+                dst: *dst,
+                src: *src,
+            });
+        }
+        for (result, dst, _, uv) in updates {
+            self.values.get_mut(&result).unwrap().value = Value::Reg(dst, uv);
+        }
         for (&root, initial) in &header_env.locals {
             let current = self
                 .locals
