@@ -2481,10 +2481,9 @@ struct OcclusionSpan {
     farthest_depth: f32,
 }
 
-// ponytail: keep one nearest band per column; union portal bands if tighter clipping is needed.
 /// Add only the screen area covered across an entire pixel column by an opaque wall.
 fn add_solid_wall_columns(
-    columns: &mut [Option<OcclusionSpan>],
+    columns: &mut [Vec<OcclusionSpan>],
     height: u32,
     player: Player,
     eye_height: f32,
@@ -2536,15 +2535,26 @@ fn add_solid_wall_columns(
         if span.top >= span.bottom {
             continue;
         }
-        if column.is_none_or(|current| span.farthest_depth < current.farthest_depth) {
-            *column = Some(span);
+        if column.iter().any(|current| {
+            current.top <= span.top
+                && current.bottom >= span.bottom
+                && current.farthest_depth <= span.farthest_depth
+        }) {
+            continue;
         }
+        column.retain(|current| {
+            span.top > current.top
+                || span.bottom < current.bottom
+                || span.farthest_depth > current.farthest_depth
+        });
+        let insertion = column.partition_point(|current| current.top <= span.top);
+        column.insert(insertion, span);
     }
 }
 
 fn bounds_hidden_by_walls(
     bounds: Bounds3,
-    columns: &[Option<OcclusionSpan>],
+    columns: &[Vec<OcclusionSpan>],
     player: Player,
     eye_height: f32,
     height: u32,
@@ -2578,12 +2588,17 @@ fn bounds_hidden_by_walls(
     start < end
         && min_y < max_y
         && columns.get(start..end).is_some_and(|spans| {
-            spans.iter().all(|span| {
-                span.is_some_and(|span| {
-                    span.top <= min_y
-                        && span.bottom >= max_y
-                        && span.farthest_depth + 0.01 < nearest
-                })
+            spans.iter().all(|column| {
+                let mut covered_to = min_y;
+                for span in column {
+                    if span.farthest_depth + 0.01 < nearest && span.top <= covered_to {
+                        covered_to = covered_to.max(span.bottom);
+                        if covered_to >= max_y {
+                            return true;
+                        }
+                    }
+                }
+                false
             })
         })
 }
@@ -2597,7 +2612,7 @@ fn visible_map_draws(
     height: u32,
     eye_height: f32,
 ) -> Vec<Vec<usize>> {
-    let mut solid_columns = vec![None; width as usize];
+    let mut solid_columns = vec![Vec::new(); width as usize];
     let mut visible = vec![Vec::new(); draws.len()];
     for leaf in visible_geometry_order(map, player, fallback_bounds) {
         let Some(leaf_draws) = draws.get(leaf) else {
@@ -7213,7 +7228,7 @@ mod tests {
             y: 0.0,
             angle: 0.0,
         };
-        let mut columns = vec![None; DOOM_FRAME_WIDTH as usize];
+        let mut columns = vec![Vec::new(); DOOM_FRAME_WIDTH as usize];
         add_solid_wall_columns(
             &mut columns,
             DOOM_FRAME_HEIGHT,
@@ -7226,7 +7241,7 @@ mod tests {
                 Vec3::new(20.0, 128.0, 10.0),
             ],
         );
-        let covered = columns.iter().filter(|span| span.is_some()).count();
+        let covered = columns.iter().filter(|spans| !spans.is_empty()).count();
         assert!(covered > 0 && covered < columns.len());
         let bounds = |near, far, min_z, max_z, min_y, max_y| Bounds3 {
             min: Vec3::new(near, min_y, min_z),
@@ -7254,7 +7269,7 @@ mod tests {
             DOOM_FRAME_HEIGHT,
         ));
 
-        let mut partial = vec![None; DOOM_FRAME_WIDTH as usize];
+        let mut partial = vec![Vec::new(); DOOM_FRAME_WIDTH as usize];
         add_solid_wall_columns(
             &mut partial,
             DOOM_FRAME_HEIGHT,
@@ -7267,7 +7282,7 @@ mod tests {
                 Vec3::new(20.0, 45.0, 10.0),
             ],
         );
-        assert!(partial.iter().any(Option::is_some));
+        assert!(partial.iter().any(|spans| !spans.is_empty()));
         assert!(bounds_hidden_by_walls(
             bounds(40.0, 48.0, -4.0, 4.0, 12.0, 30.0),
             &partial,
@@ -7278,6 +7293,52 @@ mod tests {
         assert!(!bounds_hidden_by_walls(
             bounds(40.0, 48.0, -4.0, 4.0, 50.0, 64.0),
             &partial,
+            player,
+            41.0,
+            DOOM_FRAME_HEIGHT,
+        ));
+
+        let mut bands = vec![Vec::new(); DOOM_FRAME_WIDTH as usize];
+        for (bottom, top) in [(0.0, 46.0), (45.0, 90.0)] {
+            add_solid_wall_columns(
+                &mut bands,
+                DOOM_FRAME_HEIGHT,
+                player,
+                41.0,
+                [
+                    Vec3::new(20.0, bottom, 20.0),
+                    Vec3::new(20.0, bottom, -20.0),
+                    Vec3::new(20.0, top, -20.0),
+                    Vec3::new(20.0, top, 20.0),
+                ],
+            );
+        }
+        assert!(bounds_hidden_by_walls(
+            bounds(40.0, 48.0, -4.0, 4.0, 16.0, 64.0),
+            &bands,
+            player,
+            41.0,
+            DOOM_FRAME_HEIGHT,
+        ));
+
+        let mut depth_limited_bands = vec![Vec::new(); DOOM_FRAME_WIDTH as usize];
+        for (wall_x, bottom, top) in [(20.0, 0.0, 46.0), (60.0, 45.0, 90.0)] {
+            add_solid_wall_columns(
+                &mut depth_limited_bands,
+                DOOM_FRAME_HEIGHT,
+                player,
+                41.0,
+                [
+                    Vec3::new(wall_x, bottom, 20.0),
+                    Vec3::new(wall_x, bottom, -20.0),
+                    Vec3::new(wall_x, top, -20.0),
+                    Vec3::new(wall_x, top, 20.0),
+                ],
+            );
+        }
+        assert!(!bounds_hidden_by_walls(
+            bounds(40.0, 48.0, -4.0, 4.0, 16.0, 64.0),
+            &depth_limited_bands,
             player,
             41.0,
             DOOM_FRAME_HEIGHT,
