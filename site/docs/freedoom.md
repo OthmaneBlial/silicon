@@ -271,12 +271,13 @@ fragment shader runs, while preserving the framebuffer. Opaque, unmasked wall
 quads add vertical spans to each fully covered screen column. For a later mesh,
 the culler unions nearer spans within each column and rejects it only when their
 combined coverage contains its full projected bounds in every covered column.
-Bounds crossing uncovered wall edges or portal openings stay visible; this is
-not Doom's exact per-column portal clipping. At the
+The same conservative test drops individual triangles whose bounds are fully
+covered when their mesh is only partly hidden; partially covered triangles
+remain whole. This is not Doom's exact per-column portal clipping. At the
 checked-in 960×720 camera pose, 570 of 682 subsectors remain in the horizontal
 BSP view. The historical pre-occlusion capture measured 5,713 triangles across
-260 draws; the current render of the verified 0.13.0 release WAD reports 2,261
-triangles across 202 draws at that pose. Its PNG is byte-identical to the
+260 draws; the current render of the verified 0.13.0 release WAD reports 1,841
+triangles across 199 draws at that pose. Its PNG is byte-identical to the
 checked-in screenshot. The timing measurements below predate wall culling; no
 new render-time measurement was collected. The checked-in camera view
 contains 59 visible pickup billboards: nine health/ammo items, 30 health
