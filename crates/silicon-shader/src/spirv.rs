@@ -113,6 +113,7 @@ pub fn name(op: u16) -> &'static str {
         234 => "OpAtomicIAdd",
         224 => "OpControlBarrier",
         245 => "OpPhi",
+        246 => "OpLoopMerge",
         247 => "OpSelectionMerge",
         248 => "OpLabel",
         249 => "OpBranch",
@@ -176,6 +177,7 @@ impl Op {
             164..=167 | 172 | 174 | 176 | 178 | 180 | 182..=184 | 186 | 188 | 190 => (4, 4),
             169 => (5, 5),
             245 => (4, 6),
+            246 => (3, usize::MAX),
             62 => (2, 2),
             3 => (2, 2),
             5 | 11 => (2, usize::MAX),
@@ -200,6 +202,9 @@ impl Op {
         }
         if self.opcode == 245 && !n.is_multiple_of(2) {
             return Err(self.error("Phi requires value/predecessor pairs"));
+        }
+        if self.opcode == 246 && n != 3 {
+            return Err(self.error("OpLoopMerge supports only LoopControl None"));
         }
         let (result, refs) = match self.opcode {
             5 => {
@@ -284,6 +289,7 @@ impl Op {
             | 186
             | 188
             | 190 => (Some(a[1]), vec![a[0], a[2], a[3]]),
+            246 => (None, a[..2].to_vec()),
             247 | 249 => (None, vec![a[0]]),
             250 => (None, a[..3].to_vec()),
             _ => (None, vec![]),
@@ -2415,25 +2421,63 @@ impl<'a> Compiler<'a> {
 /// Reuse dead SSA temporaries; the runtime remains a 64-register machine.
 fn allocate_registers(mut ops: Vec<Sir>) -> Result<Vec<Sir>> {
     let mut last = [None; 256];
+    let mut definitions = [None; 256];
     for (pc, op) in ops.iter().enumerate() {
         op.clone().map_registers(|r, dst| {
             if !dst {
                 last[r as usize] = Some(pc);
+            } else {
+                definitions[r as usize].get_or_insert(pc);
             }
             Ok(r)
         })?;
+    }
+    let mut ranges = Vec::new();
+    let mut starts = Vec::new();
+    let mut header = None;
+    for (pc, op) in ops.iter().enumerate() {
+        match op {
+            Sir::LoopHeader if header.is_some() => {
+                return Err("SPIR-V loop header without a following loop start".into());
+            }
+            Sir::LoopHeader => header = Some(pc),
+            Sir::LoopStart { .. } => starts.push((pc, header.take().unwrap_or(pc))),
+            Sir::LoopEnd => {
+                let (start, entry) = starts.pop().ok_or("SPIR-V LoopEnd without LoopStart")?;
+                ranges.push((entry, start, pc));
+            }
+            _ => {}
+        }
+    }
+    if header.is_some() || !starts.is_empty() {
+        return Err("SPIR-V has an unclosed loop".into());
+    }
+    for (entry, _, end) in &ranges {
+        for op in &ops[*entry..=*end] {
+            op.clone().map_registers(|r, dst| {
+                if !dst && definitions[r as usize].is_some_and(|definition| definition < *entry) {
+                    last[r as usize] = Some(last[r as usize].map_or(*end, |pc| pc.max(*end)));
+                }
+                Ok(r)
+            })?;
+        }
     }
     let mut assigned = [None; 256];
     let mut free: Vec<u8> = (0..64).rev().collect();
     for (pc, op) in ops.iter_mut().enumerate() {
         let mut expired: BTreeSet<usize> = BTreeSet::new();
         let mut destination = None;
+        let is_move = matches!(op, Sir::Move { .. });
         op.map_registers(|r, dst| {
             if dst {
                 for old in std::mem::take(&mut expired) {
                     free.push(assigned[old].take().ok_or("invalid SSA lifetime")?);
                 }
-                if assigned[r as usize].is_some() {
+                if let Some(physical) = assigned[r as usize] {
+                    if is_move {
+                        destination = Some(r as usize);
+                        return Ok(physical);
+                    }
                     return Err("duplicate SSA definition".into());
                 }
                 let physical = free
@@ -2455,6 +2499,15 @@ fn allocate_registers(mut ops: Vec<Sir>) -> Result<Vec<Sir>> {
             .chain(destination.filter(|&r| last[r].is_none()))
         {
             free.push(assigned[old].take().ok_or("invalid SSA lifetime")?);
+        }
+        if matches!(op, Sir::LoopEnd) {
+            for r in 0..256 {
+                if last[r] == Some(pc)
+                    && let Some(physical) = assigned[r].take()
+                {
+                    free.push(physical);
+                }
+            }
         }
     }
     Ok(ops)

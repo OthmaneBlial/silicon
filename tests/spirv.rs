@@ -118,6 +118,93 @@ fn bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
 }
 #[test]
+fn structured_spirv_loops_update_locals_and_render_across_backends() {
+    let loop_shader = include_bytes!("../assets/shaders/loop.frag.spv");
+    let fragment = compiled(loop_shader);
+    assert!(
+        fragment
+            .program
+            .instructions()
+            .iter()
+            .any(|op| matches!(op, LoopHeader))
+    );
+    assert!(
+        fragment
+            .program
+            .instructions()
+            .iter()
+            .any(|op| matches!(op, Move { .. }))
+    );
+    assert!(
+        fragment
+            .program
+            .instructions()
+            .iter()
+            .any(|op| matches!(op, LoopStart { .. }))
+    );
+
+    for value in [0.0, 0.2, 0.5, 1.0] {
+        let execution = fragment
+            .program
+            .execute(
+                &[Vec4::new(value, 0.3, 0.8, 1.0)],
+                &[],
+                |_, _| Err("unexpected sample".into()),
+                false,
+            )
+            .unwrap();
+        assert!(
+            (execution.outputs[0].x - 3.0 * value).abs() < 1e-6,
+            "input {value} produced {:?} in {} instructions",
+            execution.outputs[0],
+            execution.instructions
+        );
+        assert_eq!(execution.outputs[0].y, 0.3);
+        assert_eq!(execution.outputs[0].z, 0.8);
+    }
+
+    let device = Device::new();
+    let vertex = device
+        .create_shader(include_bytes!(
+            "../assets/shaders/khronos_hello_triangle.vert.spv"
+        ))
+        .unwrap();
+    let fragment = device.create_shader(loop_shader).unwrap();
+    let pipeline = device
+        .create_pipeline(&vertex, &fragment, Pipeline::default())
+        .unwrap();
+    let mut commands = Device.commands();
+    commands.begin_render_pass(Color::BLACK);
+    commands.bind_pipeline(pipeline);
+    let vertices = [
+        (-0.8, -0.8, Color::new(1.0, 0.0, 0.0, 1.0)),
+        (0.8, -0.8, Color::new(0.0, 1.0, 0.0, 1.0)),
+        (0.0, 0.8, Color::new(0.0, 0.0, 1.0, 1.0)),
+    ]
+    .map(|(x, y, color)| Vertex::new(Vec3::new(x, y, 0.5), color));
+    commands.bind_vertex_buffer(Device.create_vertex_buffer(vertices.to_vec()).unwrap());
+    commands.draw(0, 3);
+    commands.end_render_pass();
+
+    let render = |backend| {
+        let mut renderer = Renderer::new(64, 64).unwrap();
+        renderer.backend = backend;
+        Device.submit(&commands, &mut renderer).unwrap();
+        renderer
+    };
+    let scalar = render(Backend::Scalar);
+    let simd = render(Backend::Simd);
+    assert!(scalar.stats.shaded > 0);
+    for y in 0..64 {
+        for x in 0..64 {
+            assert_eq!(
+                scalar.framebuffer.pixel(x, y).unwrap().rgba8(),
+                simd.framebuffer.pixel(x, y).unwrap().rgba8()
+            );
+        }
+    }
+}
+#[test]
 fn ordinary_glsl_renders_like_reference_and_replays_in_parallel() {
     let vertex = compiled(VERTEX);
     let fragment = compiled(FRAGMENT);

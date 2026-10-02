@@ -1,4 +1,4 @@
-//! Bounded, acyclic structured selections. Each branch keeps its own SSA/local definitions.
+//! Bounded structured selections and a restricted local-carrying loop form.
 use super::*;
 
 #[derive(Clone)]
@@ -125,6 +125,58 @@ impl Compiler<'_> {
         }
         Ok(())
     }
+    fn lower_prefix(&mut self, block: &Block<'_>, incoming: &[Path]) -> Result<()> {
+        let mut prefix = true;
+        for op in &block.code[..block.code.len() - 1] {
+            match op.opcode {
+                245 if prefix => self
+                    .lower_phi(op, incoming, &block.predecessors)
+                    .map_err(|e| op.error(e))?,
+                245 => return Err(op.error("Phi must start its block")),
+                247 => prefix = false,
+                0 => {}
+                12
+                | 59
+                | 61
+                | 62
+                | 65
+                | 79..=83
+                | 87
+                | 88
+                | 112
+                | 127
+                | 129
+                | 131
+                | 133
+                | 136
+                | 142
+                | 145
+                | 148
+                | 164..=169
+                | 172
+                | 174
+                | 176
+                | 178
+                | 224
+                | 180
+                | 182..=184
+                | 186
+                | 188
+                | 190
+                | 229
+                | 230
+                | 234 => {
+                    prefix = false;
+                    self.instruction(op).map_err(|e| op.error(e))?;
+                    if let Some(result) = op.ids()?.0 {
+                        self.available.as_mut().unwrap().insert(result);
+                    }
+                }
+                _ => return Err(op.error("unsupported instruction in main block")),
+            }
+        }
+        Ok(())
+    }
     pub(super) fn lower_control(&mut self, body: &[Op]) -> Result<()> {
         if body.is_empty() || body.len() > 4096 || body[0].opcode != 248 {
             return Err("main requires 1..4096 instructions starting with a Label".into());
@@ -171,6 +223,15 @@ impl Compiler<'_> {
                         op.error("SelectionMerge None must immediately precede BranchConditional")
                     );
                 }
+                if op.opcode == 246
+                    && (i + 2 != block.code.len()
+                        || !matches!(end.opcode, 249 | 250)
+                        || op.operands[2] != 0)
+                {
+                    return Err(
+                        op.error("OpLoopMerge None must immediately precede a branch terminator")
+                    );
+                }
             }
             if end.opcode == 249 {
                 edges.push((id, end.operands[0]));
@@ -201,11 +262,164 @@ impl Compiler<'_> {
                     || !block.predecessors.is_empty())
             {
                 return Err(format!(
-                    "unreachable or overlapping block %{id} is outside the acyclic selection subset"
+                    "unreachable or overlapping block %{id} is outside the supported structured control-flow subset"
                 ));
             }
         }
         Ok(())
+    }
+    fn loop_region(
+        &mut self,
+        header_id: u32,
+        incoming: Vec<Path>,
+        depth: usize,
+        blocks: &BTreeMap<u32, Block<'_>>,
+        visited: &mut BTreeSet<u32>,
+    ) -> Result<Option<Path>> {
+        let header = &blocks[&header_id];
+        let merge_op = header
+            .code
+            .iter()
+            .find(|op| op.opcode == 246)
+            .copied()
+            .ok_or("loop header lacks OpLoopMerge")?;
+        let [merge_id, continue_id, 0] = merge_op.operands.as_slice() else {
+            return Err(merge_op.error("supports LoopControl None and two target labels"));
+        };
+        if incoming.len() != 1 {
+            return Err(merge_op.error("loop requires one preheader path"));
+        }
+        let (preheader_id, preheader_env) = &incoming[0];
+        let (merge_id, continue_id) = (*merge_id, *continue_id);
+        if header.code.len() != 2
+            || header.code[0].opcode != 246
+            || header.code[1].opcode != 249
+            || header.code[1].operands[0] == header_id
+            || merge_id == header_id
+            || continue_id == header_id
+            || merge_id == continue_id
+            || header.predecessors != BTreeSet::from([*preheader_id, continue_id])
+        {
+            return Err(merge_op.error(
+                "requires a single preheader, a separate condition block, and one continue backedge",
+            ));
+        }
+        let condition_id = header.code[1].operands[0];
+        let condition_block = blocks
+            .get(&condition_id)
+            .ok_or_else(|| merge_op.error("loop condition block is missing"))?;
+        if condition_id == header_id
+            || condition_id == merge_id
+            || condition_id == continue_id
+            || condition_block.predecessors != BTreeSet::from([header_id])
+            || condition_block
+                .code
+                .last()
+                .is_none_or(|op| op.opcode != 250)
+            || condition_block
+                .code
+                .iter()
+                .any(|op| matches!(op.opcode, 245..=247))
+        {
+            return Err(merge_op.error(
+                "requires a separate condition block without Phi or structured merge instructions",
+            ));
+        }
+        let branch = condition_block.code.last().unwrap();
+        if branch.operands[2] != merge_id || branch.operands[1] == merge_id {
+            return Err(branch.error(
+                "loop condition must branch true to the body and false to the merge block",
+            ));
+        }
+        let continuation = blocks
+            .get(&continue_id)
+            .ok_or_else(|| merge_op.error("loop continue block is missing"))?;
+        if continuation
+            .code
+            .last()
+            .is_none_or(|op| op.opcode != 249 || op.operands[0] != header_id)
+            || continuation.code.iter().any(|op| op.opcode == 246)
+        {
+            return Err(merge_op.error("continue block must branch back to the loop header"));
+        }
+        if !blocks.contains_key(&merge_id) {
+            return Err(merge_op.error("loop merge block is missing"));
+        }
+        if depth >= 64 {
+            return Err("SPIR-V loop nesting exceeds 64".into());
+        }
+        if !visited.insert(header_id) || !visited.insert(condition_id) {
+            return Err(merge_op.error("cyclic or overlapping loop header"));
+        }
+        self.restore(preheader_env);
+        let locals: Vec<_> = self
+            .locals
+            .iter()
+            .map(|(&root, local)| (root, local.clone()))
+            .collect();
+        for (root, mut local) in locals {
+            if let Value::Reg(src, uv) = local.value {
+                let dst = self.emit(|dst| Sir::Move { dst, src })?;
+                local.value = Value::Reg(dst, uv);
+                self.locals.insert(root, local);
+            }
+        }
+        self.ops.push(Sir::LoopHeader);
+        self.lower_prefix(condition_block, &[(header_id, preheader_env.clone())])?;
+        let (condition, ty, _) = self.reg(branch.operands[0]).map_err(|e| branch.error(e))?;
+        if self.ty(ty)? != Ty::Bool {
+            return Err(branch.error("loop condition requires scalar bool"));
+        }
+        let header_env = self.environment();
+        self.ops.push(Sir::LoopStart { condition });
+        let body = self
+            .region(
+                branch.operands[1],
+                Some(continue_id),
+                vec![(condition_id, header_env.clone())],
+                depth + 1,
+                blocks,
+                visited,
+            )?
+            .ok_or_else(|| merge_op.error("loop body has no path to its continue block"))?;
+        if continuation.predecessors != BTreeSet::from([body.0]) || !visited.insert(continue_id) {
+            return Err(merge_op.error("loop requires one reachable continue predecessor"));
+        }
+        self.restore(&body.1);
+        self.lower_prefix(continuation, std::slice::from_ref(&body))?;
+        for (&root, initial) in &header_env.locals {
+            let current = self
+                .locals
+                .get(&root)
+                .cloned()
+                .ok_or("loop local is unavailable on the continue path")?;
+            if current.ty != initial.ty {
+                return Err("loop local type changes across iterations".into());
+            }
+            let (Value::Reg(dst, initial_uv), Value::Reg(src, current_uv)) =
+                (&initial.value, &current.value)
+            else {
+                return Err("loop-carried locals require SIR register values".into());
+            };
+            if dst != src {
+                self.ops.push(Sir::Move {
+                    dst: *dst,
+                    src: *src,
+                });
+            }
+            self.locals.get_mut(&root).unwrap().value =
+                Value::Reg(*dst, *initial_uv && *current_uv);
+        }
+        self.ops.push(Sir::LoopEnd);
+        self.restore(&header_env);
+        self.region(
+            merge_id,
+            None,
+            vec![(condition_id, header_env)],
+            depth,
+            blocks,
+            visited,
+        )
     }
     fn region(
         &mut self,
@@ -226,6 +440,9 @@ impl Compiler<'_> {
             let block = blocks
                 .get(&id)
                 .ok_or_else(|| format!("missing basic block %{id}"))?;
+            if block.code.iter().any(|op| op.opcode == 246) {
+                return self.loop_region(id, incoming, depth, blocks, visited);
+            }
             if incoming
                 .iter()
                 .map(|(pred, _)| *pred)
@@ -239,57 +456,7 @@ impl Compiler<'_> {
             if !visited.insert(id) {
                 return Err(format!("cyclic or overlapping control flow at block %{id}"));
             }
-            let mut prefix = true;
-            for op in &block.code[..block.code.len() - 1] {
-                match op.opcode {
-                    245 if prefix => self
-                        .lower_phi(op, &incoming, &block.predecessors)
-                        .map_err(|e| op.error(e))?,
-                    245 => return Err(op.error("Phi must start its block")),
-                    247 => {
-                        prefix = false;
-                    }
-                    0 => {}
-                    12
-                    | 59
-                    | 61
-                    | 62
-                    | 65
-                    | 79..=83
-                    | 87
-                    | 88
-                    | 112
-                    | 127
-                    | 129
-                    | 131
-                    | 133
-                    | 136
-                    | 142
-                    | 145
-                    | 148
-                    | 164..=169
-                    | 172
-                    | 174
-                    | 176
-                    | 178
-                    | 224
-                    | 180
-                    | 182..=184
-                    | 186
-                    | 188
-                    | 190
-                    | 229
-                    | 230
-                    | 234 => {
-                        prefix = false;
-                        self.instruction(op).map_err(|e| op.error(e))?;
-                        if let Some(result) = op.ids()?.0 {
-                            self.available.as_mut().unwrap().insert(result);
-                        }
-                    }
-                    _ => return Err(op.error("unsupported instruction in main block")),
-                }
-            }
+            self.lower_prefix(block, &incoming)?;
             let end = block.code.last().unwrap();
             match end.opcode {
                 249 => {
